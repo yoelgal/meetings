@@ -124,6 +124,10 @@ struct RecordingDetailView: View {
                 // flush against the pane edge while the picker above them stayed indented.
                 .padding(.horizontal, 16)
                 .padding(.top, 4)
+                // ...and the same 16 along the bottom, which was missing: the editor ran flush into
+                // the recording bar while its other three edges were inset, so the pane looked
+                // cropped rather than padded.
+                .padding(.bottom, 16)
             }
         }
     }
