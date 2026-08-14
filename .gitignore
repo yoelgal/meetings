@@ -1,0 +1,12 @@
+.build/
+.swiftpm/
+dist/
+*.xcuserstate
+.DS_Store
+granola-screenshots/
+
+# Per-agent git worktrees, created and removed by the harness.
+.claude/worktrees/
+
+# better-dev wiring is per-developer, not part of the project.
+CLAUDE.local.md

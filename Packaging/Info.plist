@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<!-- Must equal the filename in Contents/MacOS/. SwiftPM names the binary after the target
+	     (MeetingsApp), so build-app.sh renames it to Meetings on the way in. -->
+	<key>CFBundleExecutable</key>
+	<string>Meetings</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.yoelgal.Meetings</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>Meetings</string>
+	<key>CFBundleDisplayName</key>
+	<string>Meetings</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.productivity</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>26.0</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+
+	<!-- TCC strings. These are the only explanation the user gets at the moment of the prompt, so
+	     each one says what is captured, what is not, and where it goes. -->
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Meetings records your microphone during a meeting so your own side of the conversation is captured and transcribed. Recording only ever starts when you press Start, and both the audio and the transcript stay on this Mac.</string>
+
+	<!-- macOS presents system-audio capture as "screen recording" because ScreenCaptureKit is the
+	     only API that provides it. Pre-empt that, do not let the OS dialog do the talking. -->
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>Meetings captures the audio coming out of your Mac so the other people on the call are transcribed too. macOS calls this permission "screen recording" because system audio is only available through the screen-capture API — no picture of your screen is ever recorded, shown or saved, and nothing leaves this Mac.</string>
+	<key>NSScreenCaptureUsageDescription</key>
+	<string>Meetings needs this permission for one thing only: the audio your Mac is playing, so the other people on the call end up in the transcript. macOS files system-audio capture under "screen recording" — no picture of your screen is ever recorded, shown or saved.</string>
+
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>Meetings reads your calendar so it can list your upcoming meetings, attach pre-meeting notes to the right event, and learn attendee names so the transcriber spells them correctly. Events are only ever read; Meetings never creates, edits or deletes anything in your calendar.</string>
+</dict>
+</plist>

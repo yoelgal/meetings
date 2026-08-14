@@ -1,0 +1,24 @@
+{
+  "fill": {
+    "automatic-gradient": "extended-srgb:0.015,0.016,0.021,1.000"
+  },
+  "groups": [
+    {
+      "layers": [
+        {
+          "image-name": "mark.png",
+          "name": "Mark"
+        }
+      ]
+    }
+  ],
+  "supported-platforms": {
+    "circles": [
+      "watchOS"
+    ],
+    "squares": [
+      "iOS",
+      "macOS"
+    ]
+  }
+}

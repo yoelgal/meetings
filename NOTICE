@@ -1,0 +1,53 @@
+Meetings
+Copyright (c) 2026 Yoel Gal
+
+This product includes software developed by third parties, listed below.
+
+--------------------------------------------------------------------------------
+quill — https://github.com/digimata/quill
+MIT License. Copyright (c) 2026 Andrew Jones.
+
+Portions of Sources/MeetingsCore/Audio/MicRecorder.swift are derived from
+quill's Sources/quill/Audio/MicRecorder.swift — specifically the AVAudioEngine
+voice-processing graph (the duplex render path VoiceProcessingIO requires, the
+single explicit mono client format on both sides of the unit, the "other audio"
+ducking configuration) and the first-second silence liveness check that falls
+back to raw capture. Adapted here to write 16 kHz mono WAV rather than AAC.
+
+EngineSegment.grouped(words:) in
+Sources/MeetingsCore/Transcription/TranscriptionEngine.swift is derived from
+quill's ParakeetEngine.segments(from:) — grouping word timings into readable
+segments by sentence-ending punctuation, silence gap and a hard length cap.
+
+The zero-frame probe in
+Sources/MeetingsCore/Transcription/FluidAudioBatchEngine.swift follows quill's
+guard in ParakeetEngine.transcribe(_:), and for the same reason: a track with no
+frames makes AVFoundation raise an Objective-C exception inside the resampler
+that Swift cannot catch, taking the whole process down.
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy
+    of this software and associated documentation files (the "Software"), to deal
+    in the Software without restriction, including without limitation the rights
+    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    copies of the Software, and to permit persons to whom the Software is
+    furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in all
+    copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+    SOFTWARE.
+
+--------------------------------------------------------------------------------
+meetily — https://github.com/Zackriya-Solutions/meetily
+MIT License. Copyright (c) 2024 Zackriya Solutions.
+
+Approach reference only for the meeting-capture pipeline. No code copied.
+
+--------------------------------------------------------------------------------
+Dependencies fetched by SwiftPM keep their own licences; see Package.resolved.
