@@ -109,6 +109,23 @@ public enum MarkdownSyntax {
         return marker
     }
 
+    /// Where a line sits relative to the left edge, in **gutter columns**, as a hanging indent:
+    /// `first` for the line itself and `body` for everything it wraps onto.
+    ///
+    /// The rule is one sentence. A marker ends on the body edge, so it starts `gutter - width`
+    /// columns in; a line with no marker starts on the body edge itself. That is what puts prose
+    /// and list items on one left edge, and it is why the answer is an indent rather than padding
+    /// on the marker — there is no character in front of a paragraph to pad.
+    ///
+    /// Indentation counts as depth rather than as part of the marker: a nested item's body edge
+    /// moves right by its indent, so nesting is still visible, and its wrapped lines follow it.
+    /// A marker wider than the gutter — `###### ` in a six-column gutter — clamps to zero and
+    /// overhangs by itself rather than dragging the whole document right.
+    public static func gutterIndent(_ line: some StringProtocol, gutter: Int) -> (first: Int, body: Int) {
+        guard let marker = blockMarker(line) else { return (gutter, gutter) }
+        return (max(gutter - marker.count, 0), gutter + marker.lowerBound)
+    }
+
     /// Every character in the line that is *markup rather than prose* — the block marker, and both
     /// delimiters of every closed inline run — left to right and merged where they touch.
     ///

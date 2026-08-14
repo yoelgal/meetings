@@ -478,22 +478,67 @@ import Testing
     }
 
     /// The summary renders its markdown as it is typed, and it does it with the platform's own text
-    /// editor rather than a second text engine.
+    /// engine rather than a second one of our own.
     ///
     /// The characters on screen have to stay the characters in the store, at the same offsets —
     /// hiding a `##` means keeping two documents in step, which is how a caret comes to land a
     /// character off from where it was clicked.
+    ///
+    /// This used to pin `TextEditor(text:selection:)` by name. It now pins the *invariant* that
+    /// spelling stood for, because the spelling had to change: SwiftUI's attributed `TextEditor`
+    /// works in a scope with no paragraph-style key, so a hanging indent is not expressible in it,
+    /// and its selection carries no geometry for the toolbar to anchor to. What must not change is
+    /// that the engine is AppKit's — one `NSTextView`, its own caret, its own undo — and that the
+    /// value of record stays the plain `String` the CLI writes.
     @Test func theEditorRendersMarkdownWithoutASecondTextModel() throws {
-        let editor = try Self.source("PreNotesEditor.swift")
-        #expect(editor.contains("TextEditor(text: $rich, selection: $selection)"),
-                "the rich editor is AppKit's, through SwiftUI — nothing here rolls its own")
-        #expect(editor.contains("transform(updating: &selection)"),
-                "restyling without updating the selection invalidates the caret's indices")
+        let editor = try Self.source("MarkdownTextView.swift")
+        #expect(editor.contains("NSViewRepresentable") && editor.contains("NSTextView.scrollableTextView()"),
+                "the engine is AppKit's own text view — nothing here rolls its own")
         #expect(editor.contains("MarkdownSyntax.line(") && editor.contains("MarkdownSyntax.inline("),
                 "what counts as markdown is MeetingsCore's decision, where it is tested")
-        // The styled value is a view of the plain string, never the value of record.
-        #expect(editor.contains("if plain != text { text = plain }"),
+
+        // The value of record. Everything above this view — autosave, the two-writer banner, the
+        // oversize guard — works off a `String`, and an editor that started holding the truth in an
+        // attributed form would take all three with it.
+        let mount = try #require(try Self.source("PreNotesEditor.swift").range(of: "LiveMarkdownEditor(text: $text)"))
+        #expect(mount.isEmpty == false)
+        #expect(editor.contains("@Binding var text: String"),
                 "the store still holds the string the CLI writes, not an attributed one")
+        #expect(editor.contains("parent.text = now"),
+                "what the user typed is pushed back up as characters")
+
+        // TextKit 2, not the legacy layout manager — asking for `NSLayoutManager` on macOS 26
+        // drags the text view back onto the compatibility engine.
+        #expect(editor.contains("textView.textLayoutManager"),
+                "selection geometry comes from NSTextLayoutManager")
+        // The TextKit 1 accessor, which is what silently drops the view onto the old engine.
+        #expect(!editor.contains(".layoutManager"), "TextKit 1 would be a downgrade, not a fallback")
+    }
+
+    /// Undo has to survive, and the two ways to lose it are both here.
+    ///
+    /// Writing the whole string back into the text view on every change is the first: SwiftUI hands
+    /// the binding back down after every keystroke, and a view that obeys it flattens the undo
+    /// stack into one blob. Changing text behind the user's back without telling AppKit is the
+    /// second: a list continuation that skips `shouldChangeText` is a change ⌘Z cannot reach.
+    @Test func undoSurvivesBothWaysOfLosingIt() throws {
+        let editor = try Self.source("MarkdownTextView.swift")
+        #expect(editor.contains("textView.allowsUndo = true"))
+        #expect(editor.contains("guard textView.string != text else { return }"),
+                """
+                Without this guard the view writes the document back to itself on every keystroke, \
+                and every one of them lands as a single undo step over the whole string.
+                """)
+        let apply = try #require(editor.range(of: "func apply(_ edit: MarkdownEditing.Edit)"))
+        let body = String(editor[apply.upperBound...].prefix(700))
+        #expect(body.contains("shouldChangeText(in: range, replacementString: edit.replacement)"),
+                "a follow-up edit has to be registered with AppKit or ⌘Z cannot reach it")
+        #expect(body.contains("textView.didChangeText()"),
+                "and the change has to be closed, or it never lands on the undo stack")
+
+        // Restyling is attributes only, and attributes are not text — so none of it is undoable,
+        // and ⌘Z after typing a `#` undoes the character rather than the colour it caused.
+        #expect(editor.contains("storage.beginEditing()") && editor.contains("storage.endEditing()"))
     }
 
     /// The gutter is drawn with **attributes**, never by taking characters out.
@@ -504,48 +549,88 @@ import Testing
     /// them out to a common width and a `foregroundColor` dims them, and both are restyles the
     /// existing `transform(updating:)` already keeps the selection valid across.
     @Test func theGutterIsAnAttributeAndNotACharacterEverRemoved() throws {
-        let editor = try Self.source("PreNotesEditor.swift")
+        let editor = try Self.source("MarkdownTextView.swift")
         #expect(editor.contains("MarkdownSyntax.blockMarker("),
                 "which characters go in the gutter is MeetingsCore's decision, where it is tested")
         #expect(editor.contains("MarkdownSyntax.markers("),
                 "which characters dim is MeetingsCore's decision too")
-        #expect(editor.contains(".kern ="),
-                "the gutter is padding on the marker run, not characters removed from the document")
+
+        // The gutter is a paragraph property. It is the only thing that can put a line with *no*
+        // marker on the same left edge as one with a six-character marker, because there is no
+        // character in front of a paragraph to pad.
+        #expect(editor.contains("style.firstLineHeadIndent") && editor.contains("style.headIndent"),
+                "the gutter is a hanging indent")
+        #expect(editor.contains("MarkdownSyntax.gutterIndent("),
+                "the indent arithmetic is MeetingsCore's, where it is tested")
+        // And the padding hack it replaced is gone rather than left alongside it.
+        #expect(!editor.contains(".kern"),
+                "two mechanisms for one gutter is one more than can be reasoned about")
+
+        // Never characters. The storage is only ever handed attributes by the styling pass; the one
+        // place characters change is `apply`, which is the user's own edit going through undo.
+        #expect(!editor.contains("MarkdownStyle") || !editor.contains("replaceCharacters(in: whole"),
+                "styling must never remove a marker from the document")
 
         // The styling function is handed the caret so it knows which line to reveal, and the
         // selection changing has to restyle or the reveal never moves off the first line.
-        #expect(editor.contains("caret: Int? = nil"), "the reveal needs to know where the caret is")
-        #expect(editor.contains(".onChange(of: selection)"),
+        #expect(editor.contains("caret utf16: Int?"), "the reveal needs to know where the caret is")
+        #expect(editor.contains("func textViewDidChangeSelection"),
                 "moving the caret changes which line is revealed")
 
         // The container is gone. A box around the write-up made it read as one field on a form.
-        #expect(!editor.contains(".background(.quaternary.opacity(0.35)"),
+        let pane = try Self.source("PreNotesEditor.swift")
+        #expect(!pane.contains(".background(.quaternary.opacity(0.35)"),
                 "the write-up sits on the pane, not in a filled box")
-        #expect(editor.contains("maxWidth: Self.column"),
+        #expect(pane.contains("maxWidth: Self.column"),
                 "the document is a centred measure, not the full width of a wide window")
+    }
+
+    /// Both floating surfaces hang off a rect the text view measured, not off a corner of the pane.
+    /// A menu that opens at the top-left while you are typing on line forty is a menu about
+    /// somewhere else.
+    @Test func theMenuAndTheToolbarAnchorToWhereTheTextActuallyIs() throws {
+        let editor = try Self.source("MarkdownTextView.swift")
+        #expect(editor.contains("enumerateTextSegments("),
+                "the rects come from the layout manager rather than from a guess")
+        #expect(editor.contains("@Binding var caretRect: CGRect?")
+                && editor.contains("@Binding var selectionRect: CGRect?"))
+
+        let pane = try Self.source("PreNotesEditor.swift")
+        #expect(pane.contains("if let menu, let anchor = caretRect"),
+                "the slash menu opens under the caret")
+        #expect(pane.contains("if let anchor = selectionRect, !selection.isEmpty"),
+                "the toolbar appears over the selection, and only over a real one")
+        #expect(pane.contains("anchor.minY < $0.height + 8"),
+                "and it flips below the selection when there is no room above it")
     }
 
     /// Typing the shorthand, Return continuing a list and the slash menu are all one vocabulary,
     /// and every one of them is a pure function in `MeetingsCore` rather than a rule buried in a
     /// view where nothing can reach it.
     @Test func theEditorsTypingRulesLiveWhereTheyCanBeTested() throws {
-        let editor = try Self.source("PreNotesEditor.swift")
-        #expect(editor.contains("MarkdownEditing.followUp("),
+        let engine = try Self.source("MarkdownTextView.swift")
+        let pane = try Self.source("PreNotesEditor.swift")
+        #expect(engine.contains("MarkdownEditing.followUp("),
                 "list continuation and the shorthand are MeetingsCore's, where they are tested")
-        #expect(editor.contains("MarkdownEditing.slashQuery("),
+        #expect(pane.contains("MarkdownEditing.slashQuery("),
                 "when the menu is open is a decision with tests behind it")
-        #expect(editor.contains("MarkdownEditing.insert("),
+        #expect(pane.contains("MarkdownEditing.insert("),
                 "and so is what choosing an item does")
 
-        // Driven by what the text became, not by wrestling the text view for its key events.
-        #expect(editor.contains("before: String(old.characters), after: plain"),
-                "a keystroke is read off the document, not intercepted before the text view sees it")
+        // Driven by what the text became, not by second-guessing which key produced it.
+        #expect(engine.contains("before: before, after: now"),
+                "a keystroke is read off the document rather than reconstructed from the event")
 
-        // Keyboard navigation of the menu, each key still wired.
-        for key in [".onKeyPress(.upArrow)", ".onKeyPress(.downArrow)",
-                    ".onKeyPress(.escape)", ".onKeyPress(.return)"] {
-            #expect(editor.contains(key), "the slash menu lost its keyboard wiring: \(key)")
+        // The menu's keys are taken at `doCommandBy`, which is a real interception point. The
+        // previous build used SwiftUI's `onKeyPress` and hoped it would win the race against a
+        // focused text view for Return and the arrows.
+        #expect(engine.contains("func textView(_ textView: NSTextView, doCommandBy selector: Selector)"),
+                "the slash menu's keys have to be taken where NSTextView offers them")
+        for command in ["NSResponder.moveUp", "NSResponder.moveDown",
+                        "NSResponder.insertNewline", "NSResponder.cancelOperation"] {
+            #expect(engine.contains(command), "the slash menu lost its keyboard wiring: \(command)")
         }
+        #expect(!pane.contains(".onKeyPress("), "onKeyPress on a focused text view is a race, not a binding")
     }
 
     /// One transform behind every surface that turns a line into a heading or a list.
@@ -561,6 +646,17 @@ import Testing
             #expect(!chrome.contains(hardcoded),
                     "\(hardcoded) is built in the view instead of by MarkdownEditing.applyBlock")
         }
+
+        // The toolbar is a third way to reach the same two functions, and it draws its pressed
+        // state from the same question `toggle` asks — a button that says "on" while the shortcut
+        // turns it on again is two answers to one question.
+        #expect(chrome.contains("MarkdownEditing.isActive(mark, in: text, selection: selection)"),
+                "the toolbar's pressed state has to come from MarkdownEditing, not from a guess")
+        #expect(chrome.contains("MarkdownEditing.blockCommands"),
+                "the turn-into buttons are the commands MeetingsCore defines")
+        let pane = try Self.source("PreNotesEditor.swift")
+        #expect(pane.contains("MarkdownEditing.applyBlock(command, in: text, replacing: selection)"),
+                "the toolbar's block buttons go through the one transform the slash menu uses")
 
         // The formatting shortcuts are menu items, because the main menu is the one thing that
         // outranks a focused NSTextView for a key equivalent.

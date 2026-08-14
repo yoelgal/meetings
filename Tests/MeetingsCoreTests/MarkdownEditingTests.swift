@@ -181,6 +181,24 @@ import Testing
         #expect(off.applied(to: linked) == "docs")
     }
 
+    /// The toolbar draws a pressed button from this, and `toggle` decides which way it is going
+    /// from the same answer — so the two cannot disagree about whether the selection is bold.
+    @Test func theActiveStateAgreesWithWhichWayTheToggleGoes() {
+        for mark in MarkdownEditing.InlineMark.allCases where mark != .link {
+            #expect(!MarkdownEditing.isActive(mark, in: "a b c", selection: 2..<3),
+                    "\(mark) is not on over plain text")
+            let wrapped = MarkdownEditing.toggle(mark, in: "a b c", selection: 2..<3).applied(to: "a b c")
+            let inner = (2 + mark.open.count)..<(3 + mark.open.count)
+            #expect(MarkdownEditing.isActive(mark, in: wrapped, selection: inner),
+                    "\(mark) has to read as on once it is applied")
+            // Selecting the delimiters too is the same intent and reads the same way.
+            #expect(MarkdownEditing.isActive(mark, in: wrapped, selection: 2..<(wrapped.count - 2)))
+            // And turning it off turns the button off.
+            let plain = MarkdownEditing.toggle(mark, in: wrapped, selection: inner).applied(to: wrapped)
+            #expect(!MarkdownEditing.isActive(mark, in: plain, selection: 2..<3))
+        }
+    }
+
     // MARK: - The slash menu
 
     @Test func aSlashOpensTheMenuOnlyWhereItStartsAWord() {

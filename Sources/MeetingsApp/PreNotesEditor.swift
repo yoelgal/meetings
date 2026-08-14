@@ -173,7 +173,6 @@ struct SharedFieldEditor: View {
     /// Holds an injected draft unsaved so the *touched* branch of `receive` can be photographed; a
     /// real edit autosaves after 600 ms.
     @State private var autosaveSuspended = false
-    @FocusState private var focused: Bool
 
     /// About 40rem. A measure this wide is what a document is read at; the pane can be twice it on
     /// a large display and the extra goes into margin rather than into 140-character lines.
@@ -200,7 +199,6 @@ struct SharedFieldEditor: View {
                 oversize
             } else {
             LiveMarkdownEditor(text: $text)
-                .focused($focused)
                 // No fill, no border, no corner radius. The write-up is the document this screen
                 // exists for, and a box around it made it read as one field on a form — the
                 // markers now sit in a gutter of their own, which is the structure a container was
@@ -211,14 +209,16 @@ struct SharedFieldEditor: View {
                 // padding instead meant two hand-tuned numbers guessing at that origin, and they
                 // guessed wrong: the caret sat above and left of the placeholder it belongs in
                 // front of. The font has to match for the same reason — a different font puts the
-                // first baseline in a different place.
+                // first baseline in a different place, and so does the gutter the first line is
+                // indented by.
                 .overlay(alignment: .topLeading) {
                     if text.isEmpty {
                         Text(placeholder)
                             // Matches the font an unstyled line is drawn at, for the reason above.
                             .font(.body)
                             .foregroundStyle(.tertiary)
-                            .padding(.leading, 5)
+                            .padding(.leading, MarkdownStyle.gutter)
+                            .padding(.top, 6)
                             .allowsHitTesting(false)
                     }
                 }
@@ -369,11 +369,11 @@ struct SharedFieldEditor: View {
 /// convert back from — the value in and out is the same `String` the CLI writes, which is why the
 /// conflict handling, autosave and oversize guard around it did not have to change at all.
 ///
-/// **No library, and no text engine of our own.** macOS 26's `TextEditor` takes an
-/// `AttributedString` binding with a selection to keep valid across attribute changes
-/// (`transform(updating:)`), which is the entire hard part of live rendering — caret and undo
-/// belong to the same `NSTextView` AppKit has always shipped. Everything below is the markdown
-/// decision (``MarkdownSyntax``, in MeetingsCore where it is tested) and a font for each answer.
+/// **No library, and no text engine of our own.** The engine is `NSTextView`, which is where the
+/// caret, the undo stack and the hanging indent already live — see ``MarkdownTextView`` for why
+/// SwiftUI's `TextEditor` could not carry the gutter. Everything here is the markdown decision
+/// (``MarkdownSyntax`` and ``MarkdownEditing``, in MeetingsCore where they are tested), a font for
+/// each answer, and two floating surfaces hung off rects the text view measured.
 ///
 /// Markers are styled *with* the text they mark rather than hidden. Hiding them means the document
 /// on screen has different offsets from the document in the store, which is a second text model to
@@ -381,103 +381,44 @@ struct SharedFieldEditor: View {
 struct LiveMarkdownEditor: View {
     @Binding var text: String
 
-    /// What the text view actually holds. `text` stays the value of record — this is a styled view
-    /// of it, rebuilt from it whenever the two disagree about characters.
-    @State private var rich = AttributedString()
-    @State private var selection = AttributedTextSelection()
-    /// True while we are applying our own follow-up edit. Without it, an edit that happens to move
-    /// the document by one character would be read back as a keystroke and answered again.
-    @State private var applying = false
-    /// Which row of the slash menu Return would take. Reset whenever the query changes.
+    /// The selection as character offsets, published by the text view. Everything on this screen
+    /// that has to know where the caret is — the slash menu, the toolbar's pressed buttons — reads
+    /// it from here rather than asking AppKit again and getting a different unit.
+    @State private var selection = 0..<0
+    @State private var caretRect: CGRect?
+    @State private var selectionRect: CGRect?
+    @State private var handle = MarkdownEditorHandle()
+    /// Which row of the slash menu Return would take.
     @State private var highlighted = 0
     /// Escape closes the menu without moving the caret, which would otherwise re-open it on the
     /// very next keystroke. Cleared when the caret leaves the query.
     @State private var dismissedQuery: Range<Int>?
 
     var body: some View {
-        TextEditor(text: $rich, selection: $selection)
-            .scrollContentBackground(.hidden)
-            .onChange(of: rich) { old, edited in
-                let plain = String(edited.characters)
-                // Characters first: the autosave, the conflict check and the store all work off the
-                // plain string, and they must not wait on the restyle below.
-                if plain != text { text = plain }
-                guard !applying else {
-                    applying = false
-                    restyle()
-                    return
-                }
-                if let follow = MarkdownEditing.followUp(
-                    before: String(old.characters), after: plain, caret: selectedRange.lowerBound
-                ) {
-                    apply(follow)
-                    return
-                }
-                restyle()
-            }
-            // Moving the caret changes which line is revealed, so the document restyles on it too.
-            .onChange(of: selection) { _, _ in
-                if let query = dismissedQuery, query != slashQuery { dismissedQuery = nil }
-                restyle()
-            }
-            // `initial` covers the first appearance and every reset of the parent's identity — a
-            // different meeting is a different document, and there is no separate seeding step to
-            // forget.
-            .onChange(of: text, initial: true) { _, incoming in
-                guard incoming != String(rich.characters) else { return }
-                rich = MarkdownStyle.styled(incoming, caret: nil)
-                selection = AttributedTextSelection()
-            }
-            // The menu is drawn over the editor rather than in a popover: a popover takes key
-            // window, and a menu you cannot type into while it filters is not a filter.
-            .overlay(alignment: .topLeading) {
-                if let menu {
-                    SlashMenu(matches: menu.matches, highlighted: highlightedRow) { command in
-                        choose(command, over: menu.range)
-                    }
-                    .padding(.top, 4)
-                }
-            }
-            .onKeyPress(.upArrow) { move(-1) }
-            .onKeyPress(.downArrow) { move(1) }
-            .onKeyPress(.escape) {
-                guard menu != nil else { return .ignored }
-                dismissedQuery = slashQuery
-                return .handled
-            }
-            .onKeyPress(.return) {
-                guard let menu, let command = menu.matches[safe: highlightedRow] else { return .ignored }
-                choose(command, over: menu.range)
-                return .handled
-            }
-            // The formatting shortcuts are menu items rather than key handlers, because a focused
-            // NSTextView owns its own key events and the main menu is the one thing that outranks
-            // it. Published only while this editor holds focus, so ⌘B elsewhere still means nothing.
-            .focusedValue(\.markdownFormatting, MarkdownFormatting(id: text.count) { mark in
-                let range = selectedRange
-                apply(MarkdownEditing.toggle(mark, in: text, selection: range))
-            })
+        MarkdownTextView(
+            text: $text,
+            selection: $selection,
+            caretRect: $caretRect,
+            selectionRect: $selectionRect,
+            handle: handle,
+            intercept: intercept
+        )
+        // Both float in the editor's own coordinate space, over the rect the text view measured.
+        // Neither is a popover: a popover takes key window, and a menu you cannot keep typing into
+        // while it filters is not a filter.
+        .overlay(alignment: .topLeading) { menuOverlay }
+        .overlay(alignment: .topLeading) { toolbarOverlay }
+        // The formatting shortcuts are menu items rather than key handlers, because a focused
+        // NSTextView owns its own key events and the main menu is the one thing that outranks it.
+        // Published only while this editor holds focus, so ⌘B elsewhere still means nothing.
+        .focusedValue(\.markdownFormatting, MarkdownFormatting(id: text.count) { toggle($0) })
     }
 
-    // MARK: - Where the caret is
-
-    /// The selection as character offsets into `text`. A caret is an empty range.
-    private var selectedRange: Range<Int> {
-        switch selection.indices(in: rich) {
-        case .insertionPoint(let index):
-            let at = rich.characters.distance(from: rich.startIndex, to: index)
-            return at..<at
-        case .ranges(let set):
-            guard let first = set.ranges.first, let last = set.ranges.last else { return 0..<0 }
-            return rich.characters.distance(from: rich.startIndex, to: first.lowerBound)
-                ..< rich.characters.distance(from: rich.startIndex, to: last.upperBound)
-        }
-    }
+    // MARK: - The slash menu
 
     private var slashQuery: Range<Int>? {
-        let range = selectedRange
-        guard range.isEmpty else { return nil }
-        return MarkdownEditing.slashQuery(in: text, caret: range.lowerBound)
+        guard selection.isEmpty else { return nil }
+        return MarkdownEditing.slashQuery(in: text, caret: selection.lowerBound)
     }
 
     private var menu: (range: Range<Int>, matches: [MarkdownEditing.SlashCommand])? {
@@ -487,70 +428,69 @@ struct LiveMarkdownEditor: View {
     }
 
     /// The highlight, clamped to the list as it stands. Typing narrows the menu under the
-    /// selection — arrowing down to the ninth item and then filtering to one would otherwise leave
-    /// Return pointing at a row that no longer exists.
+    /// selection — arrowing to the ninth item and then filtering to one would otherwise leave
+    /// Return pointing at a row that is no longer there.
     private var highlightedRow: Int {
         guard let menu else { return 0 }
         return min(max(highlighted, 0), menu.matches.count - 1)
     }
 
-    // MARK: - Applying an edit
+    @ViewBuilder private var menuOverlay: some View {
+        if let menu, let anchor = caretRect {
+            SlashMenu(matches: menu.matches, highlighted: highlightedRow) { command in
+                choose(command, over: menu.range)
+            }
+            .fixedSize()
+            .alignmentGuide(.leading) { _ in -anchor.minX }
+            .alignmentGuide(.top) { _ in -anchor.maxY - 4 }
+        }
+    }
+
+    /// Deterministic, because `NSTextView` routes every one of these through `doCommandBy` and we
+    /// answer there. The previous build hoped a SwiftUI `onKeyPress` would win the race against a
+    /// focused text view for Return and the arrows; this does not have to hope.
+    private func intercept(_ key: MarkdownTextView.EditorKey) -> Bool {
+        guard let menu else { return false }
+        switch key {
+        case .up:
+            highlighted = max(highlightedRow - 1, 0)
+        case .down:
+            highlighted = min(highlightedRow + 1, menu.matches.count - 1)
+        case .enter:
+            guard let command = menu.matches[safe: highlightedRow] else { return false }
+            choose(command, over: menu.range)
+        case .escape:
+            dismissedQuery = menu.range
+        }
+        return true
+    }
 
     private func choose(_ command: MarkdownEditing.SlashCommand, over range: Range<Int>) {
-        apply(MarkdownEditing.insert(command, over: range, in: text))
+        handle.apply(MarkdownEditing.insert(command, over: range, in: text))
         highlighted = 0
     }
 
-    private func move(_ by: Int) -> KeyPress.Result {
-        guard let menu else { return .ignored }
-        highlighted = min(max(highlighted + by, 0), menu.matches.count - 1)
-        return .handled
+    // MARK: - The selection toolbar
+
+    @ViewBuilder private var toolbarOverlay: some View {
+        // Only over a real selection, and never at the same time as the menu — the menu belongs to
+        // a caret and the toolbar to a range, so the two cannot both be right.
+        if let anchor = selectionRect, !selection.isEmpty, menu == nil {
+            SelectionToolbar(text: text, selection: selection) { mark in
+                toggle(mark)
+            } turnInto: { command in
+                handle.apply(MarkdownEditing.applyBlock(command, in: text, replacing: selection))
+            }
+            .fixedSize()
+            .alignmentGuide(.leading) { $0.width / 2 - anchor.midX }
+            // Above the selection, and below it when the selection is near the top of the pane and
+            // there is no room — a toolbar off the top edge is a toolbar you cannot press.
+            .alignmentGuide(.top) { anchor.minY < $0.height + 8 ? -anchor.maxY - 6 : $0.height + 6 - anchor.minY }
+        }
     }
 
-    /// One place where a ``MarkdownEditing/Edit`` becomes characters in the text view, so there is
-    /// one conversion from character offsets to `AttributedString.Index` rather than one per
-    /// caller — and it is the conversion an emoji gets wrong when it is done twice.
-    private func apply(_ edit: MarkdownEditing.Edit) {
-        let length = rich.characters.count
-        func index(_ offset: Int) -> AttributedString.Index {
-            rich.index(rich.startIndex, offsetByCharacters: min(max(offset, 0), length))
-        }
-        var updated = rich
-        updated.replaceSubrange(
-            index(edit.range.lowerBound)..<index(edit.range.upperBound),
-            with: AttributedString(edit.replacement)
-        )
-        // Only claim the next change as ours if there *is* one: a no-op edit would otherwise leave
-        // the flag set and swallow the follow-up the next real keystroke earns.
-        if updated != rich {
-            applying = true
-            rich = updated
-        }
-
-        // Indexed off `updated` rather than off `rich` read back: the selection has to be built
-        // against the document this edit produced, not against whatever the state box happens to
-        // return before the next update lands.
-        let after = updated.characters.count
-        func settled(_ offset: Int) -> AttributedString.Index {
-            updated.index(updated.startIndex, offsetByCharacters: min(max(offset, 0), after))
-        }
-        selection = edit.selection.isEmpty
-            ? AttributedTextSelection(insertionPoint: settled(edit.selection.lowerBound))
-            : AttributedTextSelection(
-                range: settled(edit.selection.lowerBound)..<settled(edit.selection.upperBound)
-            )
-    }
-
-    /// Attributes only, never characters — so the caret does not move, and typing at the end of a
-    /// heading does not inherit heading size onto the next line.
-    ///
-    /// Terminates: this writes `rich`, which re-enters `onChange`, whose restyle is idempotent and
-    /// so leaves the value equal and writes nothing.
-    private func restyle() {
-        let caret = selectedRange.lowerBound
-        var styled = rich
-        styled.transform(updating: &selection) { MarkdownStyle.apply(to: &$0, caret: caret) }
-        if styled != rich { rich = styled }
+    private func toggle(_ mark: MarkdownEditing.InlineMark) {
+        handle.apply(MarkdownEditing.toggle(mark, in: text, selection: selection))
     }
 }
 
@@ -563,121 +503,6 @@ extension Collection {
     }
 }
 
-/// Which font each of ``MarkdownSyntax``'s answers is drawn in, and where its markers sit. The
-/// split is deliberate: what counts as a heading is logic and lives in MeetingsCore with tests
-/// behind it, and this is the half that is a typeface.
-///
-/// **The gutter.** A line's `##`, `-`, `1.` or `- [ ]` is padded out to a fixed width so that every
-/// marked line's prose begins on the same vertical edge whatever marks it. The padding is `kern` on
-/// the marker's last character — an attribute, not a character — so nothing in the document moves
-/// and no offset is ever remapped.
-///
-/// **The reveal.** The line the caret is on drops all of it: markers go back to the line's own font
-/// and full colour, exactly as they were typed, because that is the line you are editing and it
-/// should be honest. Every other line dims its markers to tertiary.
-@MainActor enum MarkdownStyle {
-    /// The size the dimmed markers are drawn at, monospaced so that a `#` and a `1` are the same
-    /// width and the gutter can be measured in characters rather than re-measured per line.
-    static let markerSize: CGFloat = 11
-
-    static let markerAdvance: CGFloat = NSAttributedString(
-        string: "0",
-        attributes: [.font: NSFont.monospacedSystemFont(ofSize: markerSize, weight: .regular)]
-    ).size().width
-
-    static func styled(_ source: String, caret: Int? = nil) -> AttributedString {
-        var attributed = AttributedString(source)
-        apply(to: &attributed, caret: caret)
-        return attributed
-    }
-
-    static func apply(to attributed: inout AttributedString, caret: Int? = nil) {
-        // Everything back to body first, so a line that *stops* being a heading — the `#` deleted —
-        // goes back down instead of keeping the size it was given a keystroke ago.
-        attributed.font = .body
-        attributed.foregroundColor = .primary
-        attributed.kern = 0
-        attributed.strikethroughStyle = nil
-
-        let source = String(attributed.characters)
-        let lines = source.split(separator: "\n", omittingEmptySubsequences: false)
-        // How wide the gutter has to be is the widest marker in *this* document. A fixed width
-        // either clips an action's `- [ ]` or leaves a heading's `#` marooned in whitespace.
-        let gutter = lines.reduce(0) { widest, line in
-            max(widest, MarkdownSyntax.blockMarker(line)?.count ?? 0)
-        }
-
-        var start = attributed.startIndex
-        var offset = 0
-
-        for line in lines {
-            let end = attributed.index(start, offsetByCharacters: line.count)
-            // `<=` at both ends: a caret resting on the boundary belongs to the line it is
-            // touching, and the one at the very end of a line is still in it.
-            let revealed = caret.map { $0 >= offset && $0 <= offset + line.count } ?? false
-            if start < end {
-                let kind = MarkdownSyntax.line(line)
-                let base = font(for: kind)
-                attributed[start..<end].font = base
-                if kind == .quote { attributed[start..<end].foregroundColor = .secondary }
-
-                func range(_ span: Range<Int>) -> Range<AttributedString.Index> {
-                    attributed.index(start, offsetByCharacters: span.lowerBound)
-                        ..< attributed.index(start, offsetByCharacters: span.upperBound)
-                }
-
-                // Runs first, in the order MarkdownSyntax hands them over: a nested run reads the
-                // font its parent just set and adds to it, which is how `***both***` ends up both.
-                for span in MarkdownSyntax.inline(line) {
-                    let at = range(span.range)
-                    let current = attributed[at].font ?? base
-                    switch span.style {
-                    case .strong: attributed[at].font = current.bold()
-                    case .emphasis: attributed[at].font = current.italic()
-                    case .code: attributed[at].font = current.monospaced()
-                    case .strike: attributed[at].strikethroughStyle = .single
-                    case .link: attributed[at].foregroundColor = .accentColor
-                    }
-                }
-
-                // Then the markers over the top. Off the caret's line they are scaffolding and go
-                // quiet; on it they are text you are editing and come all the way back.
-                for marker in MarkdownSyntax.markers(line) {
-                    attributed[range(marker)].foregroundColor =
-                        revealed ? .primary : Color(nsColor: .tertiaryLabelColor)
-                }
-
-                // And the block marker alone gets pushed into the gutter — inline markup sits
-                // mid-sentence and has no gutter to go to.
-                if !revealed, gutter > 0, let block = MarkdownSyntax.blockMarker(line) {
-                    let at = range(block)
-                    attributed[at].font = .system(size: markerSize, design: .monospaced)
-                    let last = attributed.index(at.upperBound, offsetByCharacters: -1)
-                    attributed[last..<at.upperBound].kern =
-                        CGFloat(gutter - block.count) * markerAdvance
-                }
-            }
-            offset += line.count + 1
-            // Step over the newline `split` consumed. The last line has none, and asking for the
-            // index after the end of the document traps.
-            guard end < attributed.endIndex else { break }
-            start = attributed.index(end, offsetByCharacters: 1)
-        }
-    }
-
-    /// `##` is what an agent writes far more often than `#`, so it has to be a heading you can see —
-    /// the same sizing ``MarkdownText`` renders a finished document at, so the write-up does not
-    /// change shape between the editor and the exported markdown.
-    static func font(for line: MarkdownSyntax.Line) -> Font {
-        switch line {
-        case .heading(let level): MarkdownText.headingFont(level)
-        case .bullet, .quote, .body: .body
-        }
-    }
-}
-
-/// "Updated externally", with the diff rather than a shrug. Showing what changed is the difference
-/// between a decision and a coin toss.
 private struct ExternalChangeBanner: View {
     let mine: String
     let theirs: String

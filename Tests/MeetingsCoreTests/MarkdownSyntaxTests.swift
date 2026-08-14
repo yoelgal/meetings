@@ -179,6 +179,37 @@ import Testing
         #expect(String(Array(link)[1..<5]) == "docs")
     }
 
+    /// The whole point of Direction A: prose and list items share one left edge, and a wrapped line
+    /// returns to that edge rather than to zero. Both fall out of one hanging indent per paragraph.
+    @Test func everyLineOfProseStartsOnTheSameEdgeWhateverMarksIt() {
+        let gutter = 6
+        // The marker ends on the body edge, so the text after it starts there — whatever its width.
+        for line in ["## Decisions", "- ship it", "1. first", "> she said", "- [ ] task"] {
+            let indent = MarkdownSyntax.gutterIndent(line, gutter: gutter)
+            let marker = MarkdownSyntax.blockMarker(line)!
+            #expect(indent.first + marker.count == gutter,
+                    "\(line) does not put its text on the body edge")
+            #expect(indent.body == gutter, "\(line) does not wrap back to the body edge")
+        }
+        // And a line with no marker at all starts on that same edge. This is the one a character
+        // attribute could never do: there is no character in front of a paragraph to pad.
+        #expect(MarkdownSyntax.gutterIndent("We agreed to ship.", gutter: gutter) == (6, 6))
+        #expect(MarkdownSyntax.gutterIndent("", gutter: gutter) == (6, 6))
+    }
+
+    /// Nesting still has to be visible, and a marker too wide for the gutter must not drag the
+    /// whole document right — it overhangs on its own line instead.
+    @Test func nestingMovesTheEdgeAndAnOversizeMarkerOverhangsAlone() {
+        // Depth pushes the body edge right, and the wrapped lines follow it.
+        let nested = MarkdownSyntax.gutterIndent("    - nested", gutter: 6)
+        #expect(nested == (4, 10))
+        // `- ` starts at column 4+4=8 and ends at 10, which is where its text and its wraps sit.
+        #expect(nested.first + 4 + 2 == nested.body)
+
+        // Seven columns of marker in a six-column gutter: clamped, and only this line is affected.
+        #expect(MarkdownSyntax.gutterIndent("###### Deep", gutter: 6) == (0, 6))
+    }
+
     /// The offsets the gutter and the dimming are applied at are character offsets, and an emoji is
     /// one character and several scalars. Getting this wrong does not look wrong — it puts the
     /// caret inside the emoji.

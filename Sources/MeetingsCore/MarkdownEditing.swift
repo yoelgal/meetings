@@ -184,16 +184,8 @@ public enum MarkdownEditing {
 
         // Already wrapped, either just outside the selection or inside it — selecting the word and
         // selecting `**the word**` are the same intent and both have to toggle.
-        if let unwrap = unwrapped(mark, characters, selection) { return unwrap }
-        if selected.count > open.count, selected.starts(with: open) {
-            var probe = selection.lowerBound + open.count
-            while probe < selection.upperBound {
-                if let inner = closed(mark, characters, from: probe, limit: selection.upperBound),
-                   inner.upperBound == selection.upperBound {
-                    return removing(open.count, inner, characters, selection)
-                }
-                probe += 1
-            }
+        if let (whole, close) = wrapping(mark, characters, selection) {
+            return removing(open.count, close, characters, whole)
         }
 
         let replacement = mark.open + String(selected) + mark.close
@@ -206,17 +198,40 @@ public enum MarkdownEditing {
         return Edit(range: selection, replacement: replacement, selection: caret)
     }
 
-    /// The pair sitting immediately outside the selection, if it is there.
-    private static func unwrapped(
+    /// Whether the selection already carries `mark` — what a toolbar draws as a pressed button, and
+    /// the same question ``toggle(_:in:selection:)`` asks to decide which way it is going. One
+    /// answer behind both, so the button cannot say "on" while the shortcut turns it on again.
+    public static func isActive(_ mark: InlineMark, in text: String, selection: Range<Int>) -> Bool {
+        wrapping(mark, Array(text), selection) != nil
+    }
+
+    /// The pair around the selection, as (the whole span including both halves, the closing half) —
+    /// found either just outside the selection or inside it, because selecting the word and
+    /// selecting `**the word**` are the same intent.
+    private static func wrapping(
         _ mark: InlineMark, _ characters: [Character], _ selection: Range<Int>
-    ) -> Edit? {
+    ) -> (whole: Range<Int>, close: Range<Int>)? {
+        guard selection.lowerBound >= 0, selection.upperBound <= characters.count else { return nil }
         let open = Array(mark.open)
-        let from = selection.lowerBound - open.count
-        guard from >= 0, Array(characters[from..<selection.lowerBound]) == open,
-              let inner = closed(mark, characters, from: selection.upperBound, limit: characters.count),
-              inner.lowerBound == selection.upperBound
-        else { return nil }
-        return removing(open.count, inner, characters, from..<inner.upperBound)
+
+        let outside = selection.lowerBound - open.count
+        if outside >= 0, Array(characters[outside..<selection.lowerBound]) == open,
+           let close = closed(mark, characters, from: selection.upperBound, limit: characters.count),
+           close.lowerBound == selection.upperBound {
+            return (outside..<close.upperBound, close)
+        }
+
+        let selected = Array(characters[selection])
+        guard selected.count > open.count, selected.starts(with: open) else { return nil }
+        var probe = selection.lowerBound + open.count
+        while probe < selection.upperBound {
+            if let close = closed(mark, characters, from: probe, limit: selection.upperBound),
+               close.upperBound == selection.upperBound {
+                return (selection, close)
+            }
+            probe += 1
+        }
+        return nil
     }
 
     /// Where the closing half of the pair sits, starting the search at `from`.

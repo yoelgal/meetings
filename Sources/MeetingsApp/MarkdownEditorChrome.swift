@@ -68,6 +68,63 @@ struct SlashMenu: View {
     }
 }
 
+/// The bar that appears over a selection: the five inline marks, then the constructs a line can be
+/// turned into.
+///
+/// It is a second way to reach what ⌘B and the slash menu already do, for the hand that is on the
+/// mouse — so it calls exactly the same ``MarkdownEditing`` functions and defines nothing of its
+/// own. A button reads pressed straight from `isActive`, which is the same question `toggle` asks
+/// to decide which way it is going, so the button cannot say "on" while the shortcut turns it on.
+struct SelectionToolbar: View {
+    let text: String
+    let selection: Range<Int>
+    let toggle: (MarkdownEditing.InlineMark) -> Void
+    let turnInto: (MarkdownEditing.SlashCommand) -> Void
+
+    private static let marks: [(MarkdownEditing.InlineMark, String, String)] = [
+        (.bold, "bold", "Bold"),
+        (.italic, "italic", "Italic"),
+        (.strikethrough, "strikethrough", "Strikethrough"),
+        (.code, "chevron.left.forwardslash.chevron.right", "Code"),
+        (.link, "link", "Link"),
+    ]
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(Self.marks, id: \.0) { mark, symbol, name in
+                let on = MarkdownEditing.isActive(mark, in: text, selection: selection)
+                button(symbol, name, on: on) { toggle(mark) }
+            }
+            Divider().frame(height: 16).padding(.horizontal, 4)
+            ForEach(MarkdownEditing.blockCommands) { command in
+                button(command.symbol, command.title, on: false) { turnInto(command) }
+            }
+        }
+        .padding(4)
+        .background(.regularMaterial, in: .rect(cornerRadius: 9, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(.separator))
+        .shadow(color: .black.opacity(0.2), radius: 10, y: 4)
+    }
+
+    private func button(
+        _ symbol: String, _ name: String, on: Bool, action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .frame(width: 24, height: 22)
+                .background(
+                    on ? AnyShapeStyle(.tint) : AnyShapeStyle(.clear),
+                    in: .rect(cornerRadius: 5, style: .continuous)
+                )
+                .foregroundStyle(on ? AnyShapeStyle(.white) : AnyShapeStyle(.primary))
+                .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .help(name)
+        .accessibilityLabel(name)
+    }
+}
+
 /// ⌘B and its four siblings, published by whichever markdown editor holds focus and picked up by
 /// the Format menu.
 ///
