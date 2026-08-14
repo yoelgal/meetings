@@ -344,8 +344,14 @@ private struct ModelStep: View {
                     Button("Download now") { download() }
                         .buttonStyle(.bordered)
                         .controlSize(.large)
-                    Text("You can skip this and still record. The live transcript stays empty "
-                        + "until the models are downloaded.")
+                    // The old copy read "you can skip this and still record", which is true and
+                    // misleading in the same breath. Recording works; nothing downstream of it does.
+                    // No transcript means no search, and no summary, because there is nothing for an
+                    // agent to write one from. Someone deciding whether to wait for 1 GB should be
+                    // told what they are trading, not reassured.
+                    Text("Without them you get audio and nothing else: no transcript, no search, "
+                        + "and no write-up, since there is nothing for your agent to read. You can "
+                        + "download later from Settings.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -357,7 +363,16 @@ private struct ModelStep: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(.quaternary.opacity(0.4), in: .rect(cornerRadius: 10, style: .continuous))
         }
-        .task { ready = await model.transcription.modelsReady() }
+        .task {
+            ready = await model.transcription.modelsReady()
+            // Leaving this step tears the view down and takes `downloading` and `progress` with it,
+            // while the download itself carries on. Coming back therefore offered a Download button
+            // for a download already running, and pressing it used to start a second one.
+            //
+            // Rejoining is now the same call: `prepareModels` attaches to the download in flight
+            // rather than starting one, so this needs no separate resume path.
+            if await model.transcription.isPreparingModels { download() }
+        }
     }
 
     private func download() {

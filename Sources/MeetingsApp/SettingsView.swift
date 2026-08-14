@@ -603,6 +603,10 @@ private struct TranscriptionSettings: View {
             remoteModel = loadSetting(model.store, .transcribeRemoteModel)
             remoteKeyRef = loadSetting(model.store, .transcribeRemoteKeyRef)
             modelsReady = await model.transcription.modelsReady()
+            // Same reason as the wizard's step: this pane can be opened, closed and reopened while a
+            // download runs, and its `downloading` flag dies with it. `prepareModels` joins the one
+            // in flight rather than starting another, so rejoining is just calling it again.
+            if await model.transcription.isPreparingModels { download() }
         }
     }
 

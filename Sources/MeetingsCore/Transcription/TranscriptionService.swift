@@ -12,6 +12,14 @@ public actor TranscriptionService {
     private var engine: TranscriptionEngine?
     private let audioRoot: URL?
 
+    /// The one in-flight model download, if any, with an id so a joiner can tell whether the slot it
+    /// is clearing is still the one it waited on. See ``prepareModels(progress:)``.
+    private var preparation: (id: UUID, task: Task<Void, Error>)?
+    /// Every caller currently watching that download. A dictionary rather than an array so a caller
+    /// that goes away removes exactly its own closure.
+    private var progressObservers: [UUID: @Sendable (Double) -> Void] = [:]
+    private var lastProgress: Double = 0
+
     private var pending: [String] = []
     private var running: String?
     private var worker: Task<Void, Never>?
@@ -50,13 +58,72 @@ public actor TranscriptionService {
     /// a network fetch between pressing record and capturing the room — which means a live model
     /// that was never fetched in advance is a live transcript that silently never appears. Onboarding
     /// is the only honest place to pay for it.
+    ///
+    /// Calling this while a download is already running **joins** that download. It does not start a
+    /// second one.
+    ///
+    /// It used to start a second one, and the third and fourth presses started those too. Measured on
+    /// a real install: three write file descriptors open on the same
+    /// `Encoder.mlmodelc/weights/weight.bin.partial`, four connections to the CDN, and whichever
+    /// writer finished last renaming a file the other two were still writing into. The visible
+    /// symptom was a progress bar going backwards — 39% then 6% — because the bar was being driven by
+    /// a different download each time, not because one had regressed. The invisible symptom is the
+    /// one that matters: a model file interleaved from three streams can be the right size and still
+    /// be garbage, and it fails later as a transcriber that loads and emits nonsense.
+    ///
+    /// The guard is here rather than in the button that was pressed twice, because the button is not
+    /// the only caller: Settings has one, and the batch pass prepares models on demand too.
     public func prepareModels(progress: @Sendable @escaping (Double) -> Void) async throws {
+        let observer = UUID()
+        progressObservers[observer] = progress
+        // A joiner is told where the download actually is before it waits, so arriving at 40% does
+        // not draw an empty bar until the next tick.
+        progress(lastProgress)
+        defer { progressObservers[observer] = nil }
+
+        if preparation == nil {
+            lastProgress = 0
+            let id = UUID()
+            preparation = (id, Task { try await self.runPreparation() })
+        }
+        guard let current = preparation else { return }
+
+        do {
+            try await current.task.value
+        } catch {
+            // Compared by id, not by clearing blindly: joiners resume one at a time, and a later one
+            // clearing the slot after a *new* download had claimed it would untrack that download and
+            // let the next press start yet another.
+            if preparation?.id == current.id { preparation = nil }
+            throw error
+        }
+        if preparation?.id == current.id { preparation = nil }
+    }
+
+    private func runPreparation() async throws {
         // The batch model is the larger of the two, and the one a meeting cannot be written up
         // without, so it goes first and takes the bigger share of the bar.
-        try await resolvedEngine().prepare(progress: { progress($0 * 0.6) })
-        guard !FluidAudioStreamingTranscriber.modelsAreCached() else { return progress(1) }
-        try await FluidAudioStreamingTranscriber.prepareModels(progress: { progress(0.6 + $0 * 0.4) })
+        try await resolvedEngine().prepare(progress: { [weak self] value in
+            Task { await self?.publish(value * 0.6) }
+        })
+        guard !FluidAudioStreamingTranscriber.modelsAreCached() else { return publish(1) }
+        try await FluidAudioStreamingTranscriber.prepareModels(progress: { [weak self] value in
+            Task { await self?.publish(0.6 + value * 0.4) }
+        })
+        publish(1)
     }
+
+    /// `max`, not assignment. The engines report progress from arbitrary executors and each hop onto
+    /// this actor is its own task, so two ticks can land out of order — and a bar that jitters
+    /// backwards is exactly the symptom that made this look like a restart in the first place.
+    private func publish(_ value: Double) {
+        lastProgress = max(lastProgress, value)
+        for observer in progressObservers.values { observer(lastProgress) }
+    }
+
+    /// Whether a download is running, so a view that was destroyed and rebuilt can rejoin it rather
+    /// than offering a button that starts one.
+    public var isPreparingModels: Bool { preparation != nil }
 
     /// Cheap, synchronous-ish check used by onboarding and `meetings status`. No download.
     ///
