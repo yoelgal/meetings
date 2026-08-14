@@ -541,7 +541,7 @@ struct LiveMarkdownEditor: View {
             SelectionToolbar(text: text, selection: selection) { mark in
                 toggle(mark)
             } turnInto: { command in
-                handle.apply(MarkdownEditing.applyBlock(command, in: text, replacing: selection))
+                handle.apply(MarkdownEditing.applyBlock(command, in: text, over: selection))
             }
             .fixedSize()
             .floating(over: anchor, in: width)

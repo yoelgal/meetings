@@ -862,8 +862,12 @@ import Testing
         #expect(chrome.contains("MarkdownEditing.blockCommands"),
                 "the turn-into buttons are the commands MeetingsCore defines")
         let pane = try Self.source("PreNotesEditor.swift")
-        #expect(pane.contains("MarkdownEditing.applyBlock(command, in: text, replacing: selection)"),
+        #expect(pane.contains("MarkdownEditing.applyBlock(command, in: text, over: selection)"),
                 "the toolbar's block buttons go through the one transform the slash menu uses")
+        // `over:` rather than `replacing:`: the toolbar hands over the words somebody highlighted,
+        // and the transform that read them as a span to swallow deleted them.
+        #expect(!pane.contains("applyBlock(command, in: text, replacing:"),
+                "a block marker applies to the line, and never eats the selection it was asked for")
 
         // The formatting shortcuts are menu items, because the main menu is the one thing that
         // outranks a focused NSTextView for a key equivalent.
