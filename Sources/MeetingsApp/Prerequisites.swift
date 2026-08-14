@@ -16,6 +16,9 @@ struct Prerequisite: Identifiable {
         /// Settings owns the download — it has the progress bar and the cancel — so send them there
         /// rather than growing a second copy of it everywhere a model turns out to be missing.
         case downloadModels
+        /// The remote engine's fields live in the same pane as the download, and there is nothing
+        /// this app can press on the user's behalf to fix a missing API key.
+        case openTranscriptionSettings
         case installCLI
     }
 
@@ -29,7 +32,7 @@ struct Prerequisite: Identifiable {
 enum Prerequisites {
     /// What recording needs. Order is worst-first, and the mic is worst: without it there is no
     /// recording at all, where the other two each cost part of one.
-    static func forRecording(_ transcription: TranscriptionService) async -> [Prerequisite] {
+    static func forRecording(_ transcription: TranscriptionService, store: MeetingStore) async -> [Prerequisite] {
         var missing: [Prerequisite] = []
         if Permission.microphone.status != .granted {
             missing.append(Prerequisite(
@@ -48,18 +51,34 @@ enum Prerequisites {
                 fix: .grant(.systemAudio)
             ))
         }
-        missing.append(contentsOf: await forTranscription(transcription))
+        missing.append(contentsOf: await forTranscription(transcription, store: store))
         return missing
     }
 
-    /// What turning audio into text needs.
-    static func forTranscription(_ transcription: TranscriptionService) async -> [Prerequisite] {
+    /// What turning audio into text needs — which depends on where transcription is set to run.
+    ///
+    /// Engine-aware because it has to be: this notice gates the record button, and asking a user who
+    /// deliberately chose a remote endpoint to download a gigabyte of models they will never use
+    /// would be a permanent, unfixable warning on the one path where nothing is missing.
+    static func forTranscription(_ transcription: TranscriptionService, store: MeetingStore) async -> [Prerequisite] {
         guard await !transcription.modelsReady() else { return [] }
+        guard store.transcriptionEngine() == .local else {
+            return [Prerequisite(
+                id: "remote-endpoint",
+                title: "The transcription endpoint is not set up",
+                detail: "Transcription is set to a remote endpoint, and its address, model or API "
+                    + "key is missing. Recording works; nothing will be transcribed.",
+                fix: .openTranscriptionSettings
+            )]
+        }
+        let option = store.localTranscriptionOption()
         return [Prerequisite(
             id: "models",
             title: "The transcriber is not downloaded",
-            detail: "About 1 GB, once. Until it is here there is no live transcript, and the "
-                + "accurate pass has to fetch it before it can run.",
+            detail: "\(option.title): about \(option.downloadSizeText), once. Until it is here "
+                + "there is no live transcript"
+                + (option.runsSeparateBatchPass
+                    ? ", and the accurate pass has to fetch it before it can run." : "."),
             fix: .downloadModels
         )]
     }
@@ -146,6 +165,8 @@ struct PrerequisiteNotice: View {
             }
         case .downloadModels:
             SettingsLink { Text("Download…") }
+        case .openTranscriptionSettings:
+            SettingsLink { Text("Set up…") }
         case .installCLI:
             Button("Install") {
                 Task {

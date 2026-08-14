@@ -443,7 +443,8 @@ struct RootView: View {
             ImportSheet(
                 pending: pending,
                 folders: model.folders,
-                transcription: model.transcription
+                transcription: model.transcription,
+                store: model.store
             ) {
                 model.pendingImport = nil
             } confirm: { confirmed in
@@ -460,7 +461,8 @@ struct RootView: View {
             ImportSheet(
                 pending: pending,
                 folders: model.folders,
-                transcription: model.transcription
+                transcription: model.transcription,
+                store: model.store
             ) {} confirm: { _ in }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }

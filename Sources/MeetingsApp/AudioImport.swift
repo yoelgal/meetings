@@ -31,6 +31,9 @@ struct ImportSheet: View {
     @State var pending: PendingImport
     let folders: [Folder]
     let transcription: TranscriptionService
+    /// Needed alongside the service because what "the transcriber is missing" means depends on which
+    /// engine is selected, and the engine is a setting.
+    let store: MeetingStore
     let cancel: () -> Void
     let confirm: (PendingImport) -> Void
 
@@ -75,7 +78,7 @@ struct ImportSheet: View {
             if !prerequisites.isEmpty {
                 VStack(alignment: .leading, spacing: 8) {
                     PrerequisiteNotice(prerequisites: prerequisites) {
-                        Task { prerequisites = await Prerequisites.forTranscription(transcription) }
+                        Task { prerequisites = await Prerequisites.forTranscription(transcription, store: store) }
                     }
                     Text("Importing now still works. The meeting is created either way and stays at "
                         + "Transcribing while the download runs.")
@@ -100,7 +103,7 @@ struct ImportSheet: View {
         }
         .padding(24)
         .frame(width: 460)
-        .task { prerequisites = await Prerequisites.forTranscription(transcription) }
+        .task { prerequisites = await Prerequisites.forTranscription(transcription, store: store) }
     }
 }
 

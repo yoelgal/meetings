@@ -856,4 +856,84 @@ import Testing
         #expect(!chrome.contains("\"k\", [.command]"), "link insertion must not shadow ⌘K")
         #expect(app.contains("MarkdownFormattingCommands()"), "the Format menu has to be mounted")
     }
+
+    // MARK: - The transcription engine choice
+
+    /// The API key must never reach the settings table, in either surface that collects one.
+    ///
+    /// This is a shape check because the failure is a shape: `setSetting(.transcribeRemoteKeyRef,
+    /// key)` compiles perfectly and writes a secret into a plain SQLite row that `meetings config
+    /// get` will then print. The key may be handed to exactly one function.
+    @Test func theRemoteAPIKeyOnlyEverGoesToTheKeychain() throws {
+        let fields = try Self.source("RemoteTranscriptionFields.swift")
+        #expect(fields.contains("MeetingsKeychain.setSecret(key, account: keyRef)"))
+        // `key` is the secret and `keyRef` is the account name. The secret must not be written to
+        // any settings row, under any key.
+        for line in fields.components(separatedBy: "\n") where line.contains("setSetting(") {
+            #expect(!line.contains(", key)"),
+                    "the API key was written into the settings table: \(line.trimmingCharacters(in: .whitespaces))")
+        }
+        #expect(fields.contains("SecureField(\"API key\""), "the key field has to stay obscured")
+    }
+
+    /// Verification is offered, is the default, and is a real request rather than a shape check.
+    @Test func theRemoteEndpointIsVerifiedBeforeTheWizardWillMoveOn() throws {
+        let fields = try Self.source("RemoteTranscriptionFields.swift")
+        #expect(fields.contains("TranscriptionVerify.remote(store: store)"),
+                "the button has to run the real check, not a local validation")
+        // Verifying has to happen before the key can be judged: a key typed and not submitted is not
+        // in the Keychain, and the check would report it missing while it sits on screen.
+        #expect(fields.contains("saveKey()"))
+        #expect(fields.contains("uploaded"),
+                "the pane has to say plainly that audio leaves the machine")
+
+        let wizard = try Self.source("OnboardingView.swift")
+        #expect(wizard.contains("remoteUnverified"), "the wizard has to know when nothing is proven")
+        #expect(wizard.contains("Verify and continue"), "Continue has to become the verify action")
+        #expect(wizard.contains("Continue without verifying"),
+                "an unreachable endpoint still needs a way past, or the wizard is a trap")
+    }
+
+    /// Every gate that used to assume models on disk. Each of these would, left alone, tell a
+    /// correctly configured cloud user that recording was broken.
+    @Test func everyModelPresenceGateIsEngineAware() throws {
+        let prerequisites = try Self.source("Prerequisites.swift")
+        #expect(prerequisites.contains("store.transcriptionEngine()"),
+                "the recording blocker has to ask which engine before demanding a download")
+        #expect(prerequisites.contains("openTranscriptionSettings"),
+                "a misconfigured endpoint needs its own fix, not a Download button")
+
+        // The wizard and Settings both drive the download through the service, which is where the
+        // engine-awareness lives. A view calling the model statics directly would bypass it.
+        for name in ["OnboardingView.swift", "SettingsView.swift"] {
+            let source = try Self.source(name)
+            #expect(!source.contains("FluidAudioStreamingTranscriber.prepareModels"),
+                    "\(name) must download through TranscriptionService, which knows about the engine")
+        }
+    }
+
+    /// Switching engine has to drop the engine the service cached, or the change takes effect next
+    /// launch and not before — which reads exactly like the setting having been ignored.
+    @Test func changingTheEngineInvalidatesTheCachedOne() throws {
+        for name in ["OnboardingView.swift", "SettingsView.swift"] {
+            let source = try Self.source(name)
+            #expect(source.contains("forgetResolvedEngine()"),
+                    "\(name) changes the engine setting without dropping the resolved engine")
+        }
+    }
+
+    /// The picker is data, not branches. A new tier is an element of
+    /// `LocalTranscriptionOption.all`; if a view names an option by id, adding one means editing
+    /// the view, which is the thing this design exists to avoid.
+    @Test func theModelPickerIsDrivenByTheCatalogueAndNotByIdentity() throws {
+        for name in ["OnboardingView.swift", "SettingsView.swift"] {
+            let source = try Self.source(name)
+            #expect(source.contains("LocalTranscriptionOption.all"),
+                    "\(name) has to render the catalogue")
+            for id in LocalTranscriptionOption.all.map(\.id) {
+                #expect(!source.contains("\"\(id)\""),
+                        "\(name) hardcodes the option id \(id); the list has to stay data-driven")
+            }
+        }
+    }
 }
