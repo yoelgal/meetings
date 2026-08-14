@@ -25,14 +25,22 @@ public struct SpeechFixture: Sendable {
     /// whether the decoder keeps up, which a quarter of a minute answers as well as a minute does.
     /// Long enough to leave the warm-up behind and produce several segments; short enough that two
     /// passes over two channels fit in the budget.
+    ///
+    /// "Torch zero" rather than this repo's usual "Torch0", which `say` pronounces identically and no
+    /// recogniser will ever write back: the scorer splits on non-alphanumerics, so `torch0` is one
+    /// reference word against two heard ones and costs two edits every time it appears, in every
+    /// model, forever. Over 67 reference words that alone was five points of word error that said
+    /// nothing about the decoder. What is left wrong here — ptychography, Mateus — is the fixture
+    /// being hard on purpose, and it is why this number is not comparable to a longer run's: see
+    /// ``FitMeasurement/wordErrorPercent``.
     public static let micScript = """
         Sofia, can you confirm the ptychography rig is free on Thursday? \
-        I want to run the Torch0 calibration before the Airbus review on Friday morning. \
+        I want to run the Torch zero calibration before the Airbus review on Friday morning. \
         Mateus said the alignment drifted again, and nobody has looked at it since.
         """
 
     public static let systemScript = """
-        The rig is booked for Torch0 until Thursday afternoon. \
+        The rig is booked for Torch zero until Thursday afternoon. \
         Mateus will hand the alignment notes over on Friday morning. \
         Nothing else is scheduled for the interferometry bench that week.
         """

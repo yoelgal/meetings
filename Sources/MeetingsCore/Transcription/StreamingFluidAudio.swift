@@ -52,9 +52,10 @@ public actor FluidAudioStreamingTranscriber: StreamingTranscriber {
     /// every live segment on the slower channel would land early by the padding's length.
     private var originMs: Int?
     private var fedSamples = 0
-    /// Silence fed to warm the model up, discounted out of every timestamp so the recording's clock
-    /// and the recogniser's stay the same clock.
-    private var warmUpMs = 0
+    /// Silence fed into the recogniser that is not part of the recording, discounted out of every
+    /// timestamp so the recording's clock and the recogniser's stay the same clock. Only the padding
+    /// over a dropped capture buffer ends up here; the warm-up is reset away rather than counted.
+    private var injectedMs = 0
     private var partialWord = ""
     private var partialWordStartMs = 0
     private var lastTokenMs = 0
@@ -152,10 +153,34 @@ public actor FluidAudioStreamingTranscriber: StreamingTranscriber {
         // one chunk of silence, means the opening sentence of the meeting is not what pays for it.
         await backend.injectSilence(0.7)
         fedSamples += 11_200
-        warmUpMs = 700
+        injectedMs = 700
         try? await backend.processBuffered()
         // Silence decodes to nothing, but if it ever did, it is not part of the meeting.
         ingested = await backend.tokens().count
+
+        // On Nemotron the warm-up is then thrown away rather than left in front of the meeting.
+        //
+        // The compiled program lives in the ANE and stays there; `reset` only clears the encoder
+        // caches, the decoder state, the sample clock and the token accumulator. What that buys is a
+        // meeting decoded exactly as a recogniser that had never seen anything would decode it — same
+        // encoder state, and the chunk grid starting on the meeting's first sample rather than 700 ms
+        // before it, which matters because this backend slices fixed 560 ms chunks from the first
+        // sample it is ever handed. Leaving the silence in place did neither, and it is the whole of
+        // why the live path was worse than the model: measured on the 54.5 s fixture, same audio,
+        // same checkpoint, the warm-up the only difference, 2.9% word error against 4.0%. The
+        // transcript assembly, which was the suspect, costs nothing — with this it agrees with
+        // `finishWithTokenTimings()` word for word.
+        //
+        // Not done for EOU, which is measured rather than assumed: the same fixture scores 4.6% with
+        // the warm-up left in and 8.6% after `reset()`. Its `reset` does not restore what loading
+        // gave it — driven cold from a fresh load it scores 4.6% too — so resetting it would be
+        // trading four points of accuracy for symmetry.
+        if variant.engineFamily == .nemotron {
+            await backend.reset()
+            fedSamples = 0
+            injectedMs = 0
+            ingested = 0
+        }
         started = true
     }
 
@@ -165,11 +190,21 @@ public actor FluidAudioStreamingTranscriber: StreamingTranscriber {
 
         // The recogniser's clock counts samples it was given, so a buffer the writer dropped would
         // pull every later timestamp earlier by its length. Silence keeps the two clocks equal.
+        //
+        // Rounded up to a whole chunk on a backend that decodes fixed chunks: patching a 137 ms hole
+        // with 137 ms of silence moves every chunk boundary for the rest of the meeting 137 ms into
+        // the audio, and a misplaced chunk grid is worth about a point of word error. The rounding is
+        // handed to `injectedMs`, which every timestamp is already measured against, so the extra
+        // silence moves the grid without moving the clock.
         let expected = fedMs
         if atMs - expected >= 100 {
-            let gap = Double(atMs - expected) / 1000
-            await backend.injectSilence(gap)
-            fedSamples += Int(gap * 16_000)
+            let gap = atMs - expected
+            let padded = variant.engineFamily == .nemotron
+                ? (gap + chunkStepMs - 1) / chunkStepMs * chunkStepMs
+                : gap
+            await backend.injectSilence(Double(padded) / 1000)
+            fedSamples += padded * 16
+            injectedMs += padded - gap
         }
 
         if let buffer = Self.buffer(from: samples) {
@@ -201,7 +236,7 @@ public actor FluidAudioStreamingTranscriber: StreamingTranscriber {
 
     // MARK: -
 
-    private var fedMs: Int { (originMs ?? 0) + fedSamples * 1000 / 16_000 - warmUpMs }
+    private var fedMs: Int { (originMs ?? 0) + fedSamples * 1000 / 16_000 - injectedMs }
 
     /// How far the recogniser has actually decoded to, derived the way it advances: it fills a
     /// 10 080-sample window, then steps 5 120 samples per chunk, emitting the first 320 ms of each
@@ -219,7 +254,7 @@ public actor FluidAudioStreamingTranscriber: StreamingTranscriber {
             // far it has decoded is simply how many whole chunks it has been handed.
             chunks = fedSamples / (chunkStepMs * 16)
         }
-        return (originMs ?? 0) + chunks * chunkStepMs - warmUpMs
+        return (originMs ?? 0) + chunks * chunkStepMs - injectedMs
     }
 
     /// How far `decodedMs` advances per step, which is also the shortest honest wait before a word
@@ -242,7 +277,7 @@ public actor FluidAudioStreamingTranscriber: StreamingTranscriber {
         if available > ingested {
             for index in ingested..<available {
                 let piece = decoded[index].piece
-                let ms = (originMs ?? 0) + decoded[index].ms - warmUpMs
+                let ms = (originMs ?? 0) + decoded[index].ms - injectedMs
                 // SentencePiece: "▁" marks a word start and is not a character of the word.
                 // `Tokenizer.decode` does this substitution; `getRawTokenStrings` does not.
                 if piece.hasPrefix("\u{2581}") {
@@ -381,6 +416,20 @@ private enum Backend: Sendable {
             return await manager.getTokenTimings().map {
                 ($0.token, Int(($0.startTime * 1000).rounded()))
             }
+        }
+    }
+
+    /// Clears the encoder caches, the decoder state, the token accumulator and the sample clock every
+    /// timestamp is derived from, without unloading anything — the compiled ANE program is not part
+    /// of what goes, which is the whole point of warming up before calling this.
+    ///
+    /// Only ever called before the meeting's first sample, and only on Nemotron. Mid-meeting it would
+    /// restart the timeline at zero under notes already anchored, and on EOU it does not restore what
+    /// loading gave it: see ``FluidAudioStreamingTranscriber/start(channel:)`` for both numbers.
+    func reset() async {
+        switch self {
+        case .eou(let manager): await manager.reset()
+        case .nemotron(let manager): await manager.reset()
         }
     }
 
