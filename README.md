@@ -6,6 +6,22 @@
 
 **An app for you. A CLI for your agent.**
 
+```sh
+curl -fsSL https://raw.githubusercontent.com/yoelgal/meetings/main/install.sh | bash
+```
+
+That clones the repo, sets up code signing, builds, installs the app and the `meetings` command line
+tool, installs the agent skill, and opens the app. A few minutes, mostly compiling. Re-run it any
+time to update.
+
+It needs macOS 26 and Xcode 26, and it asks one question, about the signing certificate. Say yes: it
+is what stops macOS re-asking for the microphone after every update. Read it first if you would
+rather ([install.sh](install.sh)), or do it by hand:
+
+```sh
+git clone https://github.com/yoelgal/meetings.git && cd meetings && ./install.sh
+```
+
 A local-first meeting recorder and note-taker for macOS. It records your microphone and your Mac's
 audio as two separate tracks, which is what tells you apart from everyone else in the transcript. It
 transcribes them on device. Every note you type is anchored to the moment in the conversation you
@@ -23,20 +39,19 @@ notes you took, not by someone else's template.
   `~/Library/Application Support/FluidAudio/Models`. Nothing is bundled in the app.
 - About 2 GB for the build itself, in `.build/`. Delete it any time.
 
-## Build
+## Building it yourself
+
+`install.sh` is a wrapper around these. Use them directly if you are working on the code.
 
 ```sh
-./scripts/build-app.sh
-mv dist/Meetings.app /Applications/
-open /Applications/Meetings.app
+./scripts/build-app.sh        # build and assemble dist/Meetings.app
+swift build                   # just the binaries, faster while iterating
+scripts/verify.sh             # build, tests, assembly, CLI smoke run
 ```
 
-The script fetches three dependencies (GRDB, swift-argument-parser, FluidAudio), builds in release
-mode, assembles the bundle and signs it. A few minutes the first time, under a minute after that.
-
-Two other scripts are worth knowing. `swift build` alone compiles the binaries without assembling an
-app, which is faster while you are changing code. `scripts/verify.sh` runs the build, the test
-suite, the app assembly and a smoke test of the shipped command line tool.
+`build-app.sh` fetches three dependencies (GRDB, swift-argument-parser, FluidAudio), builds in
+release mode, assembles the bundle and signs it. A few minutes the first time, under a minute after
+that. It stamps the version from the git tag, so a build off an untagged branch reports `0.0.0`.
 
 ## Updating
 
@@ -45,21 +60,17 @@ sidebar says so and links to the release notes. Turn it off in Settings › Gene
 
 It tells you rather than installing it, because there is no binary to install. You built this copy
 from source and signed it with a certificate from your own keychain, so a downloaded replacement
-would be a different app as far as macOS is concerned, and your microphone and screen recording
-grants would reset. To update:
+would be a different app as far as macOS is concerned. To update, re-run the install command at the
+top of this file, or from a checkout:
 
 ```sh
-git pull
-./scripts/build-app.sh
-rm -rf /Applications/Meetings.app
-mv dist/Meetings.app /Applications/
+git pull && ./install.sh
 ```
 
-`rm -rf` first because `mv` will not overwrite a bundle. Your meetings are untouched by any of this.
-They live in a separate directory, described below.
+Your meetings are untouched by any of this. They live in a separate directory, described below.
 
 Updating does not re-ask for the microphone and screen recording, as long as you have a stable
-signing certificate. The first build offers to create one. If you skipped it, run
+signing certificate. The installer offers to create one. If you declined, run
 `scripts/make-signing-identity.sh` and you will re-grant once more and then never again. The next
 section explains why.
 
@@ -68,18 +79,24 @@ tag, so a build off an untagged branch reports `0.0.0` and will always see a rel
 
 ## The `meetings` command line tool
 
-The tool is built into the app bundle, so it updates with the app. Settings › Command line has an
-Install button that links it into `/usr/local/bin`. By hand:
+The installer links this for you. It is built into the app bundle, so it updates with the app.
+
+```sh
+meetings status
+```
+
+If it is not on your PATH, Settings › Command line has an Install button, or link it by hand:
 
 ```sh
 sudo ln -s /Applications/Meetings.app/Contents/Helpers/meetings /usr/local/bin/meetings
-meetings status
 ```
 
 `meetings --help` lists the commands. Every one takes `--json`, and the exit codes are in the help
 output because agents branch on them.
 
 ## The agent skill
+
+The installer does this too, and the app re-runs it on every launch so it cannot go stale. By hand:
 
 ```sh
 meetings skill install
