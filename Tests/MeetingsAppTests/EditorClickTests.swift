@@ -1,3 +1,4 @@
+import Foundation
 import AppKit
 import MeetingsCore
 import Testing
@@ -35,7 +36,7 @@ let clickTargets = [
 /// **Serialized.** These share one `NSApplication` and draw real views; running them concurrently
 /// is asking two windows to be laid out from two threads.
 @MainActor
-@Suite(.serialized) struct EditorClickTests {
+@Suite(.serialized, .enabled(if: ProcessInfo.processInfo.environment["MEETINGS_LIVE_EDITOR"] == "1")) struct EditorClickTests {
     /// **Where the text is must not depend on where the selection is.** This is the click bug's
     /// root cause, stated as an invariant.
     ///
@@ -156,7 +157,7 @@ let clickTargets = [
 
 /// The checkbox is the system control, and it is still there when the row is selected.
 @MainActor
-@Suite(.serialized) struct EditorCheckboxTests {
+@Suite(.serialized, .enabled(if: ProcessInfo.processInfo.environment["MEETINGS_LIVE_EDITOR"] == "1")) struct EditorCheckboxTests {
     /// The one thing that must never regress: this view is on TextKit 2. The overlay and
     /// `viewWillDraw()` are both new, and the last time drawing was touched here — an
     /// `override func draw(_:)` — it silently dropped the whole view to TextKit 1 and took the

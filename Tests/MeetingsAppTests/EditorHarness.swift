@@ -8,10 +8,23 @@ import Testing
 /// A real `MarkdownNSTextView`, wired the way ``MarkdownTextView/makeNSView(context:)`` wires it,
 /// in a window nobody can see.
 ///
-/// **It never takes focus and it never makes a sound.** The process sets `.prohibited` as its
-/// activation policy — a process that cannot activate cannot pull the frontmost window away from
-/// whoever is using the Mac — and the window is parked at (-10000, -10000) and only ever
-/// `orderBack`ed. `swift test` therefore drives a real text view with nothing appearing on screen.
+/// **It never takes focus, never makes a sound, and is never ordered onto the screen.**
+///
+/// That last clause was learned the hard way. The window used to be `orderBack(nil)`ed, on the
+/// reasoning that ordering *back* is not ordering *front* and therefore draws nothing. It is not:
+/// `orderBack` puts a window on the screen like any other, merely behind its siblings, and a
+/// `.titled` window sized to a full document is then a large panel sitting in the operator's way. It
+/// appeared over his work twice. `.prohibited` did not save it either — an activation policy governs
+/// *activation*, not visibility, so it stopped the focus being stolen and did nothing about the
+/// window being drawn.
+///
+/// Nothing here needs an on-screen window. `makeFirstResponder` does not, TextKit 2 layout does not,
+/// and `cacheDisplay(in:to:)` does not. So the window is borderless, fully transparent, out of the
+/// windows menu, parked at (-10000, -10000), and never ordered anywhere.
+///
+/// The suites that use it are gated behind `MEETINGS_LIVE_EDITOR=1` as well, so an ordinary
+/// `swift test` never constructs one at all — the same treatment `MEETINGS_LIVE_STREAM` and
+/// `MEETINGS_LIVE_FIT` already get for tests that are not ordinary unit tests.
 ///
 /// **No synthesised mouse events.** They were tried, and twice over they were the wrong tool:
 /// `NSTextView.mouseDown` runs a nested `nextEventMatchingMask` loop that pumps the run loop, and
@@ -28,6 +41,9 @@ final class EditorHarness {
     let view: MarkdownNSTextView
     let coordinator: MarkdownTextView.Coordinator
     private let store = Store()
+
+    /// No path — success, failure or a thrown error — may leave a window behind.
+    deinit { window.orderOut(nil) }
 
     /// The document as the bindings hold it — what autosave would write.
     var text: String { store.text }
@@ -63,8 +79,13 @@ final class EditorHarness {
         coordinator = MarkdownTextView.Coordinator(representable)
         window = NSWindow(
             contentRect: NSRect(x: -10000, y: -10000, width: Self.width + 60, height: 900),
-            styleMask: [.titled], backing: .buffered, defer: false
+            styleMask: [.borderless], backing: .buffered, defer: false
         )
+        // Belt and braces behind "never ordered": a window that is never on screen does not need to
+        // be invisible, but if some future call orders it anyway, it has nothing to draw and no way
+        // into the windows menu.
+        window.alphaValue = 0
+        window.isExcludedFromWindowsMenu = true
         view = MarkdownNSTextView(frame: NSRect(x: 0, y: 0, width: Self.width, height: 800))
         view.isVerticallyResizable = true
         view.isHorizontallyResizable = false
@@ -89,7 +110,8 @@ final class EditorHarness {
         coordinator.attach(view)
 
         window.contentView?.addSubview(view)
-        window.orderBack(nil)
+        // Deliberately not ordered — not front, not back. See the type's documentation: `orderBack`
+        // is still on screen, and it landed on the operator's display.
         let height = view.markdownDocumentHeight(atWidth: Self.width)
         view.frame = NSRect(x: 0, y: 0, width: Self.width, height: height)
         _ = view.markdownDocumentHeight(atWidth: Self.width)
