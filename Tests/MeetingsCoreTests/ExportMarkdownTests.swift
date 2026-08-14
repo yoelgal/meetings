@@ -38,8 +38,13 @@ import Testing
 
         let summary = try String(contentsOf: out.appendingPathComponent("summary.md"), encoding: .utf8)
         #expect(summary.contains("Ship Torch0 on Friday."))
-        #expect(summary.contains("- [ ] Send the ptychography numbers (Sofia, due end of week)"))
+        // The actions are in the write-up, so they are exported because the write-up is — and
+        // exactly once. The fixture's legacy `actions` column is still populated, the way the v6
+        // migration leaves a real store, and an export that still read it would print both twice.
+        #expect(summary.contains("- [ ] Send the ptychography numbers"))
         #expect(summary.contains("- [x] Book the follow-up"))
+        #expect(summary.components(separatedBy: "- [x] Book the follow-up").count == 2,
+                "the actions are written once, from the write-up, not once again from the column")
 
         let meta = try #require(FileManager.default.contents(atPath: out.appendingPathComponent("meta.json").path))
         let decoded = try #require(try JSONSerialization.jsonObject(with: meta) as? [String: Any])

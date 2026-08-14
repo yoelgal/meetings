@@ -219,19 +219,33 @@ A `cal:` ref is fine here. The write materialises the row.
 6. **Report what did not happen.** Every pre-note point that never came up in the meeting goes in a
    final section headed `Not covered`, listed verbatim. This is not optional. If everything was
    covered, say so in one line.
-7. Write it back, then the actions:
+7. Write it back. **The actions go in the write-up**, as GFM task list items:
+   ```markdown
+   ## Actions
+
+   - [ ] anchor live notes to system audio
+   - [x] ship the gutter
+   ```
    ```bash
    meetings summary set <ref> --file /tmp/writeup.md
-   meetings actions set <ref> --file /tmp/actions.json
    ```
    `summary set` replaces the write-up, and the one already there may be the user's own writing,
    because they can edit it in the app. Read it from step 2 and revise it rather than starting
    again: keep their wording where it still holds and change only what is wrong or missing.
 
-   Actions are a JSON array of `{"text":…,"owner":…,"due":…,"done":false}`; `owner` and `due` may be
-   null. `due` is free text, stored and displayed exactly as written, so `2026-08-16` is worth more
-   to the user than `next Tuesday`. `actions set` replaces the list, so include the ones already
-   there that still stand. Read them from `meetings show <ref> --json` first.
+   A `- [ ]` line **is** an action. There is no separate actions store: the user ticks the checkbox
+   in the app, which changes the `[ ]` to `[x]` in this markdown, and `meetings actions list` reads
+   the task items back out. Adding, editing and deleting an action is editing the document.
+
+   `meetings actions set <ref> --file /tmp/actions.json` still exists and is the right tool when you
+   only want to change the list. It takes a JSON array of
+   `{"text":…,"owner":null,"due":null,"done":false}`, rewrites the `- [ ]` lines of the write-up and
+   leaves every other line of it alone. It replaces the whole list, so include the ones already
+   there that still stand — read them from `meetings show <ref> --json` first.
+
+   `owner` and `due` are still in the JSON shape and are still accepted, but **nothing stores them
+   yet**: the markdown has nowhere to put them. They come back null. If who owes an action matters,
+   write it into the text — `- [ ] Sofia: confirm the March timeline`.
 8. Tell the user the headline: decisions, who owes what, and anything in `Not covered`.
 
 A summary shape to adapt, not to pad:
@@ -257,7 +271,8 @@ A summary shape to adapt, not to pad:
 4. Answer with the meeting title, its date, and a quoted line if the exact wording matters. Never
    read a whole transcript to answer a narrow question.
 
-`meetings actions list --open` across all meetings answers "what do I owe anyone".
+`meetings actions list --open` across all meetings answers "what do I owe anyone". It reads the
+task list out of every write-up, so an action exists exactly when a `- [ ]` line does.
 
 ## Workflow 4: migrating a backlog
 
@@ -323,8 +338,8 @@ meetings prenotes set <ref> [<text>|--file <path>|-]     # replace
 meetings note add <ref> <text> [--at <offset>]           # live notes, anchored to the transcript
 meetings note list <ref>
 meetings summary set <ref> [--file <path>|-]
-meetings actions set <ref> [--file <path>|-]
-meetings actions list [--open] [--folder <name>]
+meetings actions set <ref> [--file <path>|-]              # rewrites the `- [ ]` lines of the write-up
+meetings actions list [--open] [--folder <name>]          # the task items, across every meeting
 meetings folder list|create|delete <name> [--force]       # --force: delete a folder that holds meetings
 meetings move <ref> --folder <name>
 meetings delete <ref> [--yes]                             # no undo; without --yes it only reports

@@ -2,13 +2,15 @@ import ArgumentParser
 import Foundation
 import MeetingsCore
 
-/// Actions are a structured field rather than a heading inside the summary, and that is the whole
-/// point: `meetings actions list --open` answers "what do I owe anyone" without parsing prose
-///.
+/// Actions are **task list items inside the write-up** — `- [ ] anchor live notes` — and these two
+/// commands are the structured view of them. Nothing here is a second store: `set` rewrites the task
+/// items inside the summary markdown and leaves the rest of the write-up exactly as it found it, and
+/// `list` reads the task items back out. One record, so the window and the command line cannot
+/// disagree about what is owed.
 struct ActionsCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "actions",
-        abstract: "Action items, as data rather than as prose.",
+        abstract: "The task list inside a write-up, as data.",
         subcommands: [ActionsSet.self, ActionsList.self],
         defaultSubcommand: ActionsList.self
     )
@@ -17,13 +19,18 @@ struct ActionsCommand: AsyncParsableCommand {
 struct ActionsSet: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "set",
-        abstract: "Replace a meeting's action items.",
+        abstract: "Replace the task list inside a meeting's write-up.",
         discussion: """
             Takes a JSON array of {text, owner?, due?, done?} as an argument, as --file <path>, \
-            or as - to read stdin. text is required, done defaults to false, and due is free text \
-            like "end of week".
+            or as - to read stdin. text is required and done defaults to false.
 
-            An empty array clears the list.
+            The actions are stored as GFM task list items in the write-up itself, so this rewrites \
+            the `- [ ]` lines of the summary and leaves every other line of it alone. With no task \
+            list there yet, one is appended under an "## Actions" heading. An empty array removes \
+            the task items and nothing else.
+
+            owner and due are accepted and echoed back in --json, but the markdown has nowhere to \
+            put them yet, so neither is stored. Write the owner into the text if it matters.
             """
     )
 
@@ -46,19 +53,27 @@ struct ActionsSet: AsyncParsableCommand {
             let context = try CLIContext.open()
             let (target, materialised) = try await context.writeTarget(ref)
 
+            // Through `setSummary`, so a write-up that comes into existence as nothing but its
+            // action list moves the meeting on exactly as any other write-up would.
             let updated = try context.store.updateMeeting(id: target.id) { meeting in
-                meeting.actions = actions.isEmpty ? nil : actions
+                meeting.setSummary(MarkdownActions.replace(actions, in: meeting.summary ?? ""))
             }
             let folder = try updated.folderID.flatMap { try context.store.folder(id: $0)?.name }
+            let stored = MarkdownActions.parse(updated.summary ?? "")
 
             if global.json {
                 var result = WriteResultJSON(updated, folder: folder, materialised: materialised)
-                result.actions = updated.actions ?? []
+                result.actions = stored
                 try Out.json(result)
                 return
             }
-            let open = actions.filter { !$0.done }.count
-            Out.line("\(actions.count) action\(actions.count == 1 ? "" : "s") on \(updated.id), "
+            // Said once, on the write that would have dropped them, rather than left for the user to
+            // notice missing from `actions list` a week later.
+            if actions.contains(where: { $0.owner != nil || $0.due != nil }) {
+                Out.note("owner and due are not stored yet — the write-up carries the text only.")
+            }
+            let open = stored.filter { !$0.done }.count
+            Out.line("\(stored.count) action\(stored.count == 1 ? "" : "s") on \(updated.id), "
                 + "\(open) open (\(updated.title))")
         }
     }
@@ -69,8 +84,10 @@ struct ActionsList: AsyncParsableCommand {
         commandName: "list",
         abstract: "Action items across every meeting.",
         discussion: """
-            Newest meeting first. Columns are ref, [x] or [ ], owner, due, then the text, so the \
-            ref is still the first field and the listing pipes into another command.
+            Read out of each write-up's task list. Newest meeting first. Columns are ref, [x] or \
+            [ ], owner, due, then the text, so the ref is still the first field and the listing \
+            pipes into another command. owner and due are always - for now: the markdown does not \
+            carry them.
             """
     )
 
@@ -91,12 +108,13 @@ struct ActionsList: AsyncParsableCommand {
                 ? try context.store.allMeetings()
                 : try context.store.meetings(folderID: scope?.id)
 
-            // ponytail: filtered in Swift over every meeting. A personal store holds thousands of
-            // rows, not millions; when it doesn't, this becomes a WHERE actions IS NOT NULL.
+            // ponytail: every summary is parsed in Swift. A personal store holds thousands of rows,
+            // not millions, and the parse is one pass per line; when that stops being true this
+            // becomes an FTS query for `- [` and a parse of the hits.
             var items: [ActionItemJSON] = []
             for meeting in meetings {
                 let folderName = meeting.folderID.flatMap { names[$0] }
-                for action in meeting.actions ?? [] where !open || !action.done {
+                for action in MarkdownActions.parse(meeting.summary ?? "") where !open || !action.done {
                     items.append(ActionItemJSON(action, meeting: meeting, folder: folderName))
                 }
             }

@@ -23,8 +23,7 @@ public enum MarkdownSyntax {
         /// mid-keystroke while somebody holds the key down.
         case heading(level: Int)
         /// `- x`, `* x`, `+ x`, `1. x`, `2) x`. Task items (`- [ ] x`) land here too: they are
-        /// list items, and the app has no behaviour to attach to the brackets — the actions
-        /// checklist under the write-up is the structured column, not a line of prose.
+        /// list items first, and what makes one an *action* is ``taskItem(_:)``.
         case bullet
         case quote
         case body
@@ -101,12 +100,78 @@ public enum MarkdownSyntax {
         guard end == characters.count || characters[end] == " " else { return nil }
         var marker = withTrailingSpace(end)
         // `- [ ]` and `- [x]`: the box is part of what marks the line, not part of the sentence.
+        //
+        // Deliberately looser than ``taskItem(_:)``, which answers the GFM question. This one is
+        // asked while somebody is typing: backspacing the space out of `- [ ] task` leaves
+        // `- [ ]task`, which is not a task item any more but is still five characters of marker
+        // that ought to go together — and an editor that eats them one at a time makes you press
+        // Delete four times to unmake a checkbox.
         let box = marker.upperBound
         if box + 2 < characters.count, characters[box] == "[", characters[box + 2] == "]",
            characters[box + 1] == " " || characters[box + 1] == "x" || characters[box + 1] == "X" {
             marker = marker.lowerBound..<withTrailingSpace(box + 3).upperBound
         }
         return marker
+    }
+
+    /// One **GFM task list item**: `- [ ] text`, `* [x] text`, `+ [ ] text`, `1. [ ] text`, at any
+    /// indentation, with the `x` in either case.
+    ///
+    /// Stricter than ``blockMarker(_:)`` on purpose, and strict in exactly the place the spec is:
+    /// the box has to be followed by whitespace or by the end of the line. `- [x]done` is a bullet
+    /// whose text happens to start with a bracket, and reading it as an action would put a checkbox
+    /// on somebody's prose.
+    public struct TaskItem: Equatable, Sendable {
+        /// `[x]` or `[X]` rather than `[ ]`.
+        public let done: Bool
+        /// The three characters of the box, as character offsets into the line. This is what a
+        /// checkbox is drawn over, and `box.lowerBound + 1` is the one character a tick changes.
+        public let box: Range<Int>
+        /// Where the item's own text begins — past the box and the whitespace after it.
+        public let textStart: Int
+
+        public init(done: Bool, box: Range<Int>, textStart: Int) {
+            self.done = done
+            self.box = box
+            self.textStart = textStart
+        }
+    }
+
+    public static func taskItem(_ line: some StringProtocol) -> TaskItem? {
+        let characters = Array(line)
+        let indent = characters.prefix { $0 == " " || $0 == "\t" }.count
+        let rest = characters[indent...]
+        guard let first = rest.first else { return nil }
+
+        var end: Int
+        if first == "-" || first == "*" || first == "+" {
+            end = indent + 1
+        } else {
+            let digits = rest.prefix(while: \.isNumber).count
+            guard digits > 0, digits <= 3, indent + digits < characters.count,
+                  characters[indent + digits] == "." || characters[indent + digits] == ")"
+            else { return nil }
+            end = indent + digits + 1
+        }
+        // The list marker's own space, then the box.
+        guard end < characters.count, characters[end] == " " else { return nil }
+        let box = end + 1
+        guard box + 2 < characters.count, characters[box] == "[", characters[box + 2] == "]"
+        else { return nil }
+        let done: Bool
+        switch characters[box + 1] {
+        case " ": done = false
+        case "x", "X": done = true
+        default: return nil
+        }
+        // GFM: whitespace after the box, or nothing at all — `- [ ]` on its own is the item you are
+        // half-way through typing, and it is already an unticked action.
+        let after = box + 3
+        guard after == characters.count || characters[after] == " " || characters[after] == "\t"
+        else { return nil }
+        var text = after
+        while text < characters.count, characters[text] == " " || characters[text] == "\t" { text += 1 }
+        return TaskItem(done: done, box: box..<(box + 3), textStart: text)
     }
 
     /// Where a line sits relative to the left edge, in **gutter columns**, as a hanging indent:

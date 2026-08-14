@@ -66,7 +66,20 @@ enum BundleFixture {
                 Attendee(name: "Sofia Nunes"),
             ],
             preNotes: "- ask about the ptychography run\n- budget?",
-            summary: "# Decisions\n\nShip Torch0 on Friday.",
+            // The write-up carries the actions, as task list items — and the legacy `actions` column
+            // is *also* populated, which is exactly the state the v6 migration leaves a real store
+            // in: the column is kept as a safety net and nothing reads it any more. Anything that
+            // still did would print this meeting's two actions twice.
+            summary: """
+                # Decisions
+
+                Ship Torch0 on Friday.
+
+                ## Actions
+
+                - [ ] Send the ptychography numbers
+                - [x] Book the follow-up
+                """,
             actions: [
                 Action(text: "Send the ptychography numbers", owner: "Sofia", due: "end of week", done: false),
                 Action(text: "Book the follow-up", done: true),

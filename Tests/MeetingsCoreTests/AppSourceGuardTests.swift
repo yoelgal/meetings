@@ -491,68 +491,59 @@ import Testing
         }
     }
 
-    /// A long action keeps its owner.
+    /// Actions are **task list items inside the write-up**, and the checklist that used to sit
+    /// under it is gone — with it, the two guards that used to live here.
     ///
-    /// Found in QA at 1180 pt: the fourth action — 83 characters — showed no owner at all while the
-    /// three shorter rows all showed "Yoel". `.fixedSize()` was already on the owner and it was not
-    /// enough, because it guarantees the text is *drawn* at full width and guarantees nothing about
-    /// there being room on screen to draw it in: the `TextField` beside it was the one view in the
-    /// row whose width was negotiated rather than stated.
+    /// `aLongActionKeepsItsOwner` pinned the layout of an `ActionRow`'s `TextField` against the
+    /// owner column beside it; there is no row and no owner column, and an action's text is a line
+    /// of markdown that wraps like every other line. `theActionsAreEditableInTheWriteUp…` pinned
+    /// `AppModel.saveActions` and its compare-and-set; ticking a box is an edit to the summary now,
+    /// and it goes through the write path that field already had.
     ///
-    /// So the negotiation is removed. The field takes exactly the width it is offered and no more,
-    /// and the owner is served first. Measured across 24 combinations — four real action texts at
-    /// container widths of 200, 260, 320, 400, 500 and 656 pt — the owner renders at its ideal
-    /// 24 pt in every one, and the sentence wraps into what is left.
-    @Test func aLongActionKeepsItsOwner() throws {
+    /// What replaces both is the invariant that actually matters: the chrome is gone, one edit path
+    /// remains, and the checkbox is a real control drawn over characters that never move.
+    @Test func theActionsAreTheDocumentAndTheChromeIsGone() throws {
+        // Comments stripped: the note left where the checklist used to be names every type it
+        // replaced, and a guard that trips on its own explanation is a guard nobody keeps.
         let detail = try Self.source("MeetingDetailView.swift")
-        let row = try #require(detail.range(of: "private struct ActionRow: View"))
-        let body = String(detail[row.upperBound...].prefix(4000))
-
-        #expect(body.contains("axis: .vertical") && body.contains(".lineLimit(1...4)"),
-                "the sentence is the part that gives — a single-line field stops drawing instead")
-        #expect(body.contains(".frame(maxWidth: .infinity, alignment: .leading)"), """
-            The field will take whatever it can get. Without an explicit width it is the row's \
-            only unstated one, and on the longest row that is what put the owner past the edge.
-            """)
-        let owner = try #require(body.range(of: "Text(detail)"))
-        let after = String(body[owner.upperBound...].prefix(900))
-        #expect(after.contains(".fixedSize()"), "owner and due never compress")
-        #expect(after.contains(".layoutPriority(1)"), """
-            Drawn at full size is not the same as drawn on screen. The owner has to be allocated \
-            its width before the sentence is, or a long enough sentence pushes it off the column.
-            """)
-    }
-
-    /// Actions are a checklist you can actually work, in the same block as the write-up they came
-    /// out of — and every one of tick, retype, add and delete writes the `actions` column the CLI
-    /// reads, through the one path that refuses to clobber a list somebody else rewrote.
-    @Test func theActionsAreEditableInTheWriteUpAndWriteBackToTheStore() throws {
-        let detail = try Self.source("MeetingDetailView.swift")
-        #expect(detail.contains("ActionChecklist(actions:"), "the checklist has to be drawn")
-        #expect(detail.contains(".toggleStyle(.checkbox)"),
-                "a glyph that looks like a control and is not one is the defect this replaced")
-
-        // Inside the write-up's own block, not in a section of its own further down: the mount has
-        // to come before the next section starts.
-        let summary = try #require(detail.range(of: "title: \"Summary\""))
-        let checklist = try #require(detail.range(of: "ActionChecklist(actions:", range: summary.upperBound..<detail.endIndex))
-        let preNotes = try #require(detail.range(of: "title: \"Pre-meeting notes\"", range: summary.upperBound..<detail.endIndex))
-        #expect(checklist.lowerBound < preNotes.lowerBound,
-                "the actions belong with the write-up, not in a disconnected list below it")
-
-        let model = try Self.source("AppModel.swift")
-        #expect(model.contains("func saveActions(meetingID: String, from previous: [Action], to next: [Action])"),
-                "one write path for all four edits, taking the list the window was showing")
-        let save = try #require(model.range(of: "func saveActions("))
-        let body = String(model[save.upperBound...].prefix(600))
-        #expect(body.contains("guard (meeting.actions ?? []) == previous"),
-                """
-                Without the compare, a tick against a list `meetings actions set` has since \
-                replaced puts back every row the agent removed and ticks whichever action moved \
-                into that position.
+            .components(separatedBy: "\n")
+            .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }
+            .joined(separator: "\n")
+        for vanished in ["struct ActionChecklist", "struct ActionRow", "Add an action",
+                         "Delete this action", "ActionChecklist(actions:"] {
+            #expect(!detail.contains(vanished), """
+                \(vanished) is chrome for a list that no longer exists. Adding an action is typing \
+                `- [ ] `, and deleting one is deleting the line.
                 """)
-        #expect(body.contains("next.isEmpty ? nil : next"),
-                "empty stores as NULL, the shape `meetings actions set` writes")
+        }
+
+        // And no second write path for them. `saveActions` and its compare-and-set existed because
+        // the `actions` column had two writers and no other guard; the summary has `SharedFieldEdit`.
+        let model = try Self.source("AppModel.swift")
+            .components(separatedBy: "\n")
+            .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }
+            .joined(separator: "\n")
+        #expect(!model.contains("func saveActions("), """
+            A second mechanism for the same two-writer problem is one more than can be reasoned \
+            about. A tick is an edit to the write-up, and SharedFieldEdit already decides what \
+            happens when somebody else wrote while the user was typing.
+            """)
+        #expect(model.contains("func saveSummary(meetingID: String, text: String)"),
+                "which leaves the one write path the write-up already had")
+
+        // The checkbox itself: a real control over the characters, never instead of them.
+        let editor = try Self.source("MarkdownTextView.swift")
+        #expect(editor.contains("MarkdownSyntax.taskItem("),
+                "what counts as a task list item is MeetingsCore's decision, where it is tested")
+        #expect(editor.contains("MarkdownEditing.toggleTask("), """
+            Ticking goes through the same edit path as typing, or it is not undoable and it does \
+            not autosave.
+            """)
+        #expect(editor.contains("override func mouseDown"), "and the click has to be hit-tested")
+        #expect(editor.contains("value: NSColor.clear, range: range(task.box)"), """
+            The box is drawn transparent at its own width — the three characters stay in the \
+            string, at the same offsets, which is the rule that protects the caret.
+            """)
     }
 
     /// The summary renders its markdown as it is typed, and it does it with the platform's own text
@@ -587,10 +578,20 @@ import Testing
 
         // TextKit 2, not the legacy layout manager — asking for `NSLayoutManager` on macOS 26
         // drags the text view back onto the compatibility engine.
-        #expect(editor.contains("textView.textLayoutManager"),
+        #expect(editor.contains("textLayoutManager"),
                 "selection geometry comes from NSTextLayoutManager")
         // The TextKit 1 accessor, which is what silently drops the view onto the old engine.
         #expect(!editor.contains(".layoutManager"), "TextKit 1 would be a downgrade, not a fallback")
+
+        // The *other* way onto the old engine, and it does not look like one. Measured on macOS 26:
+        // a subclass of `NSTextView` that overrides `draw(_:)` comes back with `textLayoutManager`
+        // **nil** — the whole view silently falls to TextKit 1, taking the gutter's measurements,
+        // the document height and the rects the toolbar and the slash menu hang off with it.
+        // `drawBackground(in:)` is the hook that does not, which is where the checkbox is painted.
+        #expect(!editor.contains("override func draw(_ dirtyRect"), """
+            Overriding draw(_:) on an NSTextView drops it to TextKit 1 on macOS 26 — measured: \
+            textLayoutManager comes back nil. Paint in drawBackground(in:) instead.
+            """)
     }
 
     /// Undo has to survive, and the two ways to lose it are both here.
@@ -724,16 +725,12 @@ import Testing
         #expect(detail.contains(".frame(maxWidth: .infinity, alignment: .center)"),
                 "the leftover width of a wide pane is margin, not a longer line")
 
-        // The actions sit in the document rather than in a panel of their own: the same column, and
-        // the checklist indented to the gutter so its rows start where the prose does.
-        let checklist = try #require(detail.range(of: "private struct ActionChecklist: View"))
-        let body = String(detail[checklist.upperBound...].prefix(3600))
-        #expect(body.contains(".padding(.leading, MarkdownStyle.gutter)"),
-                "the rows line up with the write-up's prose, not with its gutter")
-        #expect(body.contains("SharedFieldEditor.column"), "and the block shares the write-up's measure")
-        #expect(!body.contains("SectionHeader(title: \"Actions\""), """
+        // The actions need no column of their own any more: they are lines of the write-up, so they
+        // are read at the write-up's measure by construction. Nothing may re-introduce a second
+        // block beside it.
+        #expect(!detail.contains("SectionHeader(title: \"Actions\""), """
             A section label over a filled block is what made the actions read as their own panel. \
-            In the document they are a heading with its marker in the gutter, like any other.
+            In the document they are a `## Actions` the author wrote, like any other heading.
             """)
     }
 
@@ -781,8 +778,24 @@ import Testing
                 "the slash menu opens under the caret")
         #expect(pane.contains("if let anchor = selectionRect, !selection.isEmpty"),
                 "the toolbar appears over the selection, and only over a real one")
-        #expect(pane.contains("anchor.minY < $0.height + 8"),
-                "and it flips below the selection when there is no room above it")
+
+        // **Where** it lands is a decision with tests behind it, not arithmetic buried in an
+        // `alignmentGuide` closure nothing could reach. It was the latter, and it was unbounded:
+        // a 280 pt toolbar centred on a selection at the left edge of the text computed a negative
+        // origin, which is outside the document column and past the left edge of the split view's
+        // detail pane — and an NSSplitView pane clips.
+        #expect(pane.contains(".floating(over: anchor, in: width)"),
+                "both surfaces go through the one placement, so they cannot disagree about it")
+        #expect(pane.contains("MarkdownEditing.floating("),
+                "and that placement is MeetingsCore's, where the clamp and the flip are tested")
+
+        // An anchor is only as good as its freshness. Published from the selection delegate alone,
+        // it went stale on any layout change — a resized pane, a re-wrapped document, or a
+        // selection made before the text had been laid out at all, which leaves it nil forever.
+        #expect(editor.contains("coordinator.publishRects()"), """
+            The rects have to be republished when the layout changes, not only when the selection \
+            does, or the toolbar hangs off where the text used to be — or off nothing.
+            """)
     }
 
     /// Typing the shorthand, Return continuing a list and the slash menu are all one vocabulary,

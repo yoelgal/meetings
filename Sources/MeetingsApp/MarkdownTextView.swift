@@ -30,7 +30,7 @@ struct MarkdownTextView: NSViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
-    func makeNSView(context: Context) -> NSTextView {
+    func makeNSView(context: Context) -> MarkdownNSTextView {
         // A bare text view, and deliberately **not** `NSTextView.scrollableTextView()`. That factory
         // hands back an `NSScrollView`, and one of those inside the detail pane's own `ScrollView`
         // is two scrolling surfaces stacked: the trackpad has to guess which one a two-finger drag
@@ -39,7 +39,7 @@ struct MarkdownTextView: NSViewRepresentable {
         //
         // `NSTextView(frame:)` is TextKit 2, the same engine the factory would have configured;
         // nothing here touches `layoutManager`, which is what would downgrade it to TextKit 1.
-        let textView = NSTextView(frame: .zero)
+        let textView = MarkdownNSTextView(frame: .zero)
         textView.isVerticallyResizable = true
         textView.isHorizontallyResizable = false
         textView.minSize = .zero
@@ -68,6 +68,11 @@ struct MarkdownTextView: NSViewRepresentable {
         textView.textContainerInset = NSSize(width: 0, height: 6)
 
         textView.string = text
+        // Clicking the checkbox a task item draws over its `[ ]` goes through the same edit path as
+        // typing the character, so it is one ⌘Z and it provokes the autosave.
+        textView.toggleTask = { [weak coordinator = context.coordinator] offset in
+            coordinator?.toggleTask(at: offset)
+        }
         context.coordinator.attach(textView)
         return textView
     }
@@ -79,14 +84,26 @@ struct MarkdownTextView: NSViewRepresentable {
     /// come from, so there is one answer about where the text is rather than two. It cannot oscillate
     /// with SwiftUI's layout: the height is a pure function of the text and the proposed width, and
     /// nothing here invalidates the layout that asked.
-    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSTextView, context: Context) -> CGSize? {
+    func sizeThatFits(
+        _ proposal: ProposedViewSize, nsView: MarkdownNSTextView, context: Context
+    ) -> CGSize? {
         guard let width = proposal.width, width.isFinite, width > 0 else { return nil }
         return CGSize(width: width, height: nsView.markdownDocumentHeight(atWidth: width))
     }
 
-    func updateNSView(_ textView: NSTextView, context: Context) {
+    func updateNSView(_ textView: MarkdownNSTextView, context: Context) {
         context.coordinator.parent = self
         handle.coordinator = context.coordinator
+
+        // The anchors again, after whatever this update was. They were published from the selection
+        // delegate alone, which is one notification per *selection* change and none at all for a
+        // layout change — so a pane that resized, a document that re-wrapped, or a selection made
+        // before the text had been laid out left `selectionRect` pointing at where the text used to
+        // be, or at nil, with nothing that would ever refresh it but moving the selection again.
+        //
+        // Next runloop turn, because writing SwiftUI state inside a view update is not allowed. It
+        // cannot loop: an unchanged `CGRect` assigned to `@State` invalidates nothing.
+        Task { @MainActor [coordinator = context.coordinator] in coordinator.publishRects() }
 
         // The guard that keeps undo alive. `text` changes on every keystroke *because the text view
         // told us it did*, and writing the whole string back for those would flatten the undo stack
@@ -192,41 +209,15 @@ struct MarkdownTextView: NSViewRepresentable {
             publishRects()
         }
 
-        private func publishRects() {
+        func publishRects() {
             guard let textView else { return }
             let range = textView.selectedRange()
             parent.caretRect = rect(for: NSRange(location: range.location, length: 0))
             parent.selectionRect = range.length > 0 ? rect(for: range) : nil
         }
 
-        /// TextKit 2 throughout — `NSTextLayoutManager`, not the legacy `NSLayoutManager` path,
-        /// which on macOS 26 would force the text view back onto the compatibility engine.
-        ///
-        /// In the text view's own coordinates, which are the representable's: there is no scroll
-        /// view between them any more, and converting into `enclosingScrollView` would now find the
-        /// *page's* scroll view several levels up and hang the slash menu off the wrong origin.
         private func rect(for range: NSRange) -> CGRect? {
-            guard let textView,
-                  let layout = textView.textLayoutManager,
-                  let content = layout.textContentManager,
-                  let start = content.location(content.documentRange.location, offsetBy: range.location),
-                  let end = content.location(start, offsetBy: range.length),
-                  let textRange = NSTextRange(location: start, end: end)
-            else { return nil }
-            // Layout is lazy, and a segment nobody has laid out yet has no frame to report.
-            layout.ensureLayout(for: textRange)
-
-            var union: CGRect?
-            layout.enumerateTextSegments(
-                in: textRange, type: range.length == 0 ? .standard : .selection
-            ) { _, frame, _, _ in
-                union = union.map { $0.union(frame) } ?? frame
-                return true
-            }
-            guard var found = union else { return nil }
-            found.origin.x += textView.textContainerOrigin.x
-            found.origin.y += textView.textContainerOrigin.y
-            return found
+            textView?.markdownRect(for: range)
         }
 
         // MARK: - Keys the menu wants first
@@ -241,6 +232,18 @@ struct MarkdownTextView: NSViewRepresentable {
             }
             guard let key else { return false }
             return parent.intercept(key)
+        }
+
+        // MARK: - Ticking a box
+
+        /// A checkbox was clicked. It becomes the one-character edit ``MarkdownEditing`` defines and
+        /// goes through ``apply(_:)`` — the same road every follow-up edit takes — so it lands on
+        /// the undo stack and pushes the document up through the binding that autosaves it.
+        func toggleTask(at offset: Int) {
+            guard let textView,
+                  let edit = MarkdownEditing.toggleTask(in: textView.string, at: offset)
+            else { return }
+            apply(edit)
         }
 
         // MARK: - Styling
@@ -282,7 +285,110 @@ struct MarkdownTextView: NSViewRepresentable {
     }
 }
 
+/// `NSTextView` with one behaviour of its own: **a task list item's `[ ]` is a real checkbox**.
+///
+/// The characters never move. `- [ ] ship it` is still those characters at those offsets, which is
+/// the rule the whole editor is built on — what changes is that the three characters of the box are
+/// drawn transparent (at their own width, so nothing reflows) and a checkbox is painted over the
+/// space they occupy. Clicking inside that space is a one-character edit through
+/// ``MarkdownEditing/toggleTask(in:at:)``, so it is undoable and it autosaves; clicking anywhere
+/// else is an ordinary click in a text view.
+///
+/// An attachment would have been the other way to draw it, and it is the wrong one: an attachment
+/// is a character, so drawing the box that way means either inserting U+FFFC — a character the store
+/// would then hold — or attaching to characters the layout engine does not expect to carry one.
+final class MarkdownNSTextView: NSTextView {
+    /// Handed the character offset of the box that was clicked.
+    var toggleTask: ((Int) -> Void)?
+
+    /// One task list item's box: where it is, whether it is ticked, and the offset a toggle needs.
+    struct Checkbox {
+        let offset: Int
+        let done: Bool
+        let rect: CGRect
+    }
+
+    /// **`drawBackground(in:)` and never `draw(_:)`.** Measured on macOS 26: overriding `draw(_:)`
+    /// on an `NSTextView` silently drops it to **TextKit 1** — `textLayoutManager` comes back nil,
+    /// and with it the gutter's measurements, the document height and the rects the slash menu and
+    /// the toolbar hang off. Overriding this one does not; the text view stays on TextKit 2.
+    ///
+    /// It paints under the glyphs, which is exactly right here: the three characters of the box are
+    /// transparent, so the checkbox shows through the space they hold. A selection dragged across it
+    /// tints over the checkbox, the same way it tints over a word.
+    override func drawBackground(in rect: NSRect) {
+        super.drawBackground(in: rect)
+        for box in checkboxes() where box.rect.intersects(rect) {
+            MarkdownStyle.drawCheckbox(done: box.done, in: box.rect)
+        }
+    }
+
+    /// A click inside a box ticks it and goes no further — the text view never sees it, so it does
+    /// not also start a selection drag from inside the marker.
+    override func mouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        // Slop, because a checkbox is a small target and the three characters it is drawn over are
+        // about twenty points wide. Not so much that clicking the word ticks it.
+        if let hit = checkboxes().first(where: { $0.rect.insetBy(dx: -2, dy: -1).contains(point) }) {
+            toggleTask?(hit.offset)
+            return
+        }
+        super.mouseDown(with: event)
+    }
+
+    /// ponytail: the whole document is walked per draw and per click. That is the same order of work
+    /// ``MarkdownStyle/apply(to:caret:)`` already does on every keystroke, and it is bounded by the
+    /// editor's 200 KB guard; past that both want restricting to the laid-out viewport.
+    func checkboxes() -> [Checkbox] {
+        let text = string
+        var found: [Checkbox] = []
+        var offset = 0
+        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            defer { offset += line.count + 1 }
+            guard let item = MarkdownSyntax.taskItem(line) else { continue }
+            let lower = text.index(line.startIndex, offsetBy: item.box.lowerBound)
+            let upper = text.index(line.startIndex, offsetBy: item.box.upperBound)
+            guard let rect = markdownRect(for: NSRange(lower..<upper, in: text)) else { continue }
+            found.append(
+                Checkbox(offset: offset + item.box.lowerBound, done: item.done, rect: rect)
+            )
+        }
+        return found
+    }
+}
+
 extension NSTextView {
+    /// Where a UTF-16 range sits on screen, in this view's own coordinates.
+    ///
+    /// TextKit 2 throughout — `NSTextLayoutManager`, not the legacy `NSLayoutManager` path, which on
+    /// macOS 26 would force the text view back onto the compatibility engine.
+    ///
+    /// This view's own coordinates and not the scroll view's: there is no scroll view between the
+    /// text and the representable any more, and converting into `enclosingScrollView` would now find
+    /// the *page's* scroll view several levels up and hang the slash menu off the wrong origin.
+    @MainActor func markdownRect(for range: NSRange) -> CGRect? {
+        guard let layout = textLayoutManager,
+              let content = layout.textContentManager,
+              let start = content.location(content.documentRange.location, offsetBy: range.location),
+              let end = content.location(start, offsetBy: range.length),
+              let textRange = NSTextRange(location: start, end: end)
+        else { return nil }
+        // Layout is lazy, and a segment nobody has laid out yet has no frame to report.
+        layout.ensureLayout(for: textRange)
+
+        var union: CGRect?
+        layout.enumerateTextSegments(
+            in: textRange, type: range.length == 0 ? .standard : .selection
+        ) { _, frame, _, _ in
+            union = union.map { $0.union(frame) } ?? frame
+            return true
+        }
+        guard var found = union else { return nil }
+        found.origin.x += textContainerOrigin.x
+        found.origin.y += textContainerOrigin.y
+        return found
+    }
+
     /// How tall this document is when laid out `width` points wide.
     ///
     /// Measured, not guessed: `usageBoundsForTextContainer` is what TextKit 2 actually filled, so it
@@ -466,7 +572,43 @@ extension NSTextView {
             if let block = MarkdownSyntax.blockMarker(line) {
                 storage.addAttribute(.font, value: markerFont, range: range(0..<block.upperBound))
             }
+
+            // A task list item's box is drawn as a checkbox rather than as `[ ]`.
+            //
+            // The three characters stay exactly where they are, at exactly the width they had —
+            // only their colour goes, so the space they occupy is the space the checkbox is painted
+            // into and no offset in the document moves. Unlike an inline marker, this does *not*
+            // come back on the caret's line: a control that appears and disappears as the caret
+            // passes is not a control.
+            guard let task = MarkdownSyntax.taskItem(line) else { continue }
+            storage.addAttribute(.foregroundColor, value: NSColor.clear, range: range(task.box))
+            // Ticked reads as done, the same treatment the checklist gave it.
+            guard task.done, task.textStart < line.count else { continue }
+            let body = range(task.textStart..<line.count)
+            storage.addAttribute(.strikethroughStyle, value: NSUnderlineStyle.single.rawValue, range: body)
+            storage.addAttribute(.foregroundColor, value: NSColor.secondaryLabelColor, range: body)
         }
+    }
+
+    /// The checkbox itself: SF Symbols, drawn into the space the `[ ]` characters occupy.
+    static func drawCheckbox(done: Bool, in rect: CGRect) {
+        let side = min(rect.height, rect.width) - 1
+        guard side > 4 else { return }
+        let box = CGRect(
+            x: rect.midX - side / 2, y: rect.midY - side / 2, width: side, height: side
+        )
+        // An empty box has to be *visible*, which `tertiaryLabelColor` on a thin `square` outline is
+        // not — rendered at 17 pt it is a light grey hairline on a white page and reads as nothing
+        // at all, which is the same failure as the checklist that could not be ticked.
+        let colour = done ? NSColor.controlAccentColor : NSColor.secondaryLabelColor
+        let configuration = NSImage.SymbolConfiguration(pointSize: side, weight: .regular)
+            .applying(NSImage.SymbolConfiguration(paletteColors: [colour]))
+        NSImage(
+            systemSymbolName: done ? "checkmark.square.fill" : "square",
+            accessibilityDescription: done ? "Done" : "Not done"
+        )?
+        .withSymbolConfiguration(configuration)?
+        .draw(in: box)
     }
 
     static func paragraphStyle(for line: some StringProtocol) -> NSParagraphStyle {

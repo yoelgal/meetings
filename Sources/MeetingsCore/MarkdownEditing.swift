@@ -147,6 +147,80 @@ public enum MarkdownEditing {
         return start
     }
 
+    // MARK: - Ticking a box
+
+    /// Ticking or unticking the task list item that `offset` falls on — **one character**, `x` for
+    /// a space or a space for an `x`.
+    ///
+    /// It is here rather than in the view for the reason everything else in this file is: it is the
+    /// same transform whether a pointer clicked the checkbox the editor draws over the box or a
+    /// future keyboard shortcut asked for it, and it goes through ``Edit`` so the click lands on the
+    /// undo stack and provokes the autosave exactly as typing the character would.
+    ///
+    /// The caret is left at the start of the item's own text. A click in a text view moves the
+    /// insertion point wherever it lands; landing it in the sentence rather than inside the brackets
+    /// is the only part of that worth deciding.
+    public static func toggleTask(in text: String, at offset: Int) -> Edit? {
+        let characters = Array(text)
+        guard offset >= 0, offset <= characters.count else { return nil }
+        let start = lineStart(characters, before: offset)
+        var end = start
+        while end < characters.count, characters[end] != "\n" { end += 1 }
+        guard let item = MarkdownSyntax.taskItem(String(characters[start..<end])) else { return nil }
+        let tick = start + item.box.lowerBound + 1
+        let caret = start + item.textStart
+        return Edit(
+            range: tick..<(tick + 1),
+            replacement: item.done ? " " : "x",
+            selection: caret..<caret
+        )
+    }
+
+    // MARK: - Where a floating surface goes
+
+    /// Where the toolbar over a selection — or the menu under the caret — is drawn, in the editor's
+    /// own coordinates.
+    public struct Placement: Equatable, Sendable {
+        public let x: CGFloat
+        public let y: CGFloat
+        /// True when there was no room above the anchor and it went underneath instead.
+        public let below: Bool
+
+        public init(x: CGFloat, y: CGFloat, below: Bool) {
+            self.x = x
+            self.y = y
+            self.below = below
+        }
+    }
+
+    /// Centred over `anchor`, above it when there is room and below it when there is not, and
+    /// **never outside the editor**.
+    ///
+    /// The clamp is the part that was missing, and it is not a nicety. The toolbar is about 280 pt
+    /// wide and it was centred on the selection with nothing bounding the result, so a selection
+    /// that starts at the left edge of the text — which is where a drag usually starts — put its
+    /// origin at roughly −95, outside the document column and past the left edge of the split
+    /// view's detail pane. An `NSSplitView` pane clips, so those points were not merely off the
+    /// measure, they were not drawn.
+    ///
+    /// It is a pure function over four numbers so that it can be tested, which is the whole reason
+    /// it is here rather than inline in an `alignmentGuide` closure where nothing could reach it.
+    /// A zero-height or zero-width anchor is still a position — a caret has no width, and a surface
+    /// that refused to place itself over one would be a menu that never opened.
+    public static func floating(
+        over anchor: CGRect, size: CGSize, in width: CGFloat, gap: CGFloat = 6
+    ) -> Placement {
+        let centred = anchor.midX - size.width / 2
+        // `max(…, 0)` on the upper bound as well, because an editor narrower than the surface has
+        // no valid range at all and `min(x, negative)` would push it off the *left* instead.
+        let x = min(max(centred, 0), max(width - size.width, 0))
+        let above = anchor.minY - size.height - gap
+        guard above >= 0 else {
+            return Placement(x: x, y: anchor.maxY + gap, below: true)
+        }
+        return Placement(x: x, y: above, below: false)
+    }
+
     // MARK: - Inline formatting, as a toggle
 
     /// The five pairs the keyboard shortcuts wrap a selection in.

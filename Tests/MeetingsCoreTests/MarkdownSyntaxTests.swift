@@ -241,4 +241,26 @@ import Testing
         let characters = Array(line)
         #expect(String(characters[span.range]) == "**shipped**")
     }
+
+    /// The offsets a checkbox is drawn at and a tick is applied to. `box` is the three characters of
+    /// the box itself, so `box.lowerBound + 1` is the one character that changes, and `textStart` is
+    /// where the item's own sentence begins.
+    @Test func aTaskItemSaysWhereItsBoxAndItsTextAre() throws {
+        let item = try #require(MarkdownSyntax.taskItem("  - [x] ship the gutter"))
+        #expect(item.done)
+        #expect(item.box == 4..<7)
+        #expect(item.textStart == 8)
+        let characters = Array("  - [x] ship the gutter")
+        #expect(String(characters[item.box]) == "[x]")
+        #expect(String(characters[item.textStart...]) == "ship the gutter")
+    }
+
+    /// ``MarkdownSyntax/blockMarker(_:)`` stays deliberately looser than ``MarkdownSyntax/taskItem(_:)``.
+    /// Backspacing the space out of `- [ ] task` leaves `- [ ]task`, which is not a task item any
+    /// more — but it is still five characters of marker that have to be deleted together, or
+    /// unmaking a checkbox takes four presses of Delete.
+    @Test func theGuttersMarkerIsLooserThanTheTaskListSpec() {
+        #expect(MarkdownSyntax.blockMarker("- [ ]task") == 0..<5)
+        #expect(MarkdownSyntax.taskItem("- [ ]task") == nil)
+    }
 }

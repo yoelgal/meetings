@@ -13,8 +13,15 @@ public struct Attendee: Codable, Hashable, Sendable {
     }
 }
 
-/// One agent-written action item. `due` stays a free string: the agent writes what the meeting
-/// actually said ("end of week"), and inventing a Date for that would be a lie with a timezone.
+/// One action item. `due` stays a free string: it is what the meeting actually said ("end of
+/// week"), and inventing a Date for that would be a lie with a timezone.
+///
+/// This is still the shape the CLI's JSON speaks and the in-memory shape everything above the store
+/// passes around. What changed is where an action is *kept*: it is a GFM task list item inside the
+/// write-up now (``MarkdownActions``), not a row of a JSON column. The markdown has nowhere to put
+/// an owner or a due date yet, so both are nil on every action parsed out of a write-up — the
+/// fields stay because the JSON contract does, and because a trailing convention for them is an
+/// additive change to one function when there is a real requirement for one.
 public struct Action: Codable, Hashable, Sendable {
     public var text: String
     public var owner: String?
@@ -27,13 +34,36 @@ public struct Action: Codable, Hashable, Sendable {
         self.due = due
         self.done = done
     }
+
+    /// Written out by hand so that `owner` and `due` are **always present**, as `null` when there is
+    /// nothing to say. The synthesised encoding drops a nil optional's key entirely, which would
+    /// mean the two fields quietly disappeared from every `--json` payload the day the markdown
+    /// stopped carrying them — a shape change to anything downstream reading them.
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(text, forKey: .text)
+        try container.encode(owner, forKey: .owner)
+        try container.encode(due, forKey: .due)
+        try container.encode(done, forKey: .done)
+    }
+
+    public enum CodingKeys: String, CodingKey {
+        case text, owner, due, done
+    }
 }
 
-/// The `meetings` table. `preNotes`, `summary` and `actions` are deliberately three fields rather than
-/// one document so `meetings actions list --open` never has to parse prose.
+/// The `meetings` table.
 ///
 /// `attendees` and `actions` are JSON TEXT columns in SQLite, but nothing above this type ever sees
 /// the JSON — GRDB encodes and decodes the nested values for us, so the store's surface is typed.
+///
+/// **`actions` is legacy and is no longer read.** Actions are GFM task list items inside `summary`
+/// (``MarkdownActions``), which is what makes creating, ticking and deleting one an edit to the
+/// document somebody is looking at rather than a write to a structure beside it. The column is left
+/// populated on purpose: the v6 migration copied its contents into the write-up and kept the
+/// original, which is the only remaining copy of each action's `owner` and `due` and the way back if
+/// that migration got a document wrong. Nothing writes it any more, and nothing but a recovery
+/// should read it.
 public struct Meeting: Codable, Identifiable, Hashable, Sendable, FetchableRecord, PersistableRecord {
     public static let databaseTableName = "meetings"
 

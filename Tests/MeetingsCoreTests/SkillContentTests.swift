@@ -71,6 +71,24 @@ import Testing
         }
     }
 
+    /// Actions are task list items **inside the write-up**, and the skill has to say so in the two
+    /// places an agent reads: the write-up workflow that produces them, and the read command that
+    /// answers "what do I owe anyone".
+    ///
+    /// It also has to be honest about `owner` and `due`. They are still in the JSON shape and still
+    /// accepted, and nothing stores them — an agent that believes an owner landed and tells the user
+    /// so has said something untrue, and the fix is one sentence in this file.
+    @Test func saysActionsLiveInTheWriteUpAsTaskListItems() {
+        #expect(skill.contains("- [ ] anchor live notes to system audio"),
+                "the shape of an action is shown, not described")
+        #expect(skill.contains("A `- [ ]` line **is** an action"))
+        #expect(skill.contains("There is no separate actions store"))
+        #expect(skill.contains("nothing stores them"),
+                "owner and due are accepted and dropped, and that has to be said out loud")
+        #expect(skill.contains("rewrites the `- [ ]` lines of the write-up"),
+                "`actions set` still exists, and what it does to the rest of the document matters")
+    }
+
     /// Every read command that exists today is documented. A skill that omits one sends the agent
     /// down the expensive path instead.
     @Test func documentsTodaysReadCommands() {

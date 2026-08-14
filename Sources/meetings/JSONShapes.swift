@@ -206,6 +206,24 @@ struct ActionItemJSON: Encodable {
         self.due = action.due
         self.done = action.done
     }
+
+    /// `owner` and `due` are written even when they are nothing, for the same reason ``Action``
+    /// writes them: the markdown does not carry either yet, and a key that vanishes is a shape
+    /// change to whatever is reading this.
+    func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(ref, forKey: .ref)
+        try container.encode(meeting, forKey: .meeting)
+        try container.encode(folder, forKey: .folder)
+        try container.encode(text, forKey: .text)
+        try container.encode(owner, forKey: .owner)
+        try container.encode(due, forKey: .due)
+        try container.encode(done, forKey: .done)
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case ref, meeting, folder, text, owner, due, done
+    }
 }
 
 struct NoteJSON: Encodable {

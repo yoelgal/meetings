@@ -99,7 +99,7 @@ struct ShowCommand: AsyncParsableCommand {
                 meeting: MeetingJSON(meeting, folder: folder, transcriptIssues: issues),
                 preNotes: sections.isEmpty ? emptyToNil(meeting.preNotes) : nil,
                 summary: sections.isEmpty || summary ? meeting.summary.flatMap(emptyToNil) : nil,
-                actions: sections.isEmpty ? meeting.actions?.nilIfEmpty : nil,
+                actions: sections.isEmpty ? MarkdownActions.parse(meeting.summary ?? "").nilIfEmpty : nil,
                 notes: notes ? liveNotes.map(NoteJSON.init) : nil,
                 transcript: transcript ? segments.map(SegmentJSON.init) : nil
             ))
@@ -161,7 +161,9 @@ struct ShowCommand: AsyncParsableCommand {
             }
             section("pre-notes", meeting.preNotes.nilIfEmpty)
             section("summary", meeting.summary?.nilIfEmpty)
-            if let actions = meeting.actions?.nilIfEmpty {
+            // Read back out of the write-up above, so this is a structured view of what is
+            // already on screen rather than a second list that can disagree with it.
+            if let actions = MarkdownActions.parse(meeting.summary ?? "").nilIfEmpty {
                 section("actions", actions.map(Self.line(for:)).joined(separator: "\n"))
             }
             return
