@@ -417,4 +417,82 @@ import Testing
         #expect(editor.contains("SharedFieldEdit.receive("),
                 "the conflict decision belongs to MeetingsCore, where it is tested")
     }
+
+    /// The write-up is the surface this screen exists for, and the layout has to say so.
+    ///
+    /// It did not: the transcript and the notes sat above the fold at full height and the summary
+    /// got a 360 pt slot they pushed off screen. The three sections that outrank nothing are
+    /// collapsed now, each with its count on the closed row so nothing is hidden silently — and a
+    /// note whose click scrolls the transcript has to open it first, or the jump lands on rows that
+    /// are not laid out and does nothing at all.
+    @Test func theWriteUpOutranksTheTranscriptAndTheNotes() throws {
+        let detail = try Self.source("MeetingDetailView.swift")
+        for section in ["title: \"Transcript\"", "title: \"Your notes\"", "title: \"Pre-meeting notes\""] {
+            let mount = try #require(detail.range(of: section), "\(section) went missing")
+            // The 200 characters before it: whatever is presenting the section.
+            let before = String(detail[detail.index(mount.lowerBound, offsetBy: -200)..<mount.lowerBound])
+            #expect(before.contains("SecondarySection("),
+                    "\(section) is drawn at full height above the write-up again")
+        }
+        #expect(detail.contains("showTranscript = true"),
+                "clicking a note has to open the transcript it is about to scroll")
+
+        // And the editor is taller than the 360 pt slot that started this.
+        let mount = try #require(detail.range(of: "SharedFieldEditor("))
+        let after = String(detail[mount.upperBound...].prefix(900))
+        let height = try #require(after.range(of: ".frame(height: "))
+        let value = Int(after[height.upperBound...].prefix { $0.isNumber }) ?? 0
+        #expect(value > 360, "the write-up got its old two-line slot back")
+    }
+
+    /// Actions are a checklist you can actually work, in the same block as the write-up they came
+    /// out of — and every one of tick, retype, add and delete writes the `actions` column the CLI
+    /// reads, through the one path that refuses to clobber a list somebody else rewrote.
+    @Test func theActionsAreEditableInTheWriteUpAndWriteBackToTheStore() throws {
+        let detail = try Self.source("MeetingDetailView.swift")
+        #expect(detail.contains("ActionChecklist(actions:"), "the checklist has to be drawn")
+        #expect(detail.contains(".toggleStyle(.checkbox)"),
+                "a glyph that looks like a control and is not one is the defect this replaced")
+
+        // Inside the write-up's own block, not in a section of its own further down: the mount has
+        // to come before the next section starts.
+        let summary = try #require(detail.range(of: "title: \"Summary\""))
+        let checklist = try #require(detail.range(of: "ActionChecklist(actions:", range: summary.upperBound..<detail.endIndex))
+        let preNotes = try #require(detail.range(of: "title: \"Pre-meeting notes\"", range: summary.upperBound..<detail.endIndex))
+        #expect(checklist.lowerBound < preNotes.lowerBound,
+                "the actions belong with the write-up, not in a disconnected list below it")
+
+        let model = try Self.source("AppModel.swift")
+        #expect(model.contains("func saveActions(meetingID: String, from previous: [Action], to next: [Action])"),
+                "one write path for all four edits, taking the list the window was showing")
+        let save = try #require(model.range(of: "func saveActions("))
+        let body = String(model[save.upperBound...].prefix(600))
+        #expect(body.contains("guard (meeting.actions ?? []) == previous"),
+                """
+                Without the compare, a tick against a list `meetings actions set` has since \
+                replaced puts back every row the agent removed and ticks whichever action moved \
+                into that position.
+                """)
+        #expect(body.contains("next.isEmpty ? nil : next"),
+                "empty stores as NULL, the shape `meetings actions set` writes")
+    }
+
+    /// The summary renders its markdown as it is typed, and it does it with the platform's own text
+    /// editor rather than a second text engine.
+    ///
+    /// The characters on screen have to stay the characters in the store, at the same offsets —
+    /// hiding a `##` means keeping two documents in step, which is how a caret comes to land a
+    /// character off from where it was clicked.
+    @Test func theEditorRendersMarkdownWithoutASecondTextModel() throws {
+        let editor = try Self.source("PreNotesEditor.swift")
+        #expect(editor.contains("TextEditor(text: $rich, selection: $selection)"),
+                "the rich editor is AppKit's, through SwiftUI — nothing here rolls its own")
+        #expect(editor.contains("transform(updating: &selection)"),
+                "restyling without updating the selection invalidates the caret's indices")
+        #expect(editor.contains("MarkdownSyntax.line(") && editor.contains("MarkdownSyntax.inline("),
+                "what counts as markdown is MeetingsCore's decision, where it is tested")
+        // The styled value is a view of the plain string, never the value of record.
+        #expect(editor.contains("if plain != text { text = plain }"),
+                "the store still holds the string the CLI writes, not an attributed one")
+    }
 }

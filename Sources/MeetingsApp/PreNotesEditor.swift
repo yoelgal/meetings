@@ -195,23 +195,19 @@ struct SharedFieldEditor: View {
             if tooLargeToEdit {
                 oversize
             } else {
-            TextEditor(text: $text)
-                .font(.body.monospaced())
-                .scrollContentBackground(.hidden)
+            LiveMarkdownEditor(text: $text)
                 .focused($focused)
                 // Attached *inside* the padding, so top-leading here is the text view's own origin
                 // and the only thing left to line up is its internal inset. Overlaying outside the
                 // padding instead meant two hand-tuned numbers guessing at that origin, and they
                 // guessed wrong: the caret sat above and left of the placeholder it belongs in
-                // front of. The font has to match for the same reason — `.body` against the
-                // editor's `.body.monospaced()` puts the first baseline in a different place.
+                // front of. The font has to match for the same reason — a different font puts the
+                // first baseline in a different place.
                 .overlay(alignment: .topLeading) {
                     if text.isEmpty {
                         Text(placeholder)
-                            // Matches the editor's font. `.body` against `.body.monospaced()` puts
-                            // the first baseline somewhere else, which is what left the caret
-                            // floating above the placeholder it sits in front of.
-                            .font(.body.monospaced())
+                            // Matches the font an unstyled line is drawn at, for the reason above.
+                            .font(.body)
                             .foregroundStyle(.tertiary)
                             .padding(.leading, 5)
                             .allowsHitTesting(false)
@@ -352,6 +348,119 @@ struct SharedFieldEditor: View {
         saving = true
         save(text)
         saving = false
+    }
+}
+
+/// Markdown that renders while you type it: a heading is heading-sized the moment its `##` lands,
+/// bold is bold, a bullet reads as a list — and the characters that say so are still there, still
+/// selectable, still what the store holds.
+///
+/// This is a text editor rather than a preview, and the difference matters. Nothing is a mode, so
+/// there is no edit/preview toggle to be on the wrong side of, and no second representation to
+/// convert back from — the value in and out is the same `String` the CLI writes, which is why the
+/// conflict handling, autosave and oversize guard around it did not have to change at all.
+///
+/// **No library, and no text engine of our own.** macOS 26's `TextEditor` takes an
+/// `AttributedString` binding with a selection to keep valid across attribute changes
+/// (`transform(updating:)`), which is the entire hard part of live rendering — caret and undo
+/// belong to the same `NSTextView` AppKit has always shipped. Everything below is the markdown
+/// decision (``MarkdownSyntax``, in MeetingsCore where it is tested) and a font for each answer.
+///
+/// Markers are styled *with* the text they mark rather than hidden. Hiding them means the document
+/// on screen has different offsets from the document in the store, which is a second text model to
+/// keep in step, and it is the thing that makes a caret land a character off.
+private struct LiveMarkdownEditor: View {
+    @Binding var text: String
+
+    /// What the text view actually holds. `text` stays the value of record — this is a styled view
+    /// of it, rebuilt from it whenever the two disagree about characters.
+    @State private var rich = AttributedString()
+    @State private var selection = AttributedTextSelection()
+
+    var body: some View {
+        TextEditor(text: $rich, selection: $selection)
+            .scrollContentBackground(.hidden)
+            .onChange(of: rich) { _, edited in
+                let plain = String(edited.characters)
+                // Characters first: the autosave, the conflict check and the store all work off the
+                // plain string, and they must not wait on the restyle below.
+                if plain != text { text = plain }
+                restyle()
+            }
+            // `initial` covers the first appearance and every reset of the parent's identity — a
+            // different meeting is a different document, and there is no separate seeding step to
+            // forget.
+            .onChange(of: text, initial: true) { _, incoming in
+                guard incoming != String(rich.characters) else { return }
+                rich = MarkdownStyle.styled(incoming)
+                selection = AttributedTextSelection()
+            }
+    }
+
+    /// Attributes only, never characters — so the caret does not move, and typing at the end of a
+    /// heading does not inherit heading size onto the next line.
+    ///
+    /// Terminates: this writes `rich`, which re-enters `onChange`, whose restyle is idempotent and
+    /// so leaves the value equal and writes nothing.
+    private func restyle() {
+        var styled = rich
+        styled.transform(updating: &selection) { MarkdownStyle.apply(to: &$0) }
+        if styled != rich { rich = styled }
+    }
+}
+
+/// Which font each of ``MarkdownSyntax``'s answers is drawn in. The split is deliberate: what
+/// counts as a heading is logic and lives in MeetingsCore with tests behind it, and this is the
+/// half that is a typeface.
+@MainActor enum MarkdownStyle {
+    static func styled(_ source: String) -> AttributedString {
+        var attributed = AttributedString(source)
+        apply(to: &attributed)
+        return attributed
+    }
+
+    static func apply(to attributed: inout AttributedString) {
+        // Everything back to body first, so a line that *stops* being a heading — the `#` deleted —
+        // goes back down instead of keeping the size it was given a keystroke ago.
+        attributed.font = .body
+        attributed.foregroundColor = .primary
+
+        let source = String(attributed.characters)
+        var start = attributed.startIndex
+
+        for line in source.split(separator: "\n", omittingEmptySubsequences: false) {
+            let end = attributed.index(start, offsetByCharacters: line.count)
+            if start < end {
+                let kind = MarkdownSyntax.line(line)
+                let base = font(for: kind)
+                attributed[start..<end].font = base
+                if kind == .quote { attributed[start..<end].foregroundColor = .secondary }
+
+                for span in MarkdownSyntax.inline(line) {
+                    let from = attributed.index(start, offsetByCharacters: span.range.lowerBound)
+                    let to = attributed.index(start, offsetByCharacters: span.range.upperBound)
+                    switch span.style {
+                    case .strong: attributed[from..<to].font = base.bold()
+                    case .emphasis: attributed[from..<to].font = base.italic()
+                    case .code: attributed[from..<to].font = base.monospaced()
+                    }
+                }
+            }
+            // Step over the newline `split` consumed. The last line has none, and asking for the
+            // index after the end of the document traps.
+            guard end < attributed.endIndex else { break }
+            start = attributed.index(end, offsetByCharacters: 1)
+        }
+    }
+
+    /// `##` is what an agent writes far more often than `#`, so it has to be a heading you can see —
+    /// the same sizing ``MarkdownText`` renders a finished document at, so the write-up does not
+    /// change shape between the editor and the exported markdown.
+    static func font(for line: MarkdownSyntax.Line) -> Font {
+        switch line {
+        case .heading(let level): MarkdownText.headingFont(level)
+        case .bullet, .quote, .body: .body
+        }
     }
 }
 

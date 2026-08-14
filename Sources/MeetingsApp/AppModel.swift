@@ -912,6 +912,43 @@ final class AppModel {
         }
     }
 
+    /// Tick, retype, add or delete an action — one write path for all four, because they are all
+    /// the same write: the `actions` column is the whole array.
+    ///
+    /// `from` is the list the window was *showing* when it was clicked, and the write only lands if
+    /// the store still holds exactly that. The column has two writers — `meetings actions set`
+    /// replaces it wholesale — and a checkbox ticked against a list that has since been rewritten
+    /// would put back every row the agent had just removed and tick whichever action had moved into
+    /// that position. Losing the click is the cheap failure; the other one is silent.
+    ///
+    /// It is the same problem the summary and the pre-notes have, answered differently on purpose:
+    /// there, a conflict interrupts, because the user is mid-sentence and their paragraph is not
+    /// reconstructible. Here it is one tick, the fresh list is already on screen, and the honest
+    /// answer is to leave it and let them click again.
+    ///
+    /// Empty stores as SQL NULL rather than `[]`, matching `meetings actions set` — one shape in
+    /// the column, so nothing downstream has to tell an empty array from an absent one.
+    func saveActions(meetingID: String, from previous: [Action], to next: [Action]) {
+        do {
+            let updated = try store.updateMeeting(id: meetingID) { meeting in
+                guard (meeting.actions ?? []) == previous else { return }
+                meeting.actions = next.isEmpty ? nil : next
+            }
+            // The row this pane is drawn from, so the tick appears without waiting on the store's
+            // own change notification to come back around.
+            loadSelection()
+            // Read off the row that came back rather than out of the closure: the mutation runs
+            // inside the store's write transaction, and a `var` reached into from in there is a
+            // data race the compiler is right to refuse.
+            if (updated.actions ?? []) != next {
+                errorMessage = "Those actions were changed by something else, so that click was "
+                    + "not applied. The list above is the current one."
+            }
+        } catch {
+            errorMessage = "That action could not be saved: \(PlainText.sentence(for: error))"
+        }
+    }
+
     /// An empty title is not a rename, it is a mistake — "Meeting at 17:06" is generated, and a row
     /// with no name at all cannot be told from its neighbours in the list.
     ///
