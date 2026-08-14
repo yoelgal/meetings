@@ -43,6 +43,8 @@ struct MeetingDetailView: View {
                 notes: model.notes,
                 command: model.agentCommand(for: meeting),
                 enhancementNote: meeting.state == .ready ? model.lastEnhancement : nil,
+                folders: model.folders,
+                moveToFolder: { model.move(meetingID: meeting.id, toFolder: $0) },
                 rename: { model.rename(meetingID: meeting.id, to: $0) },
                 saveSummary: { model.saveSummary(meetingID: meeting.id, text: $0) },
                 saveActions: { model.saveActions(meetingID: meeting.id, from: meeting.actions ?? [], to: $0) }
@@ -103,9 +105,14 @@ struct DetailHeader: View {
                     .onTapGesture(perform: beginEditing)
                     .help(rename == nil ? "" : "Click to rename")
             }
-            Text(subtitle)
-                .font(.callout)
-                .foregroundStyle(.secondary)
+            // Empty on the written-up screen, which says the same things in chips underneath. An
+            // empty `Text` still takes a line, and a line of nothing under a title is a gap nobody
+            // asked for.
+            if !subtitle.isEmpty {
+                Text(subtitle)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -374,6 +381,8 @@ private struct WrittenDetailView: View {
     let notes: [Note]
     let command: String
     let enhancementNote: String?
+    let folders: [Folder]
+    let moveToFolder: (String?) -> Void
     let rename: (String) -> Void
     let saveSummary: (String) -> Void
     let saveActions: ([Action]) -> Void
@@ -390,7 +399,15 @@ private struct WrittenDetailView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
-                    DetailHeader(title: meeting.title, subtitle: subtitle, rename: rename)
+                    VStack(alignment: .leading, spacing: 12) {
+                        DetailHeader(title: meeting.title, subtitle: "", rename: rename)
+                        // Chips rather than a grey run of `14 Aug 2026 · 14:53 · 8 min`. Each fact
+                        // is its own object, and the last of them is a control: filing a meeting
+                        // used to be reachable only by right-clicking its row in the list.
+                        MeetingChips(
+                            meeting: meeting, folders: folders, moveToFolder: moveToFolder
+                        )
+                    }
 
                     // Above the transcript section, and above everything else with it. The summary
                     // and the actions on this screen were written *from* the damaged transcript, so
@@ -416,19 +433,21 @@ private struct WrittenDetailView: View {
                         // the CLI to fix it. This is the same editor the pre-notes field uses, so a
                         // summary the CLI rewrites while it is open is handled the one way this app
                         // handles that.
+                        // No height at all any more. It had `.frame(height: 520)` because the
+                        // editor wrapped an `NSScrollView`, whose ideal height inside this
+                        // `ScrollView` was arbitrary — and 520 pt then sliced a heading in half at
+                        // the boundary and gave the page a second thing to scroll. The editor
+                        // reports the height of its own laid-out document now, so the page is the
+                        // only scrolling surface and the write-up ends where the writing ends.
                         SharedFieldEditor(
                             title: "Summary",
                             value: meeting.summary ?? "",
                             identity: "summary:\(meeting.id)",
                             placeholder: "Write it up here, or let an agent do it. Markdown works.",
                             oversizeHint: "Read and change it with meetings show --summary and meetings summary set --file.",
-                            save: saveSummary
+                            save: saveSummary,
+                            titleShown: false
                         )
-                        // A height rather than the pane's, because this one sits inside the detail
-                        // view's own ScrollView: a text view told to fill an infinite parent there
-                        // gets an arbitrary ideal height, and the write-up ended up in a two-line
-                        // slot.
-                        .frame(height: 520)
                         ActionChecklist(actions: meeting.actions ?? [], save: saveActions)
                     }
                     if !meeting.preNotes.isEmpty {
@@ -469,12 +488,24 @@ private struct WrittenDetailView: View {
                         }
                     }
                 }
+                // One column, and everything on the screen shares its edge: the title, the chips,
+                // the write-up, the actions under it and the three sections below them.
+                //
+                // Clamped *before* the inset and centred after it, so the leftover width of a wide
+                // pane becomes margin either side rather than a longer line — the detail column was
+                // giving the write-up 110 characters, and a measure that wide is why it read as a
+                // text field. Narrower than the column and the clamp simply stops applying, so a
+                // 500 pt pane is the pane's width minus the inset, as it always was.
+                .frame(maxWidth: Self.documentWidth, alignment: .leading)
                 .padding(detailInset)
-                .frame(maxWidth: 720, alignment: .leading)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .center)
             }
         }
     }
+
+    /// The write-up's measure plus the editor's own inset either side, so the document column and
+    /// everything stacked with it are one width.
+    static var documentWidth: CGFloat { SharedFieldEditor.column + 2 * SharedFieldEditor.editorInset }
 
     /// Clicking a note scrolls the transcript to its anchor. A note written before anyone
     /// spoke has no anchor at all, which is legal — it just has nowhere to jump to.
@@ -494,20 +525,86 @@ private struct WrittenDetailView: View {
         }
     }
 
-    /// No state here. At `ready` the card directly below already says nothing has written it up, and
-    /// at `complete` the written-up summary above it is the evidence — a "Written up" chip under the
-    /// title is the third place the same fact appears on one screen.
-    private var subtitle: String {
-        var parts: [String] = []
-        if let date = meeting.sortDate {
-            parts.append(Format.detailDate(date))
-            parts.append(Format.timeOfDay(date))
+}
+
+/// What the meeting *was*, as chips under its title: when, how long, who, and which folder it is in.
+///
+/// A run of grey text separated by interpuncts said the same things and was one object — you read it
+/// or you did not. Each fact is its own now, and the last one is a control rather than a statement:
+/// filing a meeting was previously reachable only by right-clicking its row back in the list, which
+/// is not where you are when you have just read the write-up and decided where it belongs.
+private struct MeetingChips: View {
+    let meeting: Meeting
+    let folders: [Folder]
+    let moveToFolder: (String?) -> Void
+
+    /// Two names, then a count. A nine-person meeting is not nine chips.
+    private static let inlineAttendees = 2
+
+    var body: some View {
+        HStack(spacing: 6) {
+            if let date = meeting.sortDate {
+                chip(Format.detailDate(date))
+                chip(Format.timeOfDay(date))
+            }
+            if let length = Format.duration(from: meeting.startedAt, to: meeting.endedAt) {
+                chip(length)
+            }
+            // Not decoration: audio that the retention sweep has purged is the difference between a
+            // transcript you can check and one you have to take on trust.
+            if meeting.audioPurgedAt != nil {
+                chip("Audio deleted")
+            }
+            // By index, as everywhere else a list of attendees is drawn: two people can share a
+            // display name, and a duplicate id is a row SwiftUI quietly drops.
+            ForEach(Array(meeting.attendees.prefix(Self.inlineAttendees).enumerated()), id: \.offset) {
+                chip($0.element.displayName)
+            }
+            if meeting.attendees.count > Self.inlineAttendees {
+                chip("+\(meeting.attendees.count - Self.inlineAttendees) more")
+            }
+            folderChip
+            Spacer(minLength: 0)
         }
-        if let length = Format.duration(from: meeting.startedAt, to: meeting.endedAt) {
-            parts.append(length)
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .lineLimit(1)
+    }
+
+    /// The same destinations, and the same `move`, as the meeting row's context menu — one filing
+    /// path, not a second one that drifts.
+    private var folderChip: some View {
+        Menu {
+            Button("Unfiled") { moveToFolder(nil) }
+                .disabled(meeting.folderID == nil)
+            ForEach(folders) { folder in
+                Button(folder.name) { moveToFolder(folder.id) }
+                    .disabled(meeting.folderID == folder.id)
+            }
+        } label: {
+            chip(current?.name ?? "Add to folder", symbol: current == nil ? "plus" : "folder")
         }
-        if meeting.audioPurgedAt != nil { parts.append("Audio deleted") }
-        return parts.joined(separator: " · ")
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        // With no folders in the store the only destination is Unfiled, and an unfiled meeting is
+        // already there — the same rule the context menu applies.
+        .disabled(folders.isEmpty && meeting.folderID == nil)
+    }
+
+    private var current: Folder? {
+        meeting.folderID.flatMap { id in folders.first { $0.id == id } }
+    }
+
+    private func chip(_ text: String, symbol: String? = nil) -> some View {
+        HStack(spacing: 4) {
+            if let symbol { Image(systemName: symbol).imageScale(.small) }
+            Text(text)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 3)
+        .overlay(Capsule().strokeBorder(.separator))
+        .contentShape(.capsule)
     }
 }
 
@@ -598,21 +695,49 @@ private struct ActionChecklist: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            SectionHeader(title: "Actions", trailing: trailing)
-            // By index, because an action has no id and two rows may legitimately read the same.
-            ForEach(Array(actions.enumerated()), id: \.offset) { index, action in
-                ActionRow(action: action) { edited in
-                    var next = actions
-                    if let edited {
-                        next[index] = edited
-                    } else {
-                        next.remove(at: index)
-                    }
-                    save(next)
+            // A heading in the document, not a panel label: `☑` sits in the write-up's own gutter
+            // exactly where a `##` would, and "Actions" starts on the same body edge as every line
+            // of prose above it. That is the whole of this change — the ticking, the owner and the
+            // delete behave as they did.
+            HStack(alignment: .firstTextBaseline, spacing: 0) {
+                Text("☑")
+                    .font(Font(MarkdownStyle.markerFont))
+                    .foregroundStyle(.tertiary)
+                    .frame(width: MarkdownStyle.gutter, alignment: .trailing)
+                Text("Actions")
+                    .font(Font(MarkdownStyle.headingFont(2)))
+                if let trailing {
+                    Text(trailing)
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                        .padding(.leading, 8)
                 }
             }
-            add
+            .padding(.bottom, 2)
+
+            VStack(alignment: .leading, spacing: 4) {
+                // By index, because an action has no id and two rows may legitimately read the same.
+                ForEach(Array(actions.enumerated()), id: \.offset) { index, action in
+                    ActionRow(action: action) { edited in
+                        var next = actions
+                        if let edited {
+                            next[index] = edited
+                        } else {
+                            next.remove(at: index)
+                        }
+                        save(next)
+                    }
+                }
+                add
+            }
+            // The rows line up with the prose, not with the gutter the heading's marker sits in.
+            .padding(.leading, MarkdownStyle.gutter)
         }
+        // The block as a whole shares the write-up's column and its inset, so there is one
+        // left edge on this screen rather than two that nearly agree.
+        .padding(.horizontal, SharedFieldEditor.editorInset)
+        .frame(maxWidth: SharedFieldEditor.column + 2 * SharedFieldEditor.editorInset)
+        .frame(maxWidth: .infinity, alignment: .center)
     }
 
     private var trailing: String? {
@@ -684,6 +809,11 @@ private struct ActionRow: View {
             // than a truncation because nothing says it happened.
             TextField("", text: $text, axis: .vertical)
                 .lineLimit(1...4)
+                // Exactly the width it is offered, and never more. Without this the field is the
+                // one view in the row whose width is negotiated rather than stated, and on the
+                // longest row that negotiation is what pushed the owner past the column's right
+                // edge — where `.fixedSize()` faithfully drew it at full size, off screen.
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .textFieldStyle(.plain)
                 .focused($editing)
                 .onSubmit(commitText)
@@ -701,6 +831,12 @@ private struct ActionRow: View {
                     .foregroundStyle(.secondary)
                     // Owner and due are short and fixed; the sentence is the part that should give.
                     .fixedSize()
+                    // Served *before* the sentence. `.fixedSize()` alone guarantees the owner is
+                    // drawn at its full width — it does not guarantee anywhere to draw it, which is
+                    // the difference between "Yoel" being narrow and "Yoel" being on screen. With
+                    // the priority the stack hands this its ideal width first and the field wraps
+                    // into whatever is left, so an action of any length keeps its owner.
+                    .layoutPriority(1)
             }
 
             Button {

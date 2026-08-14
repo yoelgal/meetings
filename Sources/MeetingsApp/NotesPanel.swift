@@ -225,8 +225,13 @@ struct NotesPanelView: View {
         switch tab {
         case .preNotes:
             if let meeting = model.notesPanelMeeting {
-                PreNotesEditor(meeting: meeting) { text in
-                    model.savePreNotes(meetingID: meeting.id, text: text)
+                // The panel scrolls, because the editor inside it does not any more: it is as tall
+                // as its document, and a document longer than this small floating window has to have
+                // somewhere to go. One scrolling surface, here as in the main window.
+                ScrollView {
+                    PreNotesEditor(meeting: meeting) { text in
+                        model.savePreNotes(meetingID: meeting.id, text: text)
+                    }
                 }
             } else {
                 hint("Pick a meeting in the main window and its pre-notes appear here.")

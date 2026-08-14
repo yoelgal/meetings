@@ -437,12 +437,90 @@ import Testing
         #expect(detail.contains("showTranscript = true"),
                 "clicking a note has to open the transcript it is about to scroll")
 
-        // And the editor is taller than the 360 pt slot that started this.
+        // And the write-up has no height of its own at all.
+        //
+        // This used to require a `.frame(height:)` larger than the 360 pt slot that started it. The
+        // number was always a workaround for an editor that could not say how tall it was, and at
+        // 520 pt it cut a heading in half across the boundary while scrolling separately from the
+        // page it sits on. Any fixed height here is that bug, whatever the number is.
         let mount = try #require(detail.range(of: "SharedFieldEditor("))
         let after = String(detail[mount.upperBound...].prefix(900))
-        let height = try #require(after.range(of: ".frame(height: "))
-        let value = Int(after[height.upperBound...].prefix { $0.isNumber }) ?? 0
-        #expect(value > 360, "the write-up got its old two-line slot back")
+        #expect(!after.contains(".frame(height: "), """
+            The write-up is back in a fixed-height box. It is a document: it is as tall as what is \
+            written in it, and the page is the one thing that scrolls.
+            """)
+    }
+
+    /// The write-up grows with its document, and the page is the only thing that scrolls.
+    ///
+    /// Two defects, one cause. The editor wrapped `NSTextView.scrollableTextView()`, so there was an
+    /// `NSScrollView` inside the detail pane's own `ScrollView` — a trackpad drag had to guess which
+    /// one it meant — and because that wrapper's ideal height inside a scroll view is arbitrary, the
+    /// write-up was pinned to a magic 520 pt that sliced a heading horizontally in half.
+    ///
+    /// The fix is for the view to answer the question instead of being told: `sizeThatFits` reports
+    /// the height TextKit 2 actually laid the document out to, so it grows as lines are typed and
+    /// shrinks as they are deleted. Measured on this engine at a 520 pt measure: an empty document
+    /// is 28 pt, ten lines 172 pt, forty lines 652 pt — and the same forty-line document is 236 pt
+    /// at 520 pt wide against 492 pt at 260 pt wide, so it rewraps rather than clipping.
+    @Test func theWriteUpGrowsWithItsDocumentRatherThanScrollingInsideThePage() throws {
+        let editor = try Self.source("MarkdownTextView.swift")
+        #expect(!editor.contains("let scroll = NSTextView.scrollableTextView()"),
+                "a scroll view inside the page's scroll view is two surfaces and one ambiguous drag")
+        #expect(!editor.contains("func makeNSView(context: Context) -> NSScrollView"),
+                "the representable is the text view itself now")
+        #expect(editor.contains("func sizeThatFits("),
+                "the editor has to report its own height, or the parent has to invent one")
+        #expect(editor.contains("usageBoundsForTextContainer"),
+                "the height is what TextKit 2 laid out, measured, not a constant")
+        #expect(editor.contains("layout.ensureLayout(for: layout.documentRange)"),
+                "layout is lazy — measuring before it runs reports the height of nothing")
+        #expect(editor.contains("widthTracksTextView = true"),
+                "the height is only right if the container rewraps to the width being measured")
+
+        // Every other home of the same editor gained the page scroll the write-up already had, so
+        // "one scrolling surface" is the rule everywhere rather than a special case in one pane.
+        for home in ["NotesPanel.swift", "RecordingDetailView.swift", "PreNotesEditor.swift"] {
+            let source = try Self.source(home)
+            let mount = try #require(source.range(of: "PreNotesEditor("), "\(home) lost its editor")
+            let before = String(source[source.startIndex..<mount.lowerBound])
+            #expect(before.contains("ScrollView {"), """
+                \(home) hosts the editor with nothing to scroll. The editor is the height of its \
+                document now, so a document taller than the pane has nowhere to go.
+                """)
+        }
+    }
+
+    /// A long action keeps its owner.
+    ///
+    /// Found in QA at 1180 pt: the fourth action — 83 characters — showed no owner at all while the
+    /// three shorter rows all showed "Yoel". `.fixedSize()` was already on the owner and it was not
+    /// enough, because it guarantees the text is *drawn* at full width and guarantees nothing about
+    /// there being room on screen to draw it in: the `TextField` beside it was the one view in the
+    /// row whose width was negotiated rather than stated.
+    ///
+    /// So the negotiation is removed. The field takes exactly the width it is offered and no more,
+    /// and the owner is served first. Measured across 24 combinations — four real action texts at
+    /// container widths of 200, 260, 320, 400, 500 and 656 pt — the owner renders at its ideal
+    /// 24 pt in every one, and the sentence wraps into what is left.
+    @Test func aLongActionKeepsItsOwner() throws {
+        let detail = try Self.source("MeetingDetailView.swift")
+        let row = try #require(detail.range(of: "private struct ActionRow: View"))
+        let body = String(detail[row.upperBound...].prefix(4000))
+
+        #expect(body.contains("axis: .vertical") && body.contains(".lineLimit(1...4)"),
+                "the sentence is the part that gives — a single-line field stops drawing instead")
+        #expect(body.contains(".frame(maxWidth: .infinity, alignment: .leading)"), """
+            The field will take whatever it can get. Without an explicit width it is the row's \
+            only unstated one, and on the longest row that is what put the owner past the edge.
+            """)
+        let owner = try #require(body.range(of: "Text(detail)"))
+        let after = String(body[owner.upperBound...].prefix(900))
+        #expect(after.contains(".fixedSize()"), "owner and due never compress")
+        #expect(after.contains(".layoutPriority(1)"), """
+            Drawn at full size is not the same as drawn on screen. The owner has to be allocated \
+            its width before the sentence is, or a long enough sentence pushes it off the column.
+            """)
     }
 
     /// Actions are a checklist you can actually work, in the same block as the write-up they came
@@ -492,7 +570,7 @@ import Testing
     /// value of record stays the plain `String` the CLI writes.
     @Test func theEditorRendersMarkdownWithoutASecondTextModel() throws {
         let editor = try Self.source("MarkdownTextView.swift")
-        #expect(editor.contains("NSViewRepresentable") && editor.contains("NSTextView.scrollableTextView()"),
+        #expect(editor.contains("NSViewRepresentable") && editor.contains("NSTextView(frame: .zero)"),
                 "the engine is AppKit's own text view — nothing here rolls its own")
         #expect(editor.contains("MarkdownSyntax.line(") && editor.contains("MarkdownSyntax.inline("),
                 "what counts as markdown is MeetingsCore's decision, where it is tested")
@@ -583,6 +661,109 @@ import Testing
                 "the write-up sits on the pane, not in a filled box")
         #expect(pane.contains("maxWidth: Self.column"),
                 "the document is a centred measure, not the full width of a wide window")
+    }
+
+    /// Inline markers are **hidden** off the caret's line; block markers stay dim in the gutter.
+    ///
+    /// Dimming was not enough. A dimmed `**` still occupies its two characters, so bold text read as
+    /// punctuation with a word inside it and the surface still looked like source waiting to be
+    /// rendered. Hidden here means a hair-sized transparent font over characters that are all still
+    /// in the string — measured, `make it **bold** now` draws 102.38 pt with the markers hidden
+    /// against 102.36 pt with the four characters actually deleted, and 126.58 pt when they are
+    /// merely coloured clear. Colour alone hides nothing; it leaves the gap.
+    ///
+    /// Nothing is removed, which is the rule that protects the caret: the drawn document and the
+    /// stored document keep identical offsets. And a line the caret is on reveals its markers at
+    /// full size, so the caret can never sit inside a hair-sized run.
+    @Test func inlineMarkersAreHiddenAndBlockMarkersStayInTheGutter() throws {
+        let editor = try Self.source("MarkdownTextView.swift")
+        #expect(editor.contains("static let hiddenFont = NSFont.systemFont(ofSize: 0.01)"), """
+            An inline marker is hidden by drawing it at no width. `ofSize: 0` is not that — AppKit \
+            reads zero as "the default size" and would draw the markers full size.
+            """)
+        #expect(editor.contains("value: NSColor.clear"), "and transparent, so no ghost of it remains")
+
+        // The split. `markers` merges ranges that touch, so `- **bold**` arrives as one span across
+        // the bullet and the opening delimiters; the gutter's end is where the two treatments part.
+        #expect(editor.contains("let blockEnd = MarkdownSyntax.blockMarker(line)?.upperBound ?? 0"), """
+            Without the split a bullet touching a bold run is hidden along with it, and the gutter \
+            — the whole point of the design — silently loses its marker.
+            """)
+        #expect(editor.contains("if span.lowerBound < blockEnd"),
+                "the part of the span inside the gutter stays visible and dim")
+
+        // Still never characters. This is the same rule the gutter test pins, restated for the one
+        // change that would have been most tempting to make by deleting text.
+        #expect(!editor.contains("deleteCharacters") && !editor.contains("replacingOccurrences(of: \"**\""),
+                "hiding a marker by removing it is two documents to keep in step, and a caret a character off")
+    }
+
+    /// The write-up is read at a measure, and everything on the screen shares its edge.
+    ///
+    /// It was the full detail column: 656 pt, which at the 13 pt body font this app draws — 5.96 pt
+    /// average advance, measured — is about 110 characters a line. Roughly double a comfortable
+    /// measure, and the reason the surface read as a wide text field rather than as a document; the
+    /// gutter alignment it was built around is invisible at that width.
+    ///
+    /// 40rem, where a rem is the app's own body text, so it tracks the system text size instead of
+    /// being right at exactly one of them. At the default that is 520 pt, about 87 characters.
+    @Test func theWriteUpIsReadAtAMeasureAndTheActionsShareItsColumn() throws {
+        let pane = try Self.source("PreNotesEditor.swift")
+        #expect(pane.contains("static var column: CGFloat { 40 * MarkdownStyle.bodyFont.pointSize }"), """
+            The measure is 40rem of this app's own body text. A hardcoded point size is right at \
+            one system text size and wrong at every other.
+            """)
+        #expect(pane.contains("static var bodyEdge: CGFloat { editorInset + MarkdownStyle.gutter }"),
+                "anything lining up with the prose measures the gutter rather than guessing at it")
+
+        let detail = try Self.source("MeetingDetailView.swift")
+        #expect(detail.contains("static var documentWidth: CGFloat { SharedFieldEditor.column"), """
+            The title, the chips, the write-up and the actions are one column. Two widths that \
+            nearly agree read as a misalignment, which is what a document must not have.
+            """)
+        #expect(detail.contains(".frame(maxWidth: .infinity, alignment: .center)"),
+                "the leftover width of a wide pane is margin, not a longer line")
+
+        // The actions sit in the document rather than in a panel of their own: the same column, and
+        // the checklist indented to the gutter so its rows start where the prose does.
+        let checklist = try #require(detail.range(of: "private struct ActionChecklist: View"))
+        let body = String(detail[checklist.upperBound...].prefix(3600))
+        #expect(body.contains(".padding(.leading, MarkdownStyle.gutter)"),
+                "the rows line up with the write-up's prose, not with its gutter")
+        #expect(body.contains("SharedFieldEditor.column"), "and the block shares the write-up's measure")
+        #expect(!body.contains("SectionHeader(title: \"Actions\""), """
+            A section label over a filled block is what made the actions read as their own panel. \
+            In the document they are a heading with its marker in the gutter, like any other.
+            """)
+    }
+
+    /// The write-up wears no panel chrome, and the meeting's facts are chips.
+    ///
+    /// A "Summary" caption and a permanent "Saved" over the document were the last of the form
+    /// look — "Saved" is true almost always and therefore says nothing, so only the states that are
+    /// *not* the resting state speak. The title still exists: it is what the field is called to
+    /// VoiceOver, which is why it is passed and not deleted.
+    @Test func theWriteUpIsTheSurfaceRatherThanAFieldOnAForm() throws {
+        let detail = try Self.source("MeetingDetailView.swift")
+        let mount = try #require(detail.range(of: "SharedFieldEditor("))
+        let arguments = String(detail[mount.upperBound...].prefix(600))
+        #expect(arguments.contains("titleShown: false"),
+                "no section label over the write-up — the document is the surface")
+
+        let pane = try Self.source("PreNotesEditor.swift")
+        #expect(pane.contains(".accessibilityLabel(title)"),
+                "dropping the visible label must not drop the field's name for VoiceOver")
+        #expect(pane.contains("private var transientStatus: String?") && pane.contains("== \"Saved\" ? nil"),
+                "the resting state is silent; saving, unsaved and conflicted are not")
+
+        // The metadata run became chips, and the last of them files the meeting — through the same
+        // model call the meeting row's context menu uses, not a second filing path.
+        #expect(detail.contains("private struct MeetingChips: View"), "the metadata run became chips")
+        #expect(detail.contains("Add to folder") && detail.contains("moveToFolder("),
+                "filing is reachable from the write-up, not only from a right-click back in the list")
+        let app = try Self.source("MeetingActions.swift")
+        #expect(app.contains("model.move(meetingID: meeting.id, toFolder:"),
+                "and it is the one move path, which the context menu still calls")
     }
 
     /// Both floating surfaces hang off a rect the text view measured, not off a corner of the pane.

@@ -113,11 +113,15 @@ struct RecordingDetailView: View {
                 // Spelled out rather than using a trailing closure: `save` and `popOut` are both
                 // closures, and which one a trailing brace binds to is not worth having to
                 // reason about at a call site.
-                PreNotesEditor(
-                    meeting: meeting,
-                    save: { model.savePreNotes(meetingID: meeting.id, text: $0) },
-                    popOut: { model.setNotesPanel(.preNotes, open: true) }
-                )
+                // Scrolled here, for the reason the panel is: the editor is the height of its
+                // document now, and this pane is a fixed slice of a recording window.
+                ScrollView {
+                    PreNotesEditor(
+                        meeting: meeting,
+                        save: { model.savePreNotes(meetingID: meeting.id, text: $0) },
+                        popOut: { model.setNotesPanel(.preNotes, open: true) }
+                    )
+                }
                 // The inset the sibling pane carries internally. `LiveNotesPane` pads its own
                 // content by 16 and `PreNotesEditor` does not, because its other home wraps it in
                 // `detailInset`. Switching tabs therefore slid the section header and the editor

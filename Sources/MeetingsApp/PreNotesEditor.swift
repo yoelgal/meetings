@@ -8,6 +8,10 @@ struct ScheduledDetailView: View {
     let meeting: Meeting
 
     var body: some View {
+        // The pane scrolls, because the editor inside it no longer does. One scrolling surface per
+        // screen: the editor grows to its document and the page carries it, which is the same rule
+        // the written-up detail follows.
+        ScrollView {
         VStack(alignment: .leading, spacing: 20) {
             DetailHeader(title: meeting.title, subtitle: subtitle)
             HStack(spacing: 10) {
@@ -49,11 +53,12 @@ struct ScheduledDetailView: View {
                 } popOut: {
                     model.setNotesPanel(.preNotes, open: true)
                 }
-                .frame(maxHeight: .infinity)
             }
         }
         .padding(detailInset)
         .frame(maxWidth: 720, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
@@ -159,6 +164,13 @@ struct SharedFieldEditor: View {
     /// Nil inside the floating panel — the content is already out, and it has its own control for
     /// putting it back.
     var popOut: (() -> Void)?
+    /// Whether the field wears a section header.
+    ///
+    /// It does in the panel and the pre-meeting pane, where it is one field among several and has to
+    /// say which one. The write-up does not: it is the whole surface of its screen, and a "Summary"
+    /// caption over it was the last piece of panel chrome making a document read as a form. The
+    /// title is still handed over — it is what the field is called to VoiceOver either way.
+    var titleShown = true
 
     @State private var text = ""
     /// The last value this editor and the store agreed on. Everything is judged against it: an
@@ -174,15 +186,45 @@ struct SharedFieldEditor: View {
     /// real edit autosaves after 600 ms.
     @State private var autosaveSuspended = false
 
-    /// About 40rem. A measure this wide is what a document is read at; the pane can be twice it on
-    /// a large display and the extra goes into margin rather than into 140-character lines.
-    static let column: CGFloat = 640
+    /// The reading measure: **40rem, where a rem is this app's own body text**, so it tracks the
+    /// system text size instead of being a number that is only right at one of them.
+    ///
+    /// At the default 13 pt body that is 520 pt. Measured on `.SFNS-Regular` at 13 pt, the average
+    /// advance over ordinary prose is 5.96 pt, so this column is about **87 characters** — against
+    /// the 110 the full 656 pt detail column was giving, which is what made the write-up read as a
+    /// wide text field rather than as a document. A pane wider than this puts the difference into
+    /// margin, which is what the leftover space is for.
+    ///
+    /// ponytail: 87 characters is still above the 65–75 that typography would call comfortable —
+    /// 40rem is the number the agreed design names, and the character count is the thing to argue
+    /// with. One constant moves it.
+    static var column: CGFloat { 40 * MarkdownStyle.bodyFont.pointSize }
+
+    /// The editor's own inset inside the column.
+    static let editorInset: CGFloat = 10
+
+    /// From the column's left edge to the first prose character: the inset above, plus the gutter
+    /// the markers live in. Anything that has to line up with the write-up's text — the actions
+    /// under it — indents by exactly this, rather than by a number that looks about right.
+    static var bodyEdge: CGFloat { editorInset + MarkdownStyle.gutter }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                SectionHeader(title: title, trailing: status)
-                if let popOut { PopOutButton(action: popOut) }
+            if titleShown || popOut != nil {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    if titleShown { SectionHeader(title: title, trailing: status) }
+                    if let popOut { PopOutButton(action: popOut) }
+                }
+            } else {
+                // No label over the write-up — the document is the surface. The row stays, at
+                // caption height with nothing in it, so the document does not jump down the screen
+                // the moment the field has something to say.
+                Text(transientStatus ?? " ")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .frame(maxWidth: Self.column, alignment: .trailing)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .animation(.default, value: transientStatus)
             }
 
             if let external {
@@ -222,9 +264,15 @@ struct SharedFieldEditor: View {
                             .allowsHitTesting(false)
                     }
                 }
-                .padding(10)
-                .frame(minHeight: 220, maxHeight: .infinity)
+                .padding(Self.editorInset)
+                // A floor, not a height. The editor is as tall as its document now — see
+                // ``MarkdownTextView/sizeThatFits(_:nsView:context:)`` — and this only keeps an
+                // empty one big enough to aim a pointer at.
+                .frame(minHeight: 220, alignment: .top)
+                // Centred, so the leftover width on a wide pane becomes margin either side of the
+                // measure rather than a longer line.
                 .frame(maxWidth: .infinity, alignment: .center)
+                .accessibilityLabel(title)
                 .onChange(of: text) { _, new in
                     guard new != baseline else { return }
                     touched = true
@@ -256,6 +304,14 @@ struct SharedFieldEditor: View {
         return touched ? "Unsaved" : "Saved"
     }
 
+    /// The same states, minus the steady one. A field that says "Saved" permanently is telling you
+    /// something that is true almost always and therefore worth nothing; the states that are *not*
+    /// the resting state are the ones somebody needs to see.
+    private var transientStatus: String? {
+        let now = status
+        return now == "Saved" ? nil : now
+    }
+
     // MARK: - A document too big for a text view
 
     /// The most this will load into a `TextEditor`. About 35,000 words — an order of magnitude more
@@ -283,9 +339,12 @@ struct SharedFieldEditor: View {
             )
             .font(.callout)
             .foregroundStyle(.secondary)
-            ScrollView { MarkdownText(source: value) }
+            // No scroll view of its own. Every home of this editor now scrolls its page, and a
+            // second surface inside one of them is the ambiguous trackpad drag the write-up just
+            // stopped having.
+            MarkdownText(source: value)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
     // MARK: - Two writers, one field

@@ -30,11 +30,27 @@ struct MarkdownTextView: NSViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
-    func makeNSView(context: Context) -> NSScrollView {
-        let scroll = NSTextView.scrollableTextView()
-        scroll.drawsBackground = false
-        scroll.hasVerticalScroller = true
-        guard let textView = scroll.documentView as? NSTextView else { return scroll }
+    func makeNSView(context: Context) -> NSTextView {
+        // A bare text view, and deliberately **not** `NSTextView.scrollableTextView()`. That factory
+        // hands back an `NSScrollView`, and one of those inside the detail pane's own `ScrollView`
+        // is two scrolling surfaces stacked: the trackpad has to guess which one a two-finger drag
+        // meant, and the write-up scrolled independently of the page it sits on. There is one
+        // scrolling surface now — the page — and this view simply grows to the height of its text.
+        //
+        // `NSTextView(frame:)` is TextKit 2, the same engine the factory would have configured;
+        // nothing here touches `layoutManager`, which is what would downgrade it to TextKit 1.
+        let textView = NSTextView(frame: .zero)
+        textView.isVerticallyResizable = true
+        textView.isHorizontallyResizable = false
+        textView.minSize = .zero
+        textView.maxSize = CGSize(
+            width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude
+        )
+        // The container follows the view's width, so setting the frame width in `sizeThatFits` is
+        // what rewraps the text — and the height is unbounded, because the height is the answer.
+        textView.textContainer?.widthTracksTextView = true
+        textView.textContainer?.heightTracksTextView = false
+        textView.textContainer?.size = CGSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
 
         textView.delegate = context.coordinator
         textView.allowsUndo = true
@@ -53,12 +69,23 @@ struct MarkdownTextView: NSViewRepresentable {
 
         textView.string = text
         context.coordinator.attach(textView)
-        return scroll
+        return textView
     }
 
-    func updateNSView(_ scroll: NSScrollView, context: Context) {
+    /// The height the document actually occupies at the width SwiftUI is offering — which is what
+    /// makes the write-up a document that grows rather than a box with a magic number in it.
+    ///
+    /// Measured off `NSTextLayoutManager`, the same TextKit 2 engine the gutter and the caret rects
+    /// come from, so there is one answer about where the text is rather than two. It cannot oscillate
+    /// with SwiftUI's layout: the height is a pure function of the text and the proposed width, and
+    /// nothing here invalidates the layout that asked.
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSTextView, context: Context) -> CGSize? {
+        guard let width = proposal.width, width.isFinite, width > 0 else { return nil }
+        return CGSize(width: width, height: nsView.markdownDocumentHeight(atWidth: width))
+    }
+
+    func updateNSView(_ textView: NSTextView, context: Context) {
         context.coordinator.parent = self
-        guard let textView = scroll.documentView as? NSTextView else { return }
         handle.coordinator = context.coordinator
 
         // The guard that keeps undo alive. `text` changes on every keystroke *because the text view
@@ -79,6 +106,10 @@ struct MarkdownTextView: NSViewRepresentable {
     enum EditorKey {
         case up, down, enter, escape
     }
+
+    /// The floor, so an empty write-up is still a line you can click into rather than a zero-height
+    /// view with nothing to aim at.
+    static var emptyHeight: CGFloat { MarkdownStyle.bodyFont.boundingRectForFont.height * 1.15 + 12 }
 
     @MainActor final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: MarkdownTextView
@@ -154,9 +185,9 @@ struct MarkdownTextView: NSViewRepresentable {
             let range = textView.selectedRange()
             let lower = characterOffset(of: range.location)
             parent.selection = lower..<(lower + characterCount(of: range))
-            // The reveal follows the caret, so the document restyles when it moves. This is a pure
-            // colour change — the gutter is a paragraph property and does not move with the caret,
-            // which is why the line no longer reflows as the caret enters it.
+            // The reveal follows the caret, so the document restyles when it moves. The gutter is a
+            // paragraph property and does not move with the caret, so the document's left edge never
+            // shifts; only the caret's own line changes width, as its inline markers come back.
             restyle()
             publishRects()
         }
@@ -170,14 +201,17 @@ struct MarkdownTextView: NSViewRepresentable {
 
         /// TextKit 2 throughout — `NSTextLayoutManager`, not the legacy `NSLayoutManager` path,
         /// which on macOS 26 would force the text view back onto the compatibility engine.
+        ///
+        /// In the text view's own coordinates, which are the representable's: there is no scroll
+        /// view between them any more, and converting into `enclosingScrollView` would now find the
+        /// *page's* scroll view several levels up and hang the slash menu off the wrong origin.
         private func rect(for range: NSRange) -> CGRect? {
             guard let textView,
                   let layout = textView.textLayoutManager,
                   let content = layout.textContentManager,
                   let start = content.location(content.documentRange.location, offsetBy: range.location),
                   let end = content.location(start, offsetBy: range.length),
-                  let textRange = NSTextRange(location: start, end: end),
-                  let scroll = textView.enclosingScrollView
+                  let textRange = NSTextRange(location: start, end: end)
             else { return nil }
             // Layout is lazy, and a segment nobody has laid out yet has no frame to report.
             layout.ensureLayout(for: textRange)
@@ -192,7 +226,7 @@ struct MarkdownTextView: NSViewRepresentable {
             guard var found = union else { return nil }
             found.origin.x += textView.textContainerOrigin.x
             found.origin.y += textView.textContainerOrigin.y
-            return textView.convert(found, to: scroll)
+            return found
         }
 
         // MARK: - Keys the menu wants first
@@ -248,6 +282,29 @@ struct MarkdownTextView: NSViewRepresentable {
     }
 }
 
+extension NSTextView {
+    /// How tall this document is when laid out `width` points wide.
+    ///
+    /// Measured, not guessed: `usageBoundsForTextContainer` is what TextKit 2 actually filled, so it
+    /// grows as lines are typed, shrinks as they are deleted, and gets taller when the pane narrows
+    /// and the prose rewraps. Measured on this engine at a 520 pt measure: an empty document is 28 pt,
+    /// ten lines are 172 pt and forty are 652 pt; the same forty-line document is 236 pt at 520 pt
+    /// wide and 492 pt at 260 pt wide.
+    ///
+    /// Setting the frame width is what rewraps it — the container tracks the view — and it is the
+    /// only side effect, on a view SwiftUI is about to set the frame of anyway.
+    @MainActor func markdownDocumentHeight(atWidth width: CGFloat) -> CGFloat {
+        guard let layout = textLayoutManager else { return MarkdownTextView.emptyHeight }
+        if frame.width != width {
+            setFrameSize(NSSize(width: width, height: frame.height))
+        }
+        // Layout is lazy, and un-laid-out text has no bounds to report.
+        layout.ensureLayout(for: layout.documentRange)
+        let used = layout.usageBoundsForTextContainer.height + textContainerInset.height * 2
+        return max(ceil(used), MarkdownTextView.emptyHeight)
+    }
+}
+
 /// The parent's way of changing the text without owning the text view. One object rather than a
 /// pending-edit binding, because an edit is a command and not a piece of state.
 @MainActor final class MarkdownEditorHandle {
@@ -272,8 +329,10 @@ struct MarkdownTextView: NSViewRepresentable {
 /// The wrapped second line of the plain paragraph also lands at 45.8 rather than at 0.
 ///
 /// **Nothing is ever removed from the string.** The markers are all still there, still selectable,
-/// still what the store holds; they are dimmed, not hidden. Revealing the caret's line is therefore
-/// a pure colour change, and the line does not reflow as the caret arrives.
+/// still what the store holds. Block markers are dimmed in the gutter; inline markers are drawn at a
+/// hair size and fully transparent, which is hiding them without a second text model to keep in step.
+/// The caret's line brings its inline markers back at full size, so the line it is on does reflow —
+/// that is the trade the design takes, and it is confined to the one line you are editing.
 @MainActor enum MarkdownStyle {
     static let bodyFont = NSFont.preferredFont(forTextStyle: .body)
 
@@ -289,6 +348,11 @@ struct MarkdownTextView: NSViewRepresentable {
 
     /// A monospaced font's advance, measured once. `- [ ] ` is six of these wide by construction.
     static let column = NSAttributedString(string: "0", attributes: [.font: markerFont]).size().width
+
+    /// What an inline marker is drawn in when the caret is not on its line: small enough to take no
+    /// visible width, and never zero — `NSFont.systemFont(ofSize: 0)` means *the default size*, which
+    /// would draw the markers at full size and look like the hiding had simply failed.
+    static let hiddenFont = NSFont.systemFont(ofSize: 0.01)
 
     static var gutter: CGFloat { column * CGFloat(gutterColumns) }
 
@@ -358,11 +422,43 @@ struct MarkdownTextView: NSViewRepresentable {
                 }
             }
 
-            // Then the markers over the top. Colour only — the block marker is already in the
-            // gutter font and stays there, so revealing a line changes nothing about its layout.
+            // Then the markers over the top, and the two kinds are treated differently.
+            //
+            // **Block markers stay visible and dim in the gutter.** That is the whole idea: you can
+            // still see that a line is a heading, and the marker never interrupts the reading edge
+            // because it is not on it.
+            //
+            // **Inline markers are hidden, not dimmed** — bold text simply looks bold. Dimmed `**`
+            // still occupies its two characters of space, so a document was still visibly full of
+            // punctuation. Hidden here means drawn at 0.01 pt and fully transparent: the characters
+            // are all still in the string, still selectable, still what the store holds, and the
+            // drawn line is within 0.01 pt per marker of the width it would have if they had been
+            // deleted (measured: `make it **bold** now` draws 102.38 pt hidden against 102.36 pt
+            // with the four characters actually removed, and 126.58 pt when merely coloured clear).
+            //
+            // The caret's line reveals them at full size, so editing is honest — and the caret can
+            // therefore never sit inside a hair-sized run, because a line with the caret on it is
+            // never hidden.
             let marker: NSColor = revealed ? .labelColor : .tertiaryLabelColor
+            let blockEnd = MarkdownSyntax.blockMarker(line)?.upperBound ?? 0
             for span in MarkdownSyntax.markers(line) {
-                storage.addAttribute(.foregroundColor, value: marker, range: range(span))
+                // `markers` merges ranges that touch, so `- **bold**` hands over one span covering
+                // the bullet and the opening `**`. The gutter ends at `blockEnd`, and the split is
+                // there.
+                if span.lowerBound < blockEnd {
+                    storage.addAttribute(
+                        .foregroundColor, value: marker,
+                        range: range(span.lowerBound..<min(span.upperBound, blockEnd))
+                    )
+                }
+                guard span.upperBound > blockEnd else { continue }
+                let inline = range(max(span.lowerBound, blockEnd)..<span.upperBound)
+                if revealed {
+                    storage.addAttribute(.foregroundColor, value: marker, range: inline)
+                } else {
+                    storage.addAttribute(.font, value: hiddenFont, range: inline)
+                    storage.addAttribute(.foregroundColor, value: NSColor.clear, range: inline)
+                }
             }
             // The block marker and the indentation in front of it are the gutter, and the gutter is
             // monospaced — the indent arithmetic above is in columns, and it only holds if what
