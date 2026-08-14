@@ -25,7 +25,48 @@ public enum Schema {
         migrator.registerMigration("v5") { db in
             try db.execute(sql: calendarDismissals)
         }
+        migrator.registerMigration("v6") { db in
+            try actionsIntoTheWriteUp(db)
+        }
         return migrator
+    }
+
+    /// The write-up became the record for actions, so the actions that were only ever in the column
+    /// move into it — appended to the summary as a GFM task list under an `## Actions` heading.
+    ///
+    /// **The column is not dropped and not cleared.** Nothing reads it after this, but it is the
+    /// only copy of `owner` and `due`, which the markdown does not represent yet, and it is the
+    /// safety net if this migration got a document wrong: the row still holds exactly what the agent
+    /// wrote. `meetings export --format bundle` carries it out, and a `SELECT actions FROM meetings`
+    /// reads it back.
+    ///
+    /// **Idempotent**, because it has to be: ``MarkdownActions/appending(_:to:)`` returns a document
+    /// that already carries task items untouched, so a re-run — which the orphan repair and
+    /// `RobustStoreTests` both provoke — cannot produce a second copy of the list.
+    ///
+    /// A meeting whose actions land on an *empty* summary gains one, and with it the state that
+    /// having a write-up implies. That is ``Meeting/setSummary(_:)``'s own rule, restated here
+    /// because a migration cannot call it: `ready` means "nothing written up yet", and a meeting
+    /// whose write-up is its action list is written up.
+    static func actionsIntoTheWriteUp(_ db: Database) throws {
+        let rows = try Row.fetchAll(
+            db, sql: "SELECT id, state, summary, actions FROM meetings WHERE actions IS NOT NULL"
+        )
+        for row in rows {
+            let encoded: String = row["actions"] ?? ""
+            guard let actions = try? JSONDecoder().decode([Action].self, from: Data(encoded.utf8)),
+                  !actions.isEmpty
+            else { continue }
+            let summary: String = row["summary"] ?? ""
+            let merged = MarkdownActions.appending(actions, to: summary)
+            guard merged != summary else { continue }
+            let state: String = row["state"] ?? ""
+            let next = state == MeetingState.ready.rawValue ? MeetingState.complete.rawValue : state
+            try db.execute(
+                sql: "UPDATE meetings SET summary = ?, state = ? WHERE id = ?",
+                arguments: [merged, next, row["id"] as String?]
+            )
+        }
     }
 
     /// Calendar meetings are given rows the moment they appear in the look-ahead window

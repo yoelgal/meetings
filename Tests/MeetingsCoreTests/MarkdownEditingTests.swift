@@ -262,4 +262,103 @@ import Testing
         #expect(MarkdownEditing.blockCommands.filter { !$0.replacesMarker }.isEmpty,
                 "the turn-into group can only offer constructs that replace a line's marker")
     }
+
+    // MARK: - Ticking a box
+
+    /// Clicking a checkbox is one character, and it goes through the same ``MarkdownEditing/Edit``
+    /// every keystroke's follow-up does — which is what puts it on the undo stack and provokes the
+    /// autosave rather than writing to a column of its own.
+    @Test func tickingABoxChangesOneCharacter() throws {
+        let text = "# Standup\n\n- [ ] anchor live notes\n- [x] ship the gutter\n"
+        let box = try #require(text.range(of: "- [ ] anchor"))
+        let offset = text.distance(from: text.startIndex, to: box.lowerBound) + 3
+
+        let ticked = try #require(MarkdownEditing.toggleTask(in: text, at: offset))
+        #expect(ticked.replacement == "x")
+        #expect(ticked.range.count == 1)
+        #expect(ticked.applied(to: text)
+            == "# Standup\n\n- [x] anchor live notes\n- [x] ship the gutter\n")
+
+        // And back again, from anywhere on the line — a click lands on the box, but the transform
+        // is about the line rather than about the character that was hit.
+        let done = try #require(text.range(of: "- [x] ship"))
+        let anywhere = text.distance(from: text.startIndex, to: done.lowerBound) + 9
+        let unticked = try #require(MarkdownEditing.toggleTask(in: text, at: anywhere))
+        #expect(unticked.replacement == " ")
+        #expect(unticked.applied(to: text)
+            == "# Standup\n\n- [ ] anchor live notes\n- [ ] ship the gutter\n")
+    }
+
+    /// The caret lands in the sentence rather than inside the brackets: a click in a text view moves
+    /// the insertion point wherever it hit, and inside a marker is not somewhere to leave it.
+    @Test func tickingLeavesTheCaretAtTheStartOfTheAction() throws {
+        let edit = try #require(MarkdownEditing.toggleTask(in: "- [ ] ship it", at: 3))
+        #expect(edit.selection == 6..<6)
+    }
+
+    @Test func aLineThatIsNotATaskItemHasNothingToToggle() {
+        for text in ["just prose", "- an ordinary bullet", "## Actions", ""] {
+            #expect(MarkdownEditing.toggleTask(in: text, at: 2) == nil, "\(text) has no box")
+        }
+    }
+
+    // MARK: - Where the toolbar goes
+
+    /// The defect this function exists for. The toolbar is centred on the selection and is about
+    /// 280 pt wide, so a selection starting at the text's left edge computed a negative origin —
+    /// outside the editor, outside the document column, and past the left edge of the split view's
+    /// detail pane, which clips. Nothing bounded it, so those points were simply not drawn.
+    @Test func aFloatingSurfaceIsNeverPushedOutsideTheEditor() {
+        let toolbar = CGSize(width: 280, height: 30)
+
+        // A selection of one word at the start of a line: centring alone would put it at −95.
+        let atTheEdge = MarkdownEditing.floating(
+            over: CGRect(x: 45, y: 120, width: 40, height: 18), size: toolbar, in: 520
+        )
+        #expect(atTheEdge.x == 0, "clamped to the editor's left edge rather than off it")
+
+        // And the same at the other end.
+        let atTheFarEdge = MarkdownEditing.floating(
+            over: CGRect(x: 470, y: 120, width: 45, height: 18), size: toolbar, in: 520
+        )
+        #expect(atTheFarEdge.x == 240, "clamped so its right edge lands on the editor's")
+
+        // An editor narrower than the surface has no valid range at all, and the answer is the left
+        // edge — not a negative x from clamping to a negative upper bound.
+        let cramped = MarkdownEditing.floating(
+            over: CGRect(x: 10, y: 120, width: 20, height: 18), size: toolbar, in: 200
+        )
+        #expect(cramped.x == 0)
+    }
+
+    @Test func aFloatingSurfaceSitsOverTheTextAndFlipsWhenThereIsNoRoom() {
+        let toolbar = CGSize(width: 280, height: 30)
+
+        let roomy = MarkdownEditing.floating(
+            over: CGRect(x: 200, y: 120, width: 60, height: 18), size: toolbar, in: 520
+        )
+        #expect(roomy.below == false)
+        #expect(roomy.y == 84, "sits above the selection, its own height plus the gap")
+        #expect(roomy.x == 90, "and centred on it")
+
+        // The first line of the document has nothing above it, and a toolbar off the top edge is a
+        // toolbar you cannot press.
+        let atTheTop = MarkdownEditing.floating(
+            over: CGRect(x: 200, y: 6, width: 60, height: 18), size: toolbar, in: 520
+        )
+        #expect(atTheTop.below)
+        #expect(atTheTop.y == 30, "under the selection instead")
+    }
+
+    /// A caret has no width, and a surface that refused to place itself over one would be a menu
+    /// that never opened — which is the same class of failure as a toolbar that never appears.
+    @Test func aZeroSizedAnchorStillGetsAPlacement() {
+        let placement = MarkdownEditing.floating(
+            over: CGRect(x: 120, y: 200, width: 0, height: 18),
+            size: CGSize(width: 300, height: 220), in: 520
+        )
+        #expect(placement.below, "no room above for a 220 pt menu at y = 200")
+        #expect(placement.y == 224)
+        #expect(placement.x == 0)
+    }
 }

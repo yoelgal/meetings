@@ -83,7 +83,10 @@ public enum MarkdownExport {
             startedAt: meeting.startedAt,
             endedAt: meeting.endedAt,
             attendees: meeting.attendees,
-            actions: meeting.actions,
+            // Out of the write-up, which is where actions live now — the column may still hold an
+            // older list the migration copied out of it, and exporting that would contradict the
+            // summary.md sitting beside this file.
+            actions: MarkdownActions.parse(meeting.summary ?? ""),
             source: meeting.source.rawValue,
             importedFrom: meeting.importedFrom
         )
@@ -113,18 +116,12 @@ public enum MarkdownExport {
         return "# \(meeting.title): transcript\n\n" + lines.joined(separator: "\n\n") + "\n"
     }
 
+    /// The write-up, as written. The actions used to be appended here from the column; they are task
+    /// list items inside the summary now, so appending them again would print every one of them
+    /// twice on any meeting whose column the migration left populated.
     private static func summaryMarkdown(_ meeting: Meeting) -> String? {
         var parts: [String] = []
         if let summary = meeting.summary?.trimmedOrNil { parts.append(summary) }
-        if let actions = meeting.actions, !actions.isEmpty {
-            let lines = actions.map { action -> String in
-                var line = "- [\(action.done ? "x" : " ")] \(action.text)"
-                let trailing = [action.owner, action.due.map { "due \($0)" }].compactMap { $0 }
-                if !trailing.isEmpty { line += " (\(trailing.joined(separator: ", ")))" }
-                return line
-            }
-            parts.append("## Actions\n\n" + lines.joined(separator: "\n"))
-        }
         guard !parts.isEmpty else { return nil }
         // An agent's summary usually opens with its own heading, and two H1s in a row is how a
         // markdown file starts looking machine-made.

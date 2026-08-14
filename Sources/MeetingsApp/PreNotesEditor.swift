@@ -439,6 +439,10 @@ struct SharedFieldEditor: View {
 /// keep in step, and it is the thing that makes a caret land a character off.
 struct LiveMarkdownEditor: View {
     @Binding var text: String
+    /// The measure the editor is framed to, so a floating surface can be kept inside it. Handed in
+    /// rather than measured, because it is the same constant the frame above is set from — see
+    /// ``MarkdownEditing/floating(over:size:in:gap:)`` for what happens without it.
+    var width: CGFloat = SharedFieldEditor.column
 
     /// The selection as character offsets, published by the text view. Everything on this screen
     /// that has to know where the caret is — the slash menu, the toolbar's pressed buttons — reads
@@ -500,8 +504,7 @@ struct LiveMarkdownEditor: View {
                 choose(command, over: menu.range)
             }
             .fixedSize()
-            .alignmentGuide(.leading) { _ in -anchor.minX }
-            .alignmentGuide(.top) { _ in -anchor.maxY - 4 }
+            .floating(over: anchor, in: width)
         }
     }
 
@@ -541,15 +544,34 @@ struct LiveMarkdownEditor: View {
                 handle.apply(MarkdownEditing.applyBlock(command, in: text, replacing: selection))
             }
             .fixedSize()
-            .alignmentGuide(.leading) { $0.width / 2 - anchor.midX }
-            // Above the selection, and below it when the selection is near the top of the pane and
-            // there is no room — a toolbar off the top edge is a toolbar you cannot press.
-            .alignmentGuide(.top) { anchor.minY < $0.height + 8 ? -anchor.maxY - 6 : $0.height + 6 - anchor.minY }
+            .floating(over: anchor, in: width)
         }
     }
 
     private func toggle(_ mark: MarkdownEditing.InlineMark) {
         handle.apply(MarkdownEditing.toggle(mark, in: text, selection: selection))
+    }
+}
+
+extension View {
+    /// Places a floating surface over `anchor` in the editor's own coordinate space, through the one
+    /// decision in ``MarkdownEditing/floating(over:size:in:gap:)`` — so the toolbar and the slash
+    /// menu cannot drift apart about what "over the text" means, and neither can be pushed off an
+    /// edge where the split view's pane clips it.
+    ///
+    /// Alignment guides rather than an offset: the guide closure is handed the surface's own
+    /// dimensions, which is exactly what the placement needs and what a `.offset` would not have.
+    func floating(over anchor: CGRect, in width: CGFloat) -> some View {
+        alignmentGuide(.leading) { size in
+            -MarkdownEditing.floating(
+                over: anchor, size: CGSize(width: size.width, height: size.height), in: width
+            ).x
+        }
+        .alignmentGuide(.top) { size in
+            -MarkdownEditing.floating(
+                over: anchor, size: CGSize(width: size.width, height: size.height), in: width
+            ).y
+        }
     }
 }
 

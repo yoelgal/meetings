@@ -46,8 +46,7 @@ struct MeetingDetailView: View {
                 folders: model.folders,
                 moveToFolder: { model.move(meetingID: meeting.id, toFolder: $0) },
                 rename: { model.rename(meetingID: meeting.id, to: $0) },
-                saveSummary: { model.saveSummary(meetingID: meeting.id, text: $0) },
-                saveActions: { model.saveActions(meetingID: meeting.id, from: meeting.actions ?? [], to: $0) }
+                saveSummary: { model.saveSummary(meetingID: meeting.id, text: $0) }
             )
         }
     }
@@ -385,7 +384,6 @@ private struct WrittenDetailView: View {
     let moveToFolder: (String?) -> Void
     let rename: (String) -> Void
     let saveSummary: (String) -> Void
-    let saveActions: ([Action]) -> Void
 
     /// The segment a clicked note scrolled to, held so it can be highlighted for a moment.
     @State private var highlighted: Int64?
@@ -419,37 +417,37 @@ private struct WrittenDetailView: View {
                     if meeting.state == .ready {
                         AgentCommandCard(command: command, note: enhancementNote)
                     }
-                    // The write-up and the actions out of it, as one surface and the tallest thing
-                    // on the screen.
+                    // The write-up, which now carries the actions inside it, as one surface and the
+                    // tallest thing on the screen.
                     //
                     // It is what somebody opens a finished meeting *for* — the transcript is the
                     // evidence behind it and the notes are the raw material, and both used to sit
                     // above the fold at full height while the summary got a 360 pt slot they pushed
                     // off screen. They are still one click away, with their counts on the closed
                     // row so nothing is hidden silently; the write-up is the thing that is open.
-                    VStack(alignment: .leading, spacing: 16) {
-                        // An editor rather than rendered markdown, and always, not behind an edit
-                        // mode. A write-up with one wrong sentence in it used to mean going back to
-                        // the CLI to fix it. This is the same editor the pre-notes field uses, so a
-                        // summary the CLI rewrites while it is open is handled the one way this app
-                        // handles that.
-                        // No height at all any more. It had `.frame(height: 520)` because the
-                        // editor wrapped an `NSScrollView`, whose ideal height inside this
-                        // `ScrollView` was arbitrary — and 520 pt then sliced a heading in half at
-                        // the boundary and gave the page a second thing to scroll. The editor
-                        // reports the height of its own laid-out document now, so the page is the
-                        // only scrolling surface and the write-up ends where the writing ends.
-                        SharedFieldEditor(
-                            title: "Summary",
-                            value: meeting.summary ?? "",
-                            identity: "summary:\(meeting.id)",
-                            placeholder: "Write it up here, or let an agent do it. Markdown works.",
-                            oversizeHint: "Read and change it with meetings show --summary and meetings summary set --file.",
-                            save: saveSummary,
-                            titleShown: false
-                        )
-                        ActionChecklist(actions: meeting.actions ?? [], save: saveActions)
-                    }
+                    //
+                    // An editor rather than rendered markdown, and always, not behind an edit mode.
+                    // A write-up with one wrong sentence in it used to mean going back to the CLI to
+                    // fix it. This is the same editor the pre-notes field uses, so a summary the CLI
+                    // rewrites while it is open is handled the one way this app handles that — and
+                    // the actions in it are ticked by clicking the checkbox the editor draws over
+                    // each `- [ ]`, which is one more edit to this same field.
+                    //
+                    // No height at all any more. It had `.frame(height: 520)` because the editor
+                    // wrapped an `NSScrollView`, whose ideal height inside this `ScrollView` was
+                    // arbitrary — and 520 pt then sliced a heading in half at the boundary and gave
+                    // the page a second thing to scroll. The editor reports the height of its own
+                    // laid-out document now, so the page is the only scrolling surface and the
+                    // write-up ends where the writing ends.
+                    SharedFieldEditor(
+                        title: "Summary",
+                        value: meeting.summary ?? "",
+                        identity: "summary:\(meeting.id)",
+                        placeholder: "Write it up here, or let an agent do it. Markdown works.",
+                        oversizeHint: "Read and change it with meetings show --summary and meetings summary set --file.",
+                        save: saveSummary,
+                        titleShown: false
+                    )
                     if !meeting.preNotes.isEmpty {
                         SecondarySection(title: "Pre-meeting notes", open: $showPreNotes) {
                             MarkdownText(source: meeting.preNotes)
@@ -673,218 +671,23 @@ private struct SecondarySection<Content: View>: View {
     }
 }
 
-/// The actions, inside the write-up rather than beside it.
+/// Where the actions used to be.
 ///
-/// Wave 2 drew Reminders' filled completion circle here and it did nothing, because `actions` was a
-/// JSON column only an agent wrote. It is a real checkbox now, and the rest of the row is real too:
-/// the text is editable in place, the row deletes, and the field at the bottom adds one. Every one
-/// of those goes to the same column `meetings actions set` writes, so the CLI and the window are
-/// looking at one list rather than at two that agree until somebody touches either.
+/// `ActionChecklist` and `ActionRow` drew a panel under the write-up: a checkbox, an editable field,
+/// an "Add an action" row and a per-row delete, all writing a JSON column that only they and
+/// `meetings actions set` knew about. All of it is gone, and nothing replaced it.
 ///
-/// Owner and due stay read-only here. They are what the meeting *said* — "end of week", in the
-/// words it was said in — and a second pair of fields to fill in on every row would turn a checklist
-/// into a form. `meetings actions set` still writes them.
-private struct ActionChecklist: View {
-    let actions: [Action]
-    /// The whole list as it should now be. Whole-list rather than per-row, because the store's
-    /// column is the whole array — see ``AppModel/saveActions(meetingID:from:to:)`` for what
-    /// happens when the CLI rewrote it in between.
-    let save: ([Action]) -> Void
-
-    @State private var draft = ""
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            // A heading in the document, not a panel label: `☑` sits in the write-up's own gutter
-            // exactly where a `##` would, and "Actions" starts on the same body edge as every line
-            // of prose above it. That is the whole of this change — the ticking, the owner and the
-            // delete behave as they did.
-            HStack(alignment: .firstTextBaseline, spacing: 0) {
-                Text("☑")
-                    .font(Font(MarkdownStyle.markerFont))
-                    .foregroundStyle(.tertiary)
-                    .frame(width: MarkdownStyle.gutter, alignment: .trailing)
-                Text("Actions")
-                    .font(Font(MarkdownStyle.headingFont(2)))
-                if let trailing {
-                    Text(trailing)
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                        .padding(.leading, 8)
-                }
-            }
-            .padding(.bottom, 2)
-
-            VStack(alignment: .leading, spacing: 4) {
-                // By index, because an action has no id and two rows may legitimately read the same.
-                ForEach(Array(actions.enumerated()), id: \.offset) { index, action in
-                    ActionRow(action: action) { edited in
-                        var next = actions
-                        if let edited {
-                            next[index] = edited
-                        } else {
-                            next.remove(at: index)
-                        }
-                        save(next)
-                    }
-                }
-                add
-            }
-            // The rows line up with the prose, not with the gutter the heading's marker sits in.
-            .padding(.leading, MarkdownStyle.gutter)
-        }
-        // The block as a whole shares the write-up's column and its inset, so there is one
-        // left edge on this screen rather than two that nearly agree.
-        .padding(.horizontal, SharedFieldEditor.editorInset)
-        .frame(maxWidth: SharedFieldEditor.column + 2 * SharedFieldEditor.editorInset)
-        .frame(maxWidth: .infinity, alignment: .center)
-    }
-
-    private var trailing: String? {
-        let open = actions.filter { !$0.done }.count
-        guard !actions.isEmpty else { return nil }
-        return open == 0 ? "all done" : "\(open) open"
-    }
-
-    /// Always present, empty list or not. An empty Actions heading with nothing under it says the
-    /// meeting produced none; a field says you can write one down, which is the whole reason the
-    /// list sits under the write-up you are reading it out of.
-    private var add: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Image(systemName: "plus")
-                .font(.caption)
-                .foregroundStyle(.tertiary)
-                // The checkbox's own width, so the field's left edge is the rows' left edge.
-                .frame(width: 16, alignment: .center)
-            TextField("Add an action", text: $draft)
-                .textFieldStyle(.plain)
-                .onSubmit(commit)
-        }
-        .padding(.top, 2)
-    }
-
-    private func commit() {
-        let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        draft = ""
-        save(actions + [Action(text: trimmed)])
-    }
-}
-
-/// One row of the checklist: tick it, retype it, or delete it.
-private struct ActionRow: View {
-    let action: Action
-    /// The row as it should now be, or nil to remove it.
-    let commit: (Action?) -> Void
-
-    /// The text being typed. Held locally so a keystroke is not a database write; committed on
-    /// Return and on losing focus, which is the same rule the title field and the notes editor use —
-    /// losing what somebody typed because they reached for the window instead of the Return key is
-    /// the bug all three are avoiding.
-    @State private var text: String
-    @FocusState private var editing: Bool
-
-    init(action: Action, commit: @escaping (Action?) -> Void) {
-        self.action = action
-        self.commit = commit
-        _text = State(initialValue: action.text)
-    }
-
-    var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            // A closure literal rather than `set: tick`: passing the method itself crashes the
-            // 6.2.4 compiler in IRGen, on the thunk that reabstracts an isolated `(Bool) -> Void`.
-            Toggle("", isOn: Binding(get: { action.done }, set: { tick($0) }))
-                // The system checkbox rather than a glyph in a button: it is the control macOS
-                // users already know, and it comes with its accessibility label and its keyboard
-                // behaviour attached.
-                .toggleStyle(.checkbox)
-                .labelsHidden()
-                .frame(width: 16, alignment: .center)
-                .help(action.done ? "Mark as not done" : "Mark as done")
-
-            // Vertical axis so a long action wraps instead of being clipped. A single-line field
-            // does not ellipsize, it simply stops drawing: "…decide if it can replace the 12" ran
-            // under the owner column with the rest of the sentence nowhere on screen, which is worse
-            // than a truncation because nothing says it happened.
-            TextField("", text: $text, axis: .vertical)
-                .lineLimit(1...4)
-                // Exactly the width it is offered, and never more. Without this the field is the
-                // one view in the row whose width is negotiated rather than stated, and on the
-                // longest row that negotiation is what pushed the owner past the column's right
-                // edge — where `.fixedSize()` faithfully drew it at full size, off screen.
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .textFieldStyle(.plain)
-                .focused($editing)
-                .onSubmit(commitText)
-                .onChange(of: editing) { wasEditing, _ in if wasEditing { commitText() } }
-                // Somebody else rewrote the column while this row sat there. Not while it is being
-                // typed into: their write is in the store either way, and taking the field out from
-                // under a cursor is the one thing the shared editor exists to prevent.
-                .onChange(of: action.text) { _, incoming in if !editing { text = incoming } }
-                .strikethrough(action.done, color: .secondary)
-                .foregroundStyle(action.done ? AnyShapeStyle(.secondary) : AnyShapeStyle(.primary))
-
-            if let detail {
-                Text(detail)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    // Owner and due are short and fixed; the sentence is the part that should give.
-                    .fixedSize()
-                    // Served *before* the sentence. `.fixedSize()` alone guarantees the owner is
-                    // drawn at its full width — it does not guarantee anywhere to draw it, which is
-                    // the difference between "Yoel" being narrow and "Yoel" being on screen. With
-                    // the priority the stack hands this its ideal width first and the field wraps
-                    // into whatever is left, so an action of any length keeps its owner.
-                    .layoutPriority(1)
-            }
-
-            Button {
-                commit(nil)
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.caption)
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(.tertiary)
-            .help("Delete this action")
-        }
-    }
-
-    /// Owner and due on one quiet run, in the words the meeting used.
-    private var detail: String? {
-        let parts = [action.owner, action.due]
-            .compactMap { $0 }
-            .filter { !$0.isEmpty }
-        return parts.isEmpty ? nil : parts.joined(separator: " · ")
-    }
-
-    private func tick(_ done: Bool) {
-        var next = action
-        next.done = done
-        // The text goes with it: ticking a row somebody had half-retyped and then abandoned should
-        // not throw the retype away, and should not save a half-word either — so what is committed
-        // is whatever the field would have committed on its own.
-        next.text = trimmedOrOriginal
-        commit(next)
-    }
-
-    private func commitText() {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed != action.text else { return }
-        // Emptied is deleted. An action with no text is a row nobody can read, and leaving it there
-        // would mean `meetings actions list` printing a blank line as something you owe.
-        guard !trimmed.isEmpty else { return commit(nil) }
-        var next = action
-        next.text = trimmed
-        commit(next)
-    }
-
-    private var trimmedOrOriginal: String {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? action.text : trimmed
-    }
-}
+/// An action is a GFM task list item **in the write-up** now — `- [ ] ship it`. Adding one is typing
+/// `- [ ] `, which the editor's shorthand already offers and the slash menu already lists; ticking
+/// one is clicking the checkbox the editor draws over its box; deleting one is deleting the line;
+/// and the "Actions" heading is a `## Actions` the author wrote, because it is part of what they
+/// wrote. There is one record, so the window and `meetings actions list` cannot disagree.
+///
+/// The two-writer protection came with it. `AppModel.saveActions` had a compare-and-set of its own
+/// — the whole array had to still be what the window was showing, or the click was dropped — and
+/// that existed because the column had two writers and no other guard. The summary already has one:
+/// ``SharedFieldEdit`` decides echo / reload / conflict for every write to this field, and a tick is
+/// now just another edit to it. One mechanism instead of two that had to agree.
 
 /// The one-click copy of the exact command. In the default manual mode nothing writes a
 /// summary on its own, and the gap between "I should write this up" and "what was that command
