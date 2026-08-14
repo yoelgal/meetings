@@ -350,6 +350,32 @@ import Testing
                 "the palette has to be ordinary window content, not a presented surface")
     }
 
+    /// ⌘K searched only the folder the sidebar happened to be sitting on.
+    ///
+    /// `AppModel.runSearch` handed `folderID: scope.folderID` to the store, so with a folder
+    /// selected the palette searched inside that folder and nowhere else — while `meetings search`
+    /// searches the whole store unless it is given `--folder`. A meeting the CLI finds by name was
+    /// simply not there, and the palette answered "No meeting name, transcript, note, pre-meeting
+    /// note or summary contains X": a claim about the whole store, made about one folder, with
+    /// nothing on screen to say a filter was on or any way to take it off.
+    ///
+    /// It was never a decision, which is why it disagreed with itself: `.all`, `.needsWriteUp`,
+    /// `.unfiled` and `.upcoming` all carry a nil `folderID`, so four of the five kinds of sidebar
+    /// row searched everything and the fifth quietly did not. `openHighlightedResult` already
+    /// widens the scope for a hit that has no row in the current list, so reaching outside what you
+    /// are looking at is what the palette was built to do.
+    @Test func theSearchPaletteSearchesTheWholeStoreRatherThanTheSelectedFolder() throws {
+        let model = try Self.source("AppModel.swift")
+        let scoped = model.components(separatedBy: "\n").enumerated()
+            .filter { $0.element.contains(".search(query:") && $0.element.contains("folderID") }
+            .map { "AppModel.swift:\($0.offset + 1)" }
+        #expect(scoped.isEmpty, """
+            The palette's search is scoped to the sidebar's folder: \(scoped.joined(separator: ", ")). \
+            ⌘K is the way to reach a meeting you are not already looking at, and its "No matches" \
+            speaks for the whole store — pass no folder, the way `meetings search` takes none.
+            """)
+    }
+
     /// Every one of these is a key the palette answers to, and search that needs the mouse in the
     /// middle of it is search nobody uses. There is no UI test target to press them for real, so
     /// this checks each is still wired to the model call that moves or commits the highlight.
