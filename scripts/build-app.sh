@@ -16,7 +16,11 @@ cd "$ROOT"   # swift build resolves the package from the CWD, not from the scrip
 
 APP="$ROOT/dist/Meetings.app"
 CONTENTS="$APP/Contents"
-BUNDLE_ID="com.yoelgal.Meetings"
+# Overridable so scripts/dev.sh can build a bundle that is a genuinely separate app. The identifier
+# is the key to the NSUserDefaults domain, so a dev copy sharing it also shares the window frame,
+# the split positions, the panel state and every setting — a dev launch then resizes the *installed*
+# app's window, which is how this override came to exist. Distinct identifier, distinct prefs.
+BUNDLE_ID="${MEETINGS_BUNDLE_ID:-com.yoelgal.Meetings}"
 # Must match BundleResources.bundleName — the app looks for the resources here and nowhere else.
 RESOURCE_BUNDLE="Meetings_MeetingsCore.bundle"
 # The certificate scripts/make-signing-identity.sh creates. Matched by name so an unrelated
@@ -111,6 +115,26 @@ esac
 BUILD="$(git -C "$ROOT" rev-list --count HEAD 2>/dev/null || echo 1)"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$CONTENTS/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD" "$CONTENTS/Info.plist"
+
+# What the menu bar, the Dock and the app switcher call this build. scripts/dev.sh sets it to
+# `meetings-dev`, because a dev copy running beside the installed one is otherwise two identical
+# "Meetings" and the only way to tell which you are looking at is which one you just broke.
+#
+# Written here rather than into Packaging/Info.plist so it lands *before* codesigning — PlistBuddy
+# after the seal would invalidate the signature, and re-signing to rename an app is a lot of moving
+# parts for a cosmetic string. CFBundleExecutable is deliberately untouched: it must equal the
+# filename in Contents/MacOS, which stays Meetings.
+#
+APP_NAME="${MEETINGS_APP_NAME:-Meetings}"
+/usr/libexec/PlistBuddy -c "Set :CFBundleName $APP_NAME" "$CONTENTS/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName $APP_NAME" "$CONTENTS/Info.plist"
+
+# And the identifier, for the same reason and in the same place — before the seal. TCC and
+# NSUserDefaults both key on this, so overriding it costs the dev build a one-time microphone and
+# screen-recording prompt and buys it a preferences domain of its own. That is the right trade:
+# permissions are re-grantable in a dialog, but a dev build writing an off-screen window frame into
+# the app you actually use is only discoverable by wondering why your window will not resize.
+/usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $BUNDLE_ID" "$CONTENTS/Info.plist"
 
 # Where this build came from, so the app can tell you how to update it.
 #
