@@ -495,4 +495,88 @@ import Testing
         #expect(editor.contains("if plain != text { text = plain }"),
                 "the store still holds the string the CLI writes, not an attributed one")
     }
+
+    /// The gutter is drawn with **attributes**, never by taking characters out.
+    ///
+    /// Hiding a marker by deleting it from the drawn text is the one thing this editor must not do:
+    /// the document on screen would then have different offsets from the document in the store, and
+    /// that is precisely what makes a caret land a character off. The markers stay; a `kern` pads
+    /// them out to a common width and a `foregroundColor` dims them, and both are restyles the
+    /// existing `transform(updating:)` already keeps the selection valid across.
+    @Test func theGutterIsAnAttributeAndNotACharacterEverRemoved() throws {
+        let editor = try Self.source("PreNotesEditor.swift")
+        #expect(editor.contains("MarkdownSyntax.blockMarker("),
+                "which characters go in the gutter is MeetingsCore's decision, where it is tested")
+        #expect(editor.contains("MarkdownSyntax.markers("),
+                "which characters dim is MeetingsCore's decision too")
+        #expect(editor.contains(".kern ="),
+                "the gutter is padding on the marker run, not characters removed from the document")
+
+        // The styling function is handed the caret so it knows which line to reveal, and the
+        // selection changing has to restyle or the reveal never moves off the first line.
+        #expect(editor.contains("caret: Int? = nil"), "the reveal needs to know where the caret is")
+        #expect(editor.contains(".onChange(of: selection)"),
+                "moving the caret changes which line is revealed")
+
+        // The container is gone. A box around the write-up made it read as one field on a form.
+        #expect(!editor.contains(".background(.quaternary.opacity(0.35)"),
+                "the write-up sits on the pane, not in a filled box")
+        #expect(editor.contains("maxWidth: Self.column"),
+                "the document is a centred measure, not the full width of a wide window")
+    }
+
+    /// Typing the shorthand, Return continuing a list and the slash menu are all one vocabulary,
+    /// and every one of them is a pure function in `MeetingsCore` rather than a rule buried in a
+    /// view where nothing can reach it.
+    @Test func theEditorsTypingRulesLiveWhereTheyCanBeTested() throws {
+        let editor = try Self.source("PreNotesEditor.swift")
+        #expect(editor.contains("MarkdownEditing.followUp("),
+                "list continuation and the shorthand are MeetingsCore's, where they are tested")
+        #expect(editor.contains("MarkdownEditing.slashQuery("),
+                "when the menu is open is a decision with tests behind it")
+        #expect(editor.contains("MarkdownEditing.insert("),
+                "and so is what choosing an item does")
+
+        // Driven by what the text became, not by wrestling the text view for its key events.
+        #expect(editor.contains("before: String(old.characters), after: plain"),
+                "a keystroke is read off the document, not intercepted before the text view sees it")
+
+        // Keyboard navigation of the menu, each key still wired.
+        for key in [".onKeyPress(.upArrow)", ".onKeyPress(.downArrow)",
+                    ".onKeyPress(.escape)", ".onKeyPress(.return)"] {
+            #expect(editor.contains(key), "the slash menu lost its keyboard wiring: \(key)")
+        }
+    }
+
+    /// One transform behind every surface that turns a line into a heading or a list.
+    ///
+    /// A menu that builds its own `"## "` and a toolbar that builds another is two definitions of
+    /// Heading 2 that will disagree the first time either grows a rule — about indentation, about
+    /// what happens to the marker already there.
+    @Test func everyBlockTransformGoesThroughTheOneImplementation() throws {
+        let chrome = try Self.source("MarkdownEditorChrome.swift")
+        #expect(chrome.contains("MarkdownEditing.SlashCommand"),
+                "the menu draws the commands MeetingsCore defines, it does not list its own")
+        for hardcoded in ["\"## \"", "\"- [ ] \"", "\"# \""] {
+            #expect(!chrome.contains(hardcoded),
+                    "\(hardcoded) is built in the view instead of by MarkdownEditing.applyBlock")
+        }
+
+        // The formatting shortcuts are menu items, because the main menu is the one thing that
+        // outranks a focused NSTextView for a key equivalent.
+        #expect(chrome.contains("CommandMenu(\"Format\")"))
+        for shortcut in [
+            ".keyboardShortcut(key, modifiers: modifiers)",
+            "\"b\", [.command]", "\"i\", [.command]",
+            "\"s\", [.command, .shift]", "\"e\", [.command]", "\"k\", [.command, .shift]",
+        ] {
+            #expect(chrome.contains(shortcut), "the formatting shortcuts lost \(shortcut)")
+        }
+        // ⌘K stays Search. It opens from anywhere, the floating notes panel included, so the
+        // editor does not get to take it away — link insertion is ⌘⇧K.
+        let app = try Self.source("MeetingsApp.swift")
+        #expect(app.contains(".keyboardShortcut(\"k\")"), "⌘K is still Search")
+        #expect(!chrome.contains("\"k\", [.command]"), "link insertion must not shadow ⌘K")
+        #expect(app.contains("MarkdownFormattingCommands()"), "the Format menu has to be mounted")
+    }
 }

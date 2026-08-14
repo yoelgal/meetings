@@ -60,10 +60,89 @@ public enum MarkdownSyntax {
         return .body
     }
 
+    /// The leading run of characters that says what the line *is* — `##`, `-`, `1.`, `>`, `- [ ]` —
+    /// with the space after it, as character offsets into the line. Nil for prose.
+    ///
+    /// Leading indentation is deliberately **not** part of it. A nested item keeps its indent and
+    /// its marker sits after it, so the gutter is drawn per level rather than collapsing every
+    /// depth onto one edge.
+    public static func blockMarker(_ line: some StringProtocol) -> Range<Int>? {
+        let characters = Array(line)
+        let indent = characters.prefix { $0 == " " || $0 == "\t" }.count
+        let rest = characters[indent...]
+        guard let first = rest.first else { return nil }
+
+        /// The space after a marker belongs to the marker: it is the gap the gutter replaces, and
+        /// leaving it with the prose puts a different amount of it in front of every construct.
+        func withTrailingSpace(_ end: Int) -> Range<Int> {
+            end < characters.count && characters[end] == " " ? indent..<(end + 1) : indent..<end
+        }
+
+        if first == "#" {
+            let hashes = rest.prefix { $0 == "#" }.count
+            let after = indent + hashes
+            guard after == characters.count || characters[after] == " " else { return nil }
+            return withTrailingSpace(after)
+        }
+        if first == ">" { return withTrailingSpace(indent + 1) }
+
+        var end: Int
+        if first == "-" || first == "*" || first == "+" {
+            end = indent + 1
+        } else {
+            let digits = rest.prefix(while: \.isNumber).count
+            guard digits > 0, digits <= 3, indent + digits < characters.count,
+                  characters[indent + digits] == "." || characters[indent + digits] == ")"
+            else { return nil }
+            end = indent + digits + 1
+        }
+        // A bare `-` with nothing after it is the first keystroke of an item, and it is already a
+        // marker — otherwise the line jumps sideways the instant the space lands.
+        guard end == characters.count || characters[end] == " " else { return nil }
+        var marker = withTrailingSpace(end)
+        // `- [ ]` and `- [x]`: the box is part of what marks the line, not part of the sentence.
+        let box = marker.upperBound
+        if box + 2 < characters.count, characters[box] == "[", characters[box + 2] == "]",
+           characters[box + 1] == " " || characters[box + 1] == "x" || characters[box + 1] == "X" {
+            marker = marker.lowerBound..<withTrailingSpace(box + 3).upperBound
+        }
+        return marker
+    }
+
+    /// Every character in the line that is *markup rather than prose* — the block marker, and both
+    /// delimiters of every closed inline run — left to right and merged where they touch.
+    ///
+    /// This is what the editor dims. It is a separate answer from ``inline(_:)`` because the two
+    /// questions differ: `inline` asks which characters to draw **bold**, `markers` asks which ones
+    /// are scaffolding the reader should be able to look past.
+    public static func markers(_ line: some StringProtocol) -> [Range<Int>] {
+        var found: [Range<Int>] = []
+        if let block = blockMarker(line) { found.append(block) }
+        var spans: [Span] = []
+        scan(Array(line), offset: 0, spans: &spans, markers: &found)
+        return merge(found)
+    }
+
+    private static func merge(_ ranges: [Range<Int>]) -> [Range<Int>] {
+        var merged: [Range<Int>] = []
+        for range in ranges.sorted(by: { $0.lowerBound < $1.lowerBound }) where !range.isEmpty {
+            if let last = merged.last, range.lowerBound <= last.upperBound {
+                merged[merged.count - 1] = last.lowerBound..<max(last.upperBound, range.upperBound)
+            } else {
+                merged.append(range)
+            }
+        }
+        return merged
+    }
+
     public enum Inline: Equatable, Sendable {
         case strong
         case emphasis
+        case strike
         case code
+        /// The whole of `[label](url)`. The label is scanned for markup of its own; the brackets
+        /// and the target are markers, so ``markers(_:)`` dims them.
+        case link
     }
 
     /// One marked-up run, as **character offsets from the start of the line it was found in**, and
@@ -80,46 +159,92 @@ public enum MarkdownSyntax {
         }
     }
 
-    /// The inline runs in one line, left to right and never overlapping.
+    /// The inline runs in one line, in the order they should be *applied*: a run that contains
+    /// another comes first, so italic layers on top of the bold it sits inside and `***both***`
+    /// ends up both.
     ///
     /// A run only exists once it is closed, which is what makes this usable on text being typed: a
-    /// lone `**` is not yet anything, and the rest of the line does not turn bold while the user
-    /// looks for the second asterisk.
+    /// lone `**`, a `~~` with no partner, a `[label](` still missing its `)` — none of them are
+    /// anything yet, and the rest of the line does not change weight while the user reaches for the
+    /// second half.
     ///
-    /// ponytail: no `_underscore_` emphasis. This is a notes field in a store full of identifiers,
-    /// and `snake_case_names` would light up as italics far more often than anybody would mean it.
+    /// ponytail: underscore emphasis is CommonMark's, not naive. `_italic_` is italic and
+    /// `meeting_store_open` is not, because an underscore touching a word character on the inside
+    /// is never a delimiter. Without that rule a store full of identifiers italicises itself.
     public static func inline(_ text: some StringProtocol) -> [Span] {
-        let characters = Array(text)
         var spans: [Span] = []
-        var index = 0
-
-        while index < characters.count {
-            guard let (width, style) = opener(characters, at: index) else {
-                index += 1
-                continue
-            }
-            guard let close = closing(characters, from: index + width, mark: characters[index], width: width) else {
-                index += 1
-                continue
-            }
-            spans.append(Span(style: style, range: index..<(close + width)))
-            // Past the whole run: markup inside a closed span belongs to that span, so `**a * b**`
-            // is one strong run and a backticked `**` is code rather than a stray opener.
-            index = close + width
-        }
+        var markers: [Range<Int>] = []
+        scan(Array(text), offset: 0, spans: &spans, markers: &markers)
         return spans
     }
 
-    private static func opener(_ characters: [Character], at index: Int) -> (width: Int, style: Inline)? {
-        switch characters[index] {
-        case "`":
-            return (1, .code)
-        case "*":
-            let doubled = index + 1 < characters.count && characters[index + 1] == "*"
-            return doubled ? (2, .strong) : (1, .emphasis)
-        default:
-            return nil
+    /// One pass, producing both answers. They are found by the same walk — separating them would
+    /// mean two parsers agreeing about what closes what, which is exactly how they drift.
+    private static func scan(
+        _ characters: [Character], offset: Int, spans: inout [Span], markers: inout [Range<Int>]
+    ) {
+        var index = 0
+        while index < characters.count {
+            if let link = link(characters, at: index) {
+                spans.append(Span(style: .link, range: (offset + index)..<(offset + link.end)))
+                markers.append((offset + index)..<(offset + index + 1))
+                markers.append((offset + link.label.upperBound)..<(offset + link.end))
+                scan(Array(characters[link.label]),
+                     offset: offset + link.label.lowerBound, spans: &spans, markers: &markers)
+                index = link.end
+                continue
+            }
+            guard let mark = delimiter(characters[index]) else {
+                index += 1
+                continue
+            }
+            let run = min(characters[index...].prefix { $0 == characters[index] }.count, mark.widest)
+            guard run >= mark.narrowest,
+                  opens(characters, at: index, mark: characters[index]),
+                  let close = closing(characters, from: index + run, mark: characters[index], width: run)
+            else {
+                index += 1
+                continue
+            }
+            let end = close + run
+            switch (mark.style, run) {
+            case (.emphasis, 2): spans.append(Span(style: .strong, range: (offset + index)..<(offset + end)))
+            // `***x***` is both, and it is one construct rather than a bold that happens to abut an
+            // italic — so it is emitted as the pair it means.
+            case (.emphasis, 3):
+                spans.append(Span(style: .strong, range: (offset + index)..<(offset + end)))
+                spans.append(Span(style: .emphasis, range: (offset + index + 1)..<(offset + end - 1)))
+            default: spans.append(Span(style: mark.style, range: (offset + index)..<(offset + end)))
+            }
+            markers.append((offset + index)..<(offset + index + run))
+            markers.append((offset + close)..<(offset + end))
+            // Markup inside a closed span belongs to that span, so `**a * b**` is one strong run.
+            // Code is the exception in the other direction: a backticked `**` is two characters of
+            // a command, and nothing inside it is markup.
+            if mark.style != .code {
+                scan(Array(characters[(index + run)..<close]),
+                     offset: offset + index + run, spans: &spans, markers: &markers)
+            }
+            index = end
         }
+    }
+
+    private static func delimiter(_ character: Character) -> (style: Inline, narrowest: Int, widest: Int)? {
+        switch character {
+        case "`": (.code, 1, 1)
+        // A single `~` is a tilde somebody typed. Strikethrough is the doubled one, and only that.
+        case "~": (.strike, 2, 2)
+        case "*", "_": (.emphasis, 1, 3)
+        default: nil
+        }
+    }
+
+    /// CommonMark's left-flanking rule, applied only where it earns its keep. An underscore between
+    /// two word characters is part of the word.
+    private static func opens(_ characters: [Character], at index: Int, mark: Character) -> Bool {
+        guard mark == "_" else { return true }
+        guard index > 0 else { return true }
+        return !characters[index - 1].isLetter && !characters[index - 1].isNumber
     }
 
     /// The offset of the closing delimiter, or nil when the run never closes on this line. Content
@@ -134,12 +259,33 @@ public enum MarkdownSyntax {
                 continue
             }
             let run = characters[index...].prefix { $0 == mark }.count
-            guard run >= width, index > start else {
+            let after = index + run
+            let flanks = mark != "_"
+                || after >= characters.count
+                || (!characters[after].isLetter && !characters[after].isNumber)
+            guard run >= width, index > start, flanks else {
                 index += max(run, 1)
                 continue
             }
             return index
         }
         return nil
+    }
+
+    /// `[label](url)` at `index`, or nil. The label may not span a `]`, and the target may not span
+    /// a `)` — both are the common case and both keep a half-typed link inert.
+    private static func link(
+        _ characters: [Character], at index: Int
+    ) -> (label: Range<Int>, end: Int)? {
+        guard characters[index] == "[" else { return nil }
+        var close = index + 1
+        while close < characters.count, characters[close] != "]" { close += 1 }
+        guard close < characters.count, close > index + 1,
+              close + 1 < characters.count, characters[close + 1] == "("
+        else { return nil }
+        var target = close + 2
+        while target < characters.count, characters[target] != ")" { target += 1 }
+        guard target < characters.count else { return nil }
+        return ((index + 1)..<close, target + 1)
     }
 }

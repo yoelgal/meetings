@@ -51,6 +51,7 @@ struct MeetingsApp: App {
                         .keyboardShortcut("k")
                 }
             }
+            MarkdownFormattingCommands()
         }
 
         // The pop-outs, one per surface. `UtilityWindow` is NSPanel-backed, so neither takes the
