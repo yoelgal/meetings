@@ -240,7 +240,7 @@ struct SharedFieldEditor: View {
             if tooLargeToEdit {
                 oversize
             } else {
-            LiveMarkdownEditor(text: $text)
+            editor
                 // No fill, no border, no corner radius. The write-up is the document this screen
                 // exists for, and a box around it made it read as one field on a form — the
                 // markers now sit in a gutter of their own, which is the structure a container was
@@ -295,6 +295,21 @@ struct SharedFieldEditor: View {
             receive(incoming)
         }
         .onDisappear { if !tooLargeToEdit { flush() } }
+    }
+
+    /// Which text engine draws the document — and the only thing in this file that knows there is
+    /// more than one.
+    ///
+    /// Both fields with two writers mount it from here, so the summary and the pre-notes cannot end
+    /// up on different engines. Everything the surrounding view does — the measure, the placeholder,
+    /// the accessibility label, the change watcher that autosaves — is applied to whichever comes
+    /// back, because none of it is the editor's business.
+    @ViewBuilder private var editor: some View {
+        if Appearance.editorEngine {
+            EngineMarkdownEditor(text: $text, documentId: identity)
+        } else {
+            LiveMarkdownEditor(text: $text)
+        }
     }
 
     private var status: String {

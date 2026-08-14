@@ -174,6 +174,16 @@ enum Appearance {
         }
     }
 
+    /// `MEETINGS_EDITOR=engine|native` — which text engine ``SharedFieldEditor`` mounts.
+    ///
+    /// **Spike seam.** `native` is the shipping editor — ``LiveMarkdownEditor`` over
+    /// ``MarkdownTextView`` — and it is the default, so an ordinary launch is unchanged. `engine`
+    /// mounts nodes-app/swift-markdown-engine instead, over the same `String` binding, so the two
+    /// can be photographed from one build rather than from two branches. Everything around the
+    /// editor — autosave, the two-writer banner, the oversize guard — is outside this switch and
+    /// identical either way.
+    static var editorEngine: Bool { value("MEETINGS_EDITOR")?.lowercased() == "engine" }
+
     /// `MEETINGS_SCOPE=needsWriteUp|all|upcoming|unfiled|folder:<id or name>`.
     static var scopeToken: String? { value("MEETINGS_SCOPE") }
 

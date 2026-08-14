@@ -418,6 +418,31 @@ import Testing
                 "the conflict decision belongs to MeetingsCore, where it is tested")
     }
 
+    /// The spike's editor switch is off unless somebody asks for it, and both fields go through it.
+    ///
+    /// `MEETINGS_EDITOR=engine` mounts swift-markdown-engine so the two editors can be photographed
+    /// from one build. A typo that inverted this default would silently ship the library instead of
+    /// the editor, and the difference is invisible in a diff of one expression — so the shipping
+    /// path is named here rather than left to be read off a boolean.
+    ///
+    /// The switch is inside `SharedFieldEditor` for the same reason the editor is: the summary and
+    /// the pre-notes are one field with two writers, and an engine chosen per call site is two
+    /// answers that drift.
+    @Test func theEngineEditorIsASeamThatIsOffUnlessAskedFor() throws {
+        let app = try Self.source("MeetingsApp.swift")
+        #expect(app.contains(#"value("MEETINGS_EDITOR")?.lowercased() == "engine""#), """
+            The seam opts *in* to the engine. Anything that reads the variable the other way round \
+            makes the library the shipping editor.
+            """)
+
+        let editor = try Self.source("PreNotesEditor.swift")
+        let mount = try #require(editor.range(of: "private var editor: some View"),
+                                 "the engine seam has to stay inside the one shared editor")
+        let branches = String(editor[mount.upperBound...].prefix(300))
+        #expect(branches.contains("if Appearance.editorEngine") && branches.contains("LiveMarkdownEditor("),
+                "and the native editor has to remain the else branch, not be replaced by it")
+    }
+
     /// The write-up is the surface this screen exists for, and the layout has to say so.
     ///
     /// It did not: the transcript and the notes sat above the fold at full height and the summary
