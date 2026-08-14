@@ -515,8 +515,8 @@ final class AppModel {
     /// the detail column.
     func openHighlightedResult() {
         guard let hit = highlightedHit else { return }
-        // A hit can be outside the list you are looking at — search is scoped by folder and by
-        // nothing else, so a match found from Needs write-up or Upcoming has no row to select in
+        // A hit is usually outside the list you are looking at — search reads the whole store, so a
+        // match found from a folder, from Needs write-up or from Upcoming has no row to select in
         // the middle column and the choice would land in a column showing something else entirely.
         // Setting `scope` clears the selection, so widening it first is load-bearing.
         if !meetings.contains(where: { $0.id == hit.meeting.id }) { scope = .all }
@@ -530,6 +530,14 @@ final class AppModel {
 
     /// ponytail: straight through to SQLite on every keystroke, no debounce. FTS5 over a personal
     /// store answers in well under a frame; add a debounce when a real store makes it stutter.
+    ///
+    /// **The whole store, never the selected folder.** This passed `scope.folderID` through, so a
+    /// sidebar sitting on a folder turned ⌘K into a search of that folder alone — while
+    /// `meetings search` searches everything unless it is handed `--folder`, so the CLI found
+    /// meetings the window swore did not exist. Nothing said a filter was on and nothing could take
+    /// it off, and the palette's "No matches" speaks for the whole store. It was not a decision
+    /// either: the other four scopes carry a nil `folderID`, so only one kind of sidebar row ever
+    /// narrowed it.
     private func runSearch() {
         highlightedResult = 0
         guard isSearching else {
@@ -539,7 +547,7 @@ final class AppModel {
         do {
             var seen: Set<String> = []
             searchResults = try store
-                .search(query: searchQuery, folderID: scope.folderID)
+                .search(query: searchQuery)
                 .filter { seen.insert($0.meeting.id).inserted }
         } catch {
             searchResults = []
