@@ -243,6 +243,20 @@ public enum MarkdownEditing {
             default: open
             }
         }
+
+        /// The run this mark *is*, in the parser's vocabulary. Detection goes through
+        /// ``MarkdownSyntax/inline(_:)`` rather than through a second scanner of its own: `**bold**`
+        /// contains `*bold*` as a substring, so anything that answers "is this italic" by looking
+        /// for one asterisk says yes to every bold word on the line.
+        var style: MarkdownSyntax.Inline {
+            switch self {
+            case .bold: .strong
+            case .italic: .emphasis
+            case .strikethrough: .strike
+            case .code: .code
+            case .link: .link
+            }
+        }
     }
 
     /// Wrapping the selection in the pair, or unwrapping it when it is already wrapped. A toggle,
@@ -253,90 +267,140 @@ public enum MarkdownEditing {
     /// shortcut can be pressed twice to undo itself.
     public static func toggle(_ mark: InlineMark, in text: String, selection: Range<Int>) -> Edit {
         let characters = Array(text)
-        let open = Array(mark.open)
-        let selected = Array(characters[selection])
+        let core = core(of: selection, in: characters)
 
         // Already wrapped, either just outside the selection or inside it — selecting the word and
         // selecting `**the word**` are the same intent and both have to toggle.
-        if let (whole, close) = wrapping(mark, characters, selection) {
-            return removing(open.count, close, characters, whole)
+        if let (whole, inner) = wrapping(mark, characters, core) {
+            let content = String(characters[inner])
+            return Edit(
+                range: whole,
+                replacement: content,
+                selection: whole.lowerBound..<(whole.lowerBound + content.count)
+            )
         }
 
-        let replacement = mark.open + String(selected) + mark.close
-        let inner = (selection.lowerBound + open.count)..<(selection.lowerBound + open.count + selected.count)
+        let selected = String(characters[core])
+        let open = mark.open.count
+        let replacement = mark.open + selected + mark.close
+        let inner = (core.lowerBound + open)..<(core.lowerBound + open + selected.count)
         // A link already has its label — what it is missing is somewhere to go, so the selection
         // lands on the placeholder target and the next thing typed replaces it.
         let caret = mark == .link
             ? (inner.upperBound + 2)..<(inner.upperBound + 5)
             : inner
-        return Edit(range: selection, replacement: replacement, selection: caret)
+        return Edit(range: core, replacement: replacement, selection: caret)
     }
 
     /// Whether the selection already carries `mark` — what a toolbar draws as a pressed button, and
     /// the same question ``toggle(_:in:selection:)`` asks to decide which way it is going. One
     /// answer behind both, so the button cannot say "on" while the shortcut turns it on again.
     public static func isActive(_ mark: InlineMark, in text: String, selection: Range<Int>) -> Bool {
-        wrapping(mark, Array(text), selection) != nil
+        let characters = Array(text)
+        return wrapping(mark, characters, core(of: selection, in: characters)) != nil
     }
 
-    /// The pair around the selection, as (the whole span including both halves, the closing half) —
-    /// found either just outside the selection or inside it, because selecting the word and
-    /// selecting `**the word**` are the same intent.
+    /// The characters a toggle actually acts on: the selection, clamped into the document and with
+    /// its outer whitespace left out.
+    ///
+    /// The trim is not tidiness. `**word **` is not bold — CommonMark's right-flanking rule wants a
+    /// non-space before the closing run — and a double-click takes the space after the word with it,
+    /// so untrimmed the commonest selection in the editor produces four literal asterisks.
+    private static func core(of selection: Range<Int>, in characters: [Character]) -> Range<Int> {
+        let lower = min(max(selection.lowerBound, 0), characters.count)
+        var start = lower
+        var end = min(max(selection.upperBound, lower), characters.count)
+        let outer = start..<end
+        while start < end, characters[start].isWhitespace { start += 1 }
+        while end > start, characters[end - 1].isWhitespace { end -= 1 }
+        // All whitespace is not a mistyped word, and collapsing it to a caret would move the edit.
+        return start < end ? start..<end : outer
+    }
+
+    /// The run of `mark` around the selection, as (the whole span including both delimiters, the
+    /// text between them) — found either just outside the selection or inside it, because selecting
+    /// the word and selecting `**the word**` are the same intent.
+    ///
+    /// The runs come from ``MarkdownSyntax/inline(_:)``, which is the editor's own parser: it knows
+    /// `*`, `**` and `***` are three different delimiters, that an underscore inside a word is not
+    /// one at all, and that nothing inside a backticked span is markup. A second scanner here would
+    /// be a second answer to draw a pressed button from.
     private static func wrapping(
         _ mark: InlineMark, _ characters: [Character], _ selection: Range<Int>
-    ) -> (whole: Range<Int>, close: Range<Int>)? {
+    ) -> (whole: Range<Int>, inner: Range<Int>)? {
         guard selection.lowerBound >= 0, selection.upperBound <= characters.count else { return nil }
+        // Per line, because no inline run closes across a break — and a selection that spans one
+        // is therefore inside nothing.
+        let start = lineStart(characters, before: selection.lowerBound)
+        var end = start
+        while end < characters.count, characters[end] != "\n" { end += 1 }
+        guard selection.upperBound <= end else { return adjacent(mark, characters, selection) }
+
+        let line = Array(characters[start..<end])
+        var found: (whole: Range<Int>, inner: Range<Int>)?
+        for span in MarkdownSyntax.inline(String(line)) where span.style == mark.style {
+            let whole = (start + span.range.lowerBound)..<(start + span.range.upperBound)
+            let inner = content(of: span, in: line, offset: start)
+            // Inside the run, and touching the text rather than sitting past its far delimiter —
+            // a caret between the two closing asterisks of `**bold**` is not in the bold.
+            guard whole.lowerBound <= selection.lowerBound, selection.upperBound <= whole.upperBound,
+                  inner.lowerBound <= selection.upperBound, selection.lowerBound <= inner.upperBound
+            else { continue }
+            // The innermost match: in `**bold with _em_ inside**` the underscores are the emphasis.
+            if found.map({ whole.count < $0.whole.count }) ?? true { found = (whole, inner) }
+        }
+        return found ?? adjacent(mark, characters, selection)
+    }
+
+    /// The pair this very shortcut just typed, sitting immediately either side of the selection.
+    ///
+    /// The parser answers what markdown *means*, and there are three things it rightly calls
+    /// nothing that a toggle still has to be able to take back off: an empty pair around a caret
+    /// (`**|**`, which is four literal asterisks, and `[](url)`, which is a link with no label), a
+    /// pair either side of a line break, and a pair inside a code span, where nothing is markup.
+    /// Without this, pressing ⌘B twice in any of them adds a second pair instead of removing the
+    /// first.
+    ///
+    /// The run either side has to end where the pair does — that is the rule the old detector was
+    /// missing, and the reason italic read as on inside every bold word on the line.
+    private static func adjacent(
+        _ mark: InlineMark, _ characters: [Character], _ selection: Range<Int>
+    ) -> (whole: Range<Int>, inner: Range<Int>)? {
         let open = Array(mark.open)
-
-        let outside = selection.lowerBound - open.count
-        if outside >= 0, Array(characters[outside..<selection.lowerBound]) == open,
-           let close = closed(mark, characters, from: selection.upperBound, limit: characters.count),
-           close.lowerBound == selection.upperBound {
-            return (outside..<close.upperBound, close)
-        }
-
-        let selected = Array(characters[selection])
-        guard selected.count > open.count, selected.starts(with: open) else { return nil }
-        var probe = selection.lowerBound + open.count
-        while probe < selection.upperBound {
-            if let close = closed(mark, characters, from: probe, limit: selection.upperBound),
-               close.upperBound == selection.upperBound {
-                return (selection, close)
-            }
-            probe += 1
-        }
-        return nil
-    }
-
-    /// Where the closing half of the pair sits, starting the search at `from`.
-    private static func closed(
-        _ mark: InlineMark, _ characters: [Character], from: Int, limit: Int
-    ) -> Range<Int>? {
-        if mark == .link {
-            // `](` then anything up to the first `)`. The target is whatever the author put there.
-            guard from + 1 < limit, characters[from] == "]", characters[from + 1] == "(" else { return nil }
-            var end = from + 2
-            while end < limit, characters[end] != ")" { end += 1 }
-            return end < limit ? from..<(end + 1) : nil
-        }
         let close = Array(mark.close)
-        guard from + close.count <= limit,
-              Array(characters[from..<(from + close.count)]) == close
+        let before = selection.lowerBound - open.count
+        let after = selection.upperBound + close.count
+        guard before >= 0, after <= characters.count,
+              Array(characters[before..<selection.lowerBound]) == open,
+              Array(characters[selection.upperBound..<after]) == close,
+              before == 0 || characters[before - 1] != open[0],
+              after == characters.count || characters[after] != close[0],
+              // …and the selection must not continue the run inwards. One `*` either side of
+              // `*bold*` selected out of `**bold**` is the outer half of a strong run, not an
+              // emphasis around it — taking it off would unbold text nobody asked to unbold.
+              characters[selection].first != open[0], characters[selection].last != close[0]
         else { return nil }
-        return from..<(from + close.count)
+        return (before..<after, selection)
     }
 
-    /// Both halves removed, leaving the text that was between them selected.
-    private static func removing(
-        _ openWidth: Int, _ close: Range<Int>, _ characters: [Character], _ whole: Range<Int>
-    ) -> Edit {
-        let inner = (whole.lowerBound + openWidth)..<close.lowerBound
-        let text = String(characters[inner])
-        return Edit(
-            range: whole,
-            replacement: text,
-            selection: whole.lowerBound..<(whole.lowerBound + text.count)
-        )
+    /// The text a run wraps, without its delimiters. `***both***` is a strong run with an emphasis
+    /// one inside it, so taking two characters off each end of the strong leaves `*both*` — which is
+    /// exactly what "no longer bold, still italic" means.
+    private static func content(
+        of span: MarkdownSyntax.Span, in line: [Character], offset: Int
+    ) -> Range<Int> {
+        let range = span.range
+        switch span.style {
+        case .strong, .strike:
+            return (offset + range.lowerBound + 2)..<(offset + range.upperBound - 2)
+        case .emphasis, .code:
+            return (offset + range.lowerBound + 1)..<(offset + range.upperBound - 1)
+        case .link:
+            // `[label](url)` — the label, which is the half worth keeping when the link comes off.
+            var close = range.lowerBound + 1
+            while close < range.upperBound, line[close] != "]" { close += 1 }
+            return (offset + range.lowerBound + 1)..<(offset + close)
+        }
     }
 
     // MARK: - The slash menu
@@ -359,48 +423,100 @@ public enum MarkdownEditing {
     }
 
     /// **The** block transform. Every surface that turns lines into a heading or a list comes
-    /// through here — the slash menu consuming its own `/query`, and anything else with an empty
-    /// range at the caret — so there is one answer to "what does Heading 2 do to this line".
+    /// through here — the slash menu, and the toolbar over a selection — so there is one answer to
+    /// "what does Heading 2 do to this line".
     ///
-    /// `replacing` is the span to swallow on the way. Each line the range touches loses the marker
-    /// it had and gains `command`'s.
+    /// `over` is the caret or selection the command was asked for, and it is **not** a span to
+    /// swallow. A block marker belongs to a *line*: the toolbar hands over the words somebody
+    /// highlighted, and deleting them to put a bullet at the start of their sentence is the defect
+    /// this parameter was renamed for. Each line the range touches loses the marker it had and gains
+    /// `command`'s; the text between them is untouched and the selection follows it.
+    ///
+    /// Asking for the marker a line already carries takes it off again — a button that only ever
+    /// goes on is one whose only "off" is undo.
     public static func applyBlock(
-        _ command: SlashCommand, in text: String, replacing range: Range<Int>
+        _ command: SlashCommand, in text: String, over range: Range<Int>
     ) -> Edit {
         let characters = Array(text)
         guard command.replacesMarker else {
-            let caret = range.lowerBound + command.insertion.count
-            return Edit(range: range, replacement: command.insertion, selection: caret..<caret)
+            // A construct that ends a line has to start one too, or `/divider` half-way through a
+            // sentence leaves `we agreed---` — three hyphens that are not a rule at all.
+            let ownLine = command.insertion.hasSuffix("\n")
+                && range.lowerBound > lineStart(characters, before: range.lowerBound)
+            let insertion = ownLine ? "\n" + command.insertion : command.insertion
+            let caret = range.lowerBound + insertion.count
+            return Edit(range: range, replacement: insertion, selection: caret..<caret)
         }
         let start = lineStart(characters, before: range.lowerBound)
-        var end = max(range.upperBound, range.lowerBound)
+        var end = range.upperBound
+        // A selection that ends on a line break stops at the line it ends: dragging through
+        // `one\n` is one line selected, not two.
+        if end > range.lowerBound, end > 0, characters[end - 1] == "\n" { end -= 1 }
         while end < characters.count, characters[end] != "\n" { end += 1 }
 
-        var rebuilt: [String] = []
+        var lines: [(range: Range<Int>, indent: Int, body: Int)] = []
         var cursor = start
-        var lineNumber = 0
         while cursor <= end {
             var stop = cursor
             while stop < end, characters[stop] != "\n" { stop += 1 }
-            // The line with the range in it loses those characters; the rest keep everything.
-            var line = Array(characters[cursor..<stop])
-            if range.lowerBound >= cursor, range.upperBound <= stop, !range.isEmpty {
-                line.replaceSubrange((range.lowerBound - cursor)..<(range.upperBound - cursor), with: [])
-            }
+            let line = String(characters[cursor..<stop])
             let indent = line.prefix { $0 == " " || $0 == "\t" }.count
-            var body = String(line[indent...])
-            if let marker = MarkdownSyntax.blockMarker(String(line)) {
-                body = String(line[marker.upperBound...])
-            }
-            // A numbered list counts from where it was asked for, not from one every time.
-            let marker = command.id == "number" ? "\(lineNumber + 1). " : command.insertion
-            rebuilt.append(String(line[0..<indent]) + marker + body)
-            lineNumber += 1
+            lines.append((cursor..<stop, indent, MarkdownSyntax.blockMarker(line)?.upperBound ?? indent))
             cursor = stop + 1
         }
-        let replacement = rebuilt.joined(separator: "\n")
-        let caret = start + replacement.count
-        return Edit(range: start..<end, replacement: replacement, selection: caret..<caret)
+        // Pressed twice: every line already is this construct, and at least one of them has
+        // something to say. An empty `- ` is somebody mid-item, and taking their bullet away as
+        // they reach for the menu is not a toggle they asked for.
+        let taking = lines.allSatisfy { carries(command, String(characters[$0.range])) }
+            && lines.contains { $0.range.lowerBound + $0.body < $0.range.upperBound }
+
+        var rebuilt: [String] = []
+        var shifts: [(range: Range<Int>, body: Int, delta: Int, shift: Int)] = []
+        var shift = 0
+        for (number, line) in lines.enumerated() {
+            let source = Array(characters[line.range])
+            // A numbered list counts from where it was asked for, not from one every time.
+            let marker = taking ? "" : (command.id == "number" ? "\(number + 1). " : command.insertion)
+            rebuilt.append(String(source[0..<line.indent]) + marker + String(source[line.body...]))
+            let head = line.indent + marker.count
+            shifts.append((line.range, head, head - line.body, shift))
+            shift += head - line.body
+        }
+
+        /// Where an offset ends up. Anything inside the old marker lands on the new line's first
+        /// character of prose rather than inside the marker that replaced it.
+        func moved(_ offset: Int) -> Int {
+            guard let line = shifts.first(where: { offset <= $0.range.upperBound }) else {
+                return offset + shift
+            }
+            return max(offset + line.shift + line.delta, line.range.lowerBound + line.shift + line.body)
+        }
+
+        return Edit(
+            range: start..<end,
+            replacement: rebuilt.joined(separator: "\n"),
+            selection: moved(range.lowerBound)..<moved(range.upperBound)
+        )
+    }
+
+    /// Whether the line already is what `command` makes. Deliberately per construct rather than a
+    /// string comparison on the marker: `- [ ] task` starts with `- `, and a bulleted-list button
+    /// that read it as "already a bullet" would strip the checkbox instead of unmaking the action.
+    private static func carries(_ command: SlashCommand, _ line: String) -> Bool {
+        let trimmed = line.drop { $0 == " " || $0 == "\t" }
+        switch command.id {
+        case "h1", "h2", "h3":
+            return MarkdownSyntax.line(line) == .heading(level: command.insertion.count { $0 == "#" })
+        case "todo": return MarkdownSyntax.taskItem(line) != nil
+        case "bullet":
+            return MarkdownSyntax.line(line) == .bullet && MarkdownSyntax.taskItem(line) == nil
+                && !(trimmed.first?.isNumber ?? true)
+        case "number":
+            return MarkdownSyntax.line(line) == .bullet && MarkdownSyntax.taskItem(line) == nil
+                && trimmed.first?.isNumber == true
+        case "quote": return MarkdownSyntax.line(line) == .quote
+        default: return false
+        }
     }
 
     /// The menu, in the order it is drawn. Block-level only: a slash command fires at a caret with
@@ -471,7 +587,23 @@ public enum MarkdownEditing {
     }
 
     /// Choosing `command` from the menu the `/query` at `range` opened.
+    ///
+    /// The query goes first and the transform then sees the line as it will be. That order is the
+    /// whole distinction between the two surfaces: the menu has a span to swallow and a toolbar
+    /// has a selection to keep, and folding both into one "replacing" parameter is what made
+    /// pressing a list button over a highlighted word delete the word.
     public static func insert(_ command: SlashCommand, over range: Range<Int>, in text: String) -> Edit {
-        applyBlock(command, in: text, replacing: range)
+        guard !range.isEmpty else { return applyBlock(command, in: text, over: range) }
+        var characters = Array(text)
+        characters.replaceSubrange(range, with: [])
+        let caret = range.lowerBound..<range.lowerBound
+        let edit = applyBlock(command, in: String(characters), over: caret)
+        // The same edit, widened by the query it swallowed. Everything from the caret on sat
+        // `range.count` characters later in the document the user is actually looking at.
+        return Edit(
+            range: edit.range.lowerBound..<(edit.range.upperBound + range.count),
+            replacement: edit.replacement,
+            selection: edit.selection
+        )
     }
 }

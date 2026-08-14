@@ -235,20 +235,20 @@ import Testing
     @Test func aBlockCommandReplacesWhateverMarkerTheLineAlreadyHad() throws {
         let h2 = try #require(MarkdownEditing.slashCommands.first { $0.id == "h2" })
         // H1 to H2 is one step, not a `## ` glued onto a `# `.
-        let promoted = MarkdownEditing.applyBlock(h2, in: "# Notes", replacing: 7..<7)
+        let promoted = MarkdownEditing.applyBlock(h2, in: "# Notes", over: 7..<7)
         #expect(promoted.applied(to: "# Notes") == "## Notes")
 
         let bullet = try #require(MarkdownEditing.slashCommands.first { $0.id == "bullet" })
-        #expect(MarkdownEditing.applyBlock(bullet, in: "- [ ] task", replacing: 10..<10)
+        #expect(MarkdownEditing.applyBlock(bullet, in: "- [ ] task", over: 10..<10)
             .applied(to: "- [ ] task") == "- task")
         // Indentation is structure and survives.
-        #expect(MarkdownEditing.applyBlock(bullet, in: "    plain", replacing: 9..<9)
+        #expect(MarkdownEditing.applyBlock(bullet, in: "    plain", over: 9..<9)
             .applied(to: "    plain") == "    - plain")
     }
 
     @Test func aBlockCommandOverSeveralLinesTakesThemAll() throws {
         let number = try #require(MarkdownEditing.slashCommands.first { $0.id == "number" })
-        let edit = MarkdownEditing.applyBlock(number, in: "one\ntwo\nthree", replacing: 1..<9)
+        let edit = MarkdownEditing.applyBlock(number, in: "one\ntwo\nthree", over: 1..<9)
         #expect(edit.applied(to: "one\ntwo\nthree") == "1. one\n2. two\n3. three")
     }
 

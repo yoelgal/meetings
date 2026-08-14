@@ -4,7 +4,7 @@ import SwiftUI
 /// The menu `/` opens over the write-up: the discoverable path to the same constructs the shorthand
 /// already types. Grouped, because nine flat rows is a list you read rather than a menu you aim at.
 ///
-/// Every command it offers goes through ``MarkdownEditing/applyBlock(_:in:replacing:)``, the same
+/// Every command it offers goes through ``MarkdownEditing/applyBlock(_:in:over:)``, the same
 /// transform any other formatting surface would use — the menu is a way of choosing, not a second
 /// definition of what Heading 2 means.
 struct SlashMenu: View {
