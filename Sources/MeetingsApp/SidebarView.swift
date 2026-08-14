@@ -83,7 +83,11 @@ struct SidebarView: View {
         // having enough folders.
         .safeAreaInset(edge: .bottom) {
             if let update = model.availableUpdate {
-                UpdateNotice(update: update)
+                UpdateNotice(
+                    update: update,
+                    recording: model.isRecording
+                        ? "A meeting is recording. Stop it first: updating quits Meetings." : ""
+                )
             }
         }
         .sheet(item: $naming) { naming in
@@ -139,22 +143,29 @@ struct SidebarView: View {
 
 /// The foot of the sidebar when a newer release exists.
 ///
-/// It says "View release" and not "Restart to update", which is what a notice like this usually
-/// says, because nothing here downloads or installs anything: this build was compiled from source on
-/// the machine it runs on, so there is no new binary for a restart to pick up. Copy that promises a
-/// restart will do it would be a lie the first person to try it discovers.
+/// It does not say "Restart to update", which is what a notice like this usually says, because
+/// nothing here downloads or installs anything: this build was compiled from source on the machine
+/// it runs on, so there is no new binary for a restart to pick up.
+///
+/// It opens a popover carrying the command rather than opening the release page, which was the first
+/// version and was not much better than saying nothing. A release page tells you what changed; it
+/// has no idea where you keep your clone, so somebody reading it still has to work out what to
+/// actually type. The command is the answer, so the command is what the notice hands over, with the
+/// notes one click further on for anyone who wants them.
 private struct UpdateNotice: View {
     let update: AvailableUpdate
+    /// Non-empty while a meeting is being recorded, because the update quits the app and would take
+    /// the recording with it.
+    var recording: String = ""
+
+    @State private var showing = false
+    @State private var copied = false
+    @State private var problem: String?
 
     var body: some View {
-        // An explicit container, not two siblings in the builder. A `body` returning a bare tuple
-        // hands `safeAreaInset` two views with no layout between them, which is a stack in some
-        // contexts and an overlap in others.
         VStack(spacing: 0) {
             Divider()
-            Button {
-                NSWorkspace.shared.open(update.url)
-            } label: {
+            Button { showing = true } label: {
                 HStack(spacing: 8) {
                     Image(systemName: "arrow.down.circle")
                         .foregroundStyle(.tint)
@@ -167,20 +178,72 @@ private struct UpdateNotice: View {
                     }
                     Spacer(minLength: 0)
                 }
-                // Without this only the glyphs are clickable, and the dead space between them
-                // reads as a row that sometimes ignores you.
                 .contentShape(.rect)
             }
             .buttonStyle(.plain)
-            .help("Open the release notes on GitHub")
-            // Measured against the scope rows above rather than picked: a `List` row carries its own
-            // selection-capsule inset on top of the section inset, and at 14 the arrow sat visibly
-            // left of every icon in the column.
+            .help("How to update")
             .padding(.horizontal, 22)
             .padding(.vertical, 10)
+            .popover(isPresented: $showing, arrowEdge: .trailing) {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Update to \(update.version)")
+                        .font(.headline)
+
+                    if SelfUpdate.isPossible {
+                        Text("Meetings is built from source, so updating pulls the new version and "
+                            + "rebuilds. A Terminal window opens so you can watch it, Meetings "
+                            + "closes while the new copy is installed, and it reopens when it is "
+                            + "done. About two minutes. Your meetings are untouched.")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        HStack {
+                            Button("Update now") {
+                                showing = false
+                                problem = SelfUpdate.run()
+                            }
+                            .buttonStyle(.borderedProminent)
+                            Button("What changed") { NSWorkspace.shared.open(update.url) }
+                                .buttonStyle(.link)
+                        }
+                        if !recording.isEmpty {
+                            // Never interrupt a recording to install something. The update kills the
+                            // app, and the meeting in progress would go with it.
+                            Text(recording)
+                                .font(.caption)
+                                .foregroundStyle(Color(nsColor: .systemOrange))
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    } else {
+                        // No checkout to update, so the honest offer is the command, not a button
+                        // that cannot work.
+                        Text("Meetings is built from source. Run this where you keep the repository:")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        HStack(alignment: .top, spacing: 8) {
+                            Text(SelfUpdate.command)
+                                .font(.callout.monospaced())
+                                .textSelection(.enabled)
+                                .fixedSize(horizontal: false, vertical: true)
+                            Spacer(minLength: 0)
+                            Button(copied ? "Copied" : "Copy") {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(SelfUpdate.command, forType: .string)
+                                copied = true
+                            }
+                            .controlSize(.small)
+                        }
+                        .padding(10)
+                        .background(.quaternary.opacity(0.4), in: .rect(cornerRadius: 8, style: .continuous))
+                        Button("What changed in \(update.version)") { NSWorkspace.shared.open(update.url) }
+                            .buttonStyle(.link)
+                    }
+                }
+                .padding(16)
+                .frame(width: 380)
+            }
         }
-        // The list scrolls *under* a safe-area inset, so without a ground the rows pass through the
-        // text on the way past.
         .background(.bar)
     }
 }

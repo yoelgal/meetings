@@ -111,6 +111,14 @@ esac
 BUILD="$(git -C "$ROOT" rev-list --count HEAD 2>/dev/null || echo 1)"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$CONTENTS/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD" "$CONTENTS/Info.plist"
+
+# Where this build came from, so the app can tell you how to update it.
+#
+# Without this the update notice could only link to the release page, and a release page says what
+# changed, not what to type. The answer is `cd <this directory> && git pull && ./install.sh`, and
+# this is the only place that directory is known. Legitimate to record because the app is only ever
+# built from source on the machine it runs on: there is no build server whose path this could be.
+/usr/libexec/PlistBuddy -c "Add :MeetingsSourceRoot string $ROOT" "$CONTENTS/Info.plist" >/dev/null
 echo "    version $VERSION (build $BUILD)"
 
 printf 'APPL????' > "$CONTENTS/PkgInfo"

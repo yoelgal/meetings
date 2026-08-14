@@ -172,6 +172,8 @@ final class AppModel {
     /// including the check being switched off and every kind of failure, so the sidebar only ever
     /// has to ask whether there is something to say.
     private(set) var availableUpdate: AvailableUpdate?
+    /// Launch check plus the daily tick, held so it dies with the model rather than outliving it.
+    private var updateChecks: Task<Void, Never>?
 
     private(set) var selectedMeeting: Meeting?
     /// The transcript of the selected meeting. Final segments win over live ones when both exist.
@@ -366,10 +368,23 @@ final class AppModel {
         // network and the window must not wait on a socket to draw. It settles into the
         // sidebar whenever it settles, or never, which is the correct amount of ceremony for news
         // that a newer version exists.
-        Task { [weak self, store] in
-            guard let update = await UpdateCheck.run(store: store, currentVersion: AppInfo.version)
-            else { return }
-            self?.availableUpdate = update
+        // Every launch, then once a day for as long as the app stays open. Launch deliberately
+        // ignores the daily interval: you have just relaunched, quite possibly *because* you
+        // updated, and being told you are current until tomorrow is the wrong answer to that.
+        updateChecks = Task { [weak self, store] in
+            if let update = await UpdateCheck.run(.launch, store: store, currentVersion: AppInfo.version)
+                .available {
+                self?.availableUpdate = update
+            }
+            // A window left open for a week would otherwise never check again.
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(UpdateCheck.interval))
+                guard !Task.isCancelled else { return }
+                if let update = await UpdateCheck
+                    .run(.periodic, store: store, currentVersion: AppInfo.version).available {
+                    self?.availableUpdate = update
+                }
+            }
         }
         // GRDB's ValueObservation only sees writes from this process, and the CLI is a second
         // process on the same file. This is the only thing that makes an agent's write show up.
@@ -396,6 +411,18 @@ final class AppModel {
             searchQuery = query
             searchPaletteOpen = true
         }
+    }
+
+    /// The Check now button. Runs whatever the setting says: pressing it *is* the consent the
+    /// setting exists to record, and a button that silently does nothing because a preference is off
+    /// is a button people press again.
+    ///
+    /// Returns the outcome rather than only setting `availableUpdate`, because "you are up to date"
+    /// and "GitHub is unreachable" are both things a press has to be able to say.
+    func checkForUpdates() async -> UpdateCheck.Outcome {
+        let outcome = await UpdateCheck.run(.manual, store: store, currentVersion: AppInfo.version)
+        if let update = outcome.available { availableUpdate = update }
+        return outcome
     }
 
     func refresh() {

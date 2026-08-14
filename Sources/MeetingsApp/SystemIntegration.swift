@@ -16,6 +16,30 @@ enum AppInfo {
     static var version: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0"
     }
+
+    /// The checkout this build was assembled from, stamped by `build-app.sh`. Nil for a `swift run`
+    /// with no bundle around it.
+    static var sourceRoot: String? {
+        Bundle.main.object(forInfoDictionaryKey: "MeetingsSourceRoot") as? String
+    }
+
+    /// The one line that updates this install, ready to paste.
+    ///
+    /// The update notice used to only link to the release page, which is where a person then stood
+    /// reading what changed with no idea what to type. It is a build-from-source app: the answer is
+    /// always a pull and a rebuild, and the only unknown is the directory — which the bundle knows.
+    ///
+    /// The fallback is the README's own one-liner, which clones or updates in place, so the notice is
+    /// never reduced to a shrug.
+    static var updateCommand: String {
+        guard let root = sourceRoot else {
+            return "curl -fsSL https://raw.githubusercontent.com/"
+                + "\(UpdateCheck.repository)/main/install.sh | bash"
+        }
+        // Quoted, because a path with a space in it is otherwise two arguments and the command a
+        // person pastes silently cds somewhere else.
+        return "cd '\(root.replacingOccurrences(of: "'", with: #"'\''"#))' && git pull && ./install.sh"
+    }
 }
 
 /// Whether this build was signed ad hoc, which decides whether the permissions you grant survive
@@ -88,6 +112,67 @@ struct AdHocSigningNotice: View {
     }
 
     private static let command = "scripts/make-signing-identity.sh"
+}
+
+/// Updating the app from inside the app: pull, rebuild, reinstall, reopen.
+///
+/// It hands the work to Terminal rather than doing it in-process, for two reasons that are really
+/// one. The app has to be **replaced while it is not running** — `install.sh` kills it before it
+/// moves the new bundle into place — so whatever drives the update cannot be the app. And a rebuild
+/// is a couple of minutes of compiler output; run invisibly, that is two minutes of a quit app and
+/// no evidence anything is happening, which is indistinguishable from a crash.
+///
+/// So the button opens a Terminal window on a script. You watch it build, and it reopens Meetings at
+/// the end. `open -a Terminal <script>` rather than AppleScript deliberately: driving Terminal by
+/// AppleScript needs the Automation permission, and asking for a fourth permission so the app can
+/// update itself is a bad trade.
+enum SelfUpdate {
+    /// Only when there is still a checkout to update. A bundle whose source was moved or deleted
+    /// gets the copyable command instead, which at least tells the truth.
+    static var isPossible: Bool { script != nil }
+
+    /// The command a person can run by hand, and the one the script runs.
+    static var command: String { AppInfo.updateCommand }
+
+    static func run() -> String? {
+        guard let source = script else { return "Cannot find the folder this copy was built from." }
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("meetings-update-\(UUID().uuidString).command")
+        do {
+            try source.write(to: url, atomically: true, encoding: .utf8)
+            // .command opens in Terminal and runs; the executable bit is what makes it run rather
+            // than open in a text editor.
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+        } catch {
+            return "Could not write the update script. \(error.localizedDescription)"
+        }
+        NSWorkspace.shared.open(url)
+        return nil
+    }
+
+    private static var script: String? {
+        guard let root = AppInfo.sourceRoot else { return nil }
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: root + "/.git"),
+              fm.isExecutableFile(atPath: root + "/install.sh") else { return nil }
+        let quoted = root.replacingOccurrences(of: "'", with: #"'\''"#)
+        return """
+            #!/bin/bash
+            # Written by Meetings. Safe to delete.
+            set -euo pipefail
+            cd '\(quoted)'
+            echo "Updating Meetings in $(pwd)"
+            echo
+            # --ff-only, never a merge: this is someone pressing a button, not resolving a conflict.
+            # Local commits or a dirty tree stop here with git's own message, which is more use than
+            # anything this script could invent.
+            git pull --ff-only
+            ./install.sh
+            echo
+            echo "Done. This window can be closed."
+
+            """
+    }
 }
 
 /// The three permissions Meetings needs, reported without ever asking for one.

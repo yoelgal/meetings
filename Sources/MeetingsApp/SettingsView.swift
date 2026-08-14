@@ -93,6 +93,8 @@ private struct GeneralSettings: View {
     @State private var cliStatus = CLIInstall.status()
     @State private var cliProblem: String?
     @State private var statuses: [Permission: PermissionStatus] = [:]
+    @State private var checking = false
+    @State private var checkResult: UpdateCheck.Outcome?
 
     var body: some View {
         Form {
@@ -165,11 +167,48 @@ private struct GeneralSettings: View {
             }
 
             Section("Updates") {
-                Toggle("Check GitHub for new releases", isOn: $model.updateCheckEnabled)
-                Text("On, Meetings asks once a day whether a newer release is tagged, and says so "
-                    + "at the foot of the sidebar. It sends nothing about you and nothing about "
-                    + "your meetings. This is the only request the app makes that you did not ask "
-                    + "for by setting up a cloud mode.")
+                LabeledContent("This copy") {
+                    HStack(spacing: 8) {
+                        Text("Version \(AppInfo.version)")
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button(checking ? "Checking…" : "Check now") {
+                            checking = true
+                            checkResult = nil
+                            Task {
+                                checkResult = await model.checkForUpdates()
+                                checking = false
+                            }
+                        }
+                        .disabled(checking)
+                    }
+                }
+                if let checkResult {
+                    // Every outcome says something. A button whose only visible effect is sometimes
+                    // a new row elsewhere in the window is a button you press twice.
+                    switch checkResult {
+                    case .update(let update):
+                        Text("Version \(update.version) is available. See the foot of the sidebar.")
+                            .font(.caption)
+                            .foregroundStyle(Color(nsColor: .systemGreen))
+                    case .upToDate:
+                        Text("This is the latest release.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    case .failed(let why):
+                        Text(why).font(.caption).foregroundStyle(Color(nsColor: .systemOrange))
+                    case .skipped:
+                        // Unreachable from a press, which never skips. Written out so a future
+                        // trigger cannot fall through this switch silently.
+                        EmptyView()
+                    }
+                }
+
+                Toggle("Check automatically", isOn: $model.updateCheckEnabled)
+                Text("On, Meetings asks GitHub whether a newer release is tagged: once when it "
+                    + "starts, then daily if you leave it running. It sends nothing about you and "
+                    + "nothing about your meetings. This is the only request the app makes that you "
+                    + "did not ask for by setting up a cloud mode. Check now works either way.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

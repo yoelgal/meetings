@@ -78,10 +78,26 @@ public enum UpdateCheck {
     /// frequent is a request to GitHub that tells them you are awake for no benefit to you.
     public static let interval: TimeInterval = 24 * 60 * 60
 
-    /// Whether a check is allowed and due. Both halves matter: the setting is the user's answer, the
-    /// interval is the promise that saying yes does not mean a request every launch.
-    public static func isDue(store: MeetingStore, now: Date = Date()) -> Bool {
-        guard (try? store.settingBool(.updateCheckEnabled)) == true else { return false }
+    /// What asked for the check, which is the only thing that decides the two gates.
+    public enum Trigger: Sendable {
+        /// App startup. Skips the interval: you have just relaunched, and a build you installed two
+        /// hours ago being told it is current until tomorrow is the wrong answer.
+        case launch
+        /// The daily tick for a session left open. Honours the interval, which is the whole point
+        /// of it.
+        case periodic
+        /// A button someone pressed. Runs whatever the setting says, because pressing it *is* the
+        /// consent the setting exists to record, and reports the outcome either way.
+        case manual
+
+        var honoursInterval: Bool { self == .periodic }
+        var requiresSetting: Bool { self != .manual }
+    }
+
+    /// Whether a check of this kind is allowed and due.
+    public static func isDue(_ trigger: Trigger = .periodic, store: MeetingStore, now: Date = Date()) -> Bool {
+        if trigger.requiresSetting, (try? store.settingBool(.updateCheckEnabled)) != true { return false }
+        guard trigger.honoursInterval else { return true }
         guard let raw = try? store.setting(.updateLastCheckedAt), let seconds = TimeInterval(raw) else {
             return true
         }
@@ -91,21 +107,38 @@ public enum UpdateCheck {
         return last > now || now.timeIntervalSince(last) >= interval
     }
 
-    /// The whole thing: gate, ask, record. Returns nil when there is nothing to say, which covers a
-    /// check that is not due, a check that is switched off, being up to date, and every possible
-    /// failure.
+    /// What a check actually did, so a button can say it.
     ///
-    /// Failure is silent on purpose. This runs unprompted at launch, and an app that opens with an
-    /// error because a network it never told you it needed was unreachable has made your morning
-    /// worse to tell you nothing.
+    /// The automatic paths only act on `.update` and ignore the rest, which keeps launch silent. A
+    /// press cannot be silent: a button that does nothing visible is a button you press again.
+    public enum Outcome: Sendable, Equatable {
+        case update(AvailableUpdate)
+        case upToDate
+        /// Unreachable, rate-limited, or an answer we could not read. One sentence, never a raw error.
+        case failed(String)
+        /// Not due, or switched off. Only ever returned to an automatic caller.
+        case skipped
+
+        public var available: AvailableUpdate? {
+            if case .update(let update) = self { return update }
+            return nil
+        }
+    }
+
+    /// The whole thing: gate, ask, record.
+    ///
+    /// Failure is reported rather than thrown, and the automatic callers drop it on the floor. An app
+    /// that opens with an error because a network it never told you it needed was unreachable has
+    /// made your morning worse to tell you nothing.
     @discardableResult
     public static func run(
+        _ trigger: Trigger = .launch,
         store: MeetingStore,
         currentVersion: String,
         now: Date = Date(),
         transport: HTTPTransport = AIVerify.liveTransport
-    ) async -> AvailableUpdate? {
-        guard isDue(store: store, now: now) else { return nil }
+    ) async -> Outcome {
+        guard isDue(trigger, store: store, now: now) else { return .skipped }
         // Recorded before the request, not after. A GitHub outage or an offline morning would
         // otherwise leave the timestamp untouched and turn "once a day" into a failing request on
         // every single launch.
@@ -114,11 +147,17 @@ public enum UpdateCheck {
     }
 
     /// The request and the comparison, with no store and no gate, so a test can drive it directly.
+    ///
+    /// Every failure is one `.failed` sentence rather than a thrown error, because the only caller
+    /// that shows it is a button and the only useful thing to put beside a button is a sentence.
     public static func latest(
         currentVersion: String,
         transport: HTTPTransport = AIVerify.liveTransport
-    ) async -> AvailableUpdate? {
-        guard let current = AppVersion(currentVersion) else { return nil }
+    ) async -> Outcome {
+        guard let current = AppVersion(currentVersion) else {
+            // 0.0.0 from an untagged build parses fine, so reaching here means something stranger.
+            return .failed("This build has no version number to compare.")
+        }
 
         var request = URLRequest(url: latestReleaseURL)
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
@@ -126,17 +165,33 @@ public enum UpdateCheck {
         request.setValue("Meetings/\(current)", forHTTPHeaderField: "User-Agent")
         request.timeoutInterval = 10
 
-        guard let (data, response) = try? await transport(request),
-              (response as? HTTPURLResponse)?.statusCode == 200,
-              let release = try? JSONDecoder().decode(Release.self, from: data),
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await transport(request)
+        } catch {
+            return .failed("Could not reach GitHub. \(error.localizedDescription)")
+        }
+
+        let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard code == 200 else {
+            // 403 here is almost always the unauthenticated rate limit, 60 an hour per IP, and
+            // "GitHub said 403" sends someone looking for a permissions problem they do not have.
+            if code == 403 || code == 429 {
+                return .failed("GitHub is rate-limiting this network. Try again later.")
+            }
+            return .failed("GitHub answered \(code).")
+        }
+
+        guard let release = try? JSONDecoder().decode(Release.self, from: data),
               // `/releases/latest` is documented to exclude drafts and pre-releases, so a beta tag
               // never reaches here and the version parse does not have to rank one.
               let latest = AppVersion(release.tagName),
-              latest > current,
               let url = URL(string: release.htmlURL)
-        else { return nil }
+        else { return .failed("Could not read GitHub's answer.") }
 
-        return AvailableUpdate(version: latest.description, url: url)
+        guard latest > current else { return .upToDate }
+        return .update(AvailableUpdate(version: latest.description, url: url))
     }
 
     private struct Release: Decodable {
