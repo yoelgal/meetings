@@ -103,17 +103,35 @@ import Testing
         #expect(row["state"] as String? == "complete")
     }
 
-    /// Nothing to move, nothing touched — including a write-up that already carries a task list,
-    /// which is what a store looks like the second time round.
+    /// Nothing to move, nothing touched — where "nothing to move" means every action in the column
+    /// is already in the write-up, matched on its text. A meeting is *not* skipped merely because
+    /// its write-up happens to contain some other checkbox: that read of idempotency stranded real
+    /// actions in a column nothing reads any more.
     @Test func meetingsWithNothingToMoveAreLeftAlone() throws {
         let rows = try migrated { db in
             try insert(db, id: "a", state: .ready, summary: nil, actions: nil)
             try insert(db, id: "b", state: .complete, summary: "Ship.", actions: [])
-            try insert(db, id: "c", state: .complete, summary: "- [ ] already here", actions: [Action(text: "one")])
+            try insert(db, id: "c", state: .complete, summary: "- [ ] one", actions: [Action(text: "one")])
         }
         #expect(rows[0]["summary"] as String? == nil)
         #expect(rows[0]["state"] as String? == "ready")
         #expect(rows[1]["summary"] as String? == "Ship.")
-        #expect(rows[2]["summary"] as String? == "- [ ] already here")
+        #expect(rows[2]["summary"] as String? == "- [ ] one")
+    }
+
+    /// The regression that prompted the rule: a write-up carrying an unrelated checkbox still gets
+    /// its column's actions, because they are not in the document under any name.
+    @Test func anUnrelatedCheckboxDoesNotStrandTheColumnsActions() throws {
+        let rows = try migrated { db in
+            try insert(
+                db, id: "a", state: .complete,
+                summary: "# Notes\n\n- [ ] hello",
+                actions: [Action(text: "Increase the padding"), Action(text: "Benchmark the model")]
+            )
+        }
+        let summary = try #require(rows[0]["summary"] as String?)
+        #expect(summary.contains("- [ ] hello"))
+        #expect(summary.contains("- [ ] Increase the padding"))
+        #expect(summary.contains("- [ ] Benchmark the model"))
     }
 }

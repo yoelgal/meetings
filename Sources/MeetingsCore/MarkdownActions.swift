@@ -76,12 +76,20 @@ public enum MarkdownActions {
     /// The actions added to the end of the document under an `## Actions` heading.
     ///
     /// **Idempotent**, and that is the point: it is what the store migration runs over every meeting
-    /// that has actions in the old column, and running it twice must not leave two copies. A
-    /// document that already carries task items is returned untouched — it has actions in it
-    /// already, whatever else it says.
+    /// that has actions in the old column, and running it twice must not leave two copies.
+    ///
+    /// Idempotency is per *action*, not per document, and that distinction is the whole of this
+    /// function's correctness. Skipping any document that already carried a task item looked
+    /// equivalent and was not: a write-up with one unrelated checkbox anywhere in it — a stray
+    /// `- [ ] hello`, a checklist the author typed themselves — silenced the migration for that
+    /// meeting entirely, and since nothing reads the old column afterwards, every real action on it
+    /// vanished from the app while still sitting in the row. Matching on the text instead means an
+    /// already-migrated action is skipped and an un-migrated one is never lost.
     public static func appending(_ actions: [Action], to markdown: String) -> String {
-        guard !actions.isEmpty, !carriesActions(markdown) else { return markdown }
-        let block = "## Actions\n\n" + actions.map(rendered(_:)).joined(separator: "\n")
+        let present = Set(parse(markdown).map(\.text))
+        let missing = actions.filter { !present.contains($0.text) }
+        guard !missing.isEmpty else { return markdown }
+        let block = "## Actions\n\n" + missing.map(rendered(_:)).joined(separator: "\n")
         let existing = markdown.trimmingCharacters(in: .whitespacesAndNewlines)
         return existing.isEmpty ? block : existing + "\n\n" + block
     }

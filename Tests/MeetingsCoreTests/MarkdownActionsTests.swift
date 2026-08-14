@@ -151,11 +151,25 @@ import Testing
         #expect(MarkdownActions.parse(twice).count == 2)
     }
 
-    /// A write-up that already carries a task list is left alone whatever the column said, because
-    /// the document is the record and the column is the thing being retired.
-    @Test func appendingLeavesADocumentThatAlreadyHasActionsUntouched() {
+    /// An unrelated checkbox in the write-up must not silence the migration for that meeting.
+    ///
+    /// This pinned the opposite once, and the opposite lost real data: skipping any document that
+    /// already carried a task item meant one stray `- [ ] hello` — typed by the author, nothing to
+    /// do with the column — stopped every action on that meeting from ever reaching the write-up.
+    /// Nothing reads the column afterwards, so they were simply gone from the app. Idempotency is
+    /// per action, matched on its text.
+    @Test func anUnrelatedCheckboxDoesNotBlockActionsFromMoving() {
         let summary = "# Standup\n\n- [ ] something the user typed"
-        #expect(MarkdownActions.appending([Action(text: "from the old column")], to: summary) == summary)
+        let merged = MarkdownActions.appending([Action(text: "from the old column")], to: summary)
+        let texts = MarkdownActions.parse(merged).map(\.text)
+        #expect(texts == ["something the user typed", "from the old column"])
+    }
+
+    /// The other half of the same rule: an action already in the document is not added again, even
+    /// though the document carries other task items that are not in the column.
+    @Test func anActionAlreadyInTheDocumentIsNotDuplicated() {
+        let summary = "# Standup\n\n- [ ] something the user typed\n- [x] one"
+        #expect(MarkdownActions.appending([Action(text: "one")], to: summary) == summary)
     }
 
     @Test func noActionsMeansNoHeading() {
