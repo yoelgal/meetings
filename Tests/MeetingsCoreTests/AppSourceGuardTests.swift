@@ -590,8 +590,21 @@ import Testing
         // `drawBackground(in:)` is the hook that does not, which is where the checkbox is painted.
         #expect(!editor.contains("override func draw(_ dirtyRect"), """
             Overriding draw(_:) on an NSTextView drops it to TextKit 1 on macOS 26 — measured: \
-            textLayoutManager comes back nil. Paint in drawBackground(in:) instead.
+            textLayoutManager comes back nil. Draw above the text in MarkdownCheckboxOverlay, \
+            which is a plain NSView with no layout to lose.
             """)
+
+        // And the rule is about the *text view*, not about the file. The checkboxes are painted in
+        // an overlay that does override `draw(_:)` — which is free on a plain `NSView` and is what
+        // keeps the control above the selection highlight instead of under it. Moving the text
+        // view's drawing in there would sail straight past the guard above, so: that view is an
+        // `NSView`, and it stays one.
+        let overlay = try Self.source("MarkdownCheckboxOverlay.swift")
+        #expect(overlay.contains("final class MarkdownCheckboxOverlay: NSView"), """
+            The overlay is a plain NSView. An NSTextView subclass overriding draw(_:) is the \
+            downgrade this whole arrangement exists to avoid.
+            """)
+        #expect(!overlay.contains(": NSTextView"), "and it does not become one by another route")
     }
 
     /// Undo has to survive, and the two ways to lose it are both here.

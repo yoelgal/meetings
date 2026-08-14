@@ -66,6 +66,16 @@ struct MarkdownTextView: NSViewRepresentable {
         textView.font = MarkdownStyle.bodyFont
         textView.textColor = .labelColor
         textView.textContainerInset = NSSize(width: 0, height: 6)
+        // **A selection tints the background and does not repaint the text.** By default AppKit adds
+        // `selectedTextColor` to every selected character, and that overrides the `NSColor.clear`
+        // the three characters of a task item's box are drawn in — so the moment a selection
+        // crossed the action list, the literal `[ ]` reappeared *on top of* the checkbox, on those
+        // rows only, while the rows outside the selection still showed a control. That is the
+        // rendering fault in the screenshot, and it is one attribute: the highlight, and nothing
+        // that touches a glyph's colour.
+        textView.selectedTextAttributes = [
+            .backgroundColor: NSColor.selectedTextBackgroundColor
+        ]
 
         textView.string = text
         // Clicking the checkbox a task item draws over its `[ ]` goes through the same edit path as
@@ -202,15 +212,42 @@ struct MarkdownTextView: NSViewRepresentable {
             let range = textView.selectedRange()
             let lower = characterOffset(of: range.location)
             parent.selection = lower..<(lower + characterCount(of: range))
-            // The reveal follows the caret, so the document restyles when it moves. The gutter is a
-            // paragraph property and does not move with the caret, so the document's left edge never
-            // shifts; only the caret's own line changes width, as its inline markers come back.
+            // **Not while the mouse is down.** `NSTextView.mouseDown` does not return until the
+            // button comes up: it runs a tracking loop that maps the pointer to a character on
+            // every event and extends the selection to it, and this notification is posted from
+            // *inside* that loop. `restyle()` rewrites the attributes of the entire document, so
+            // obeying every one of those notifications means a document-sized rewrite per mouse
+            // event for the whole of a drag — and each one invalidates the layout the loop is
+            // measuring against.
+            //
+            // This is not what made a click select a paragraph; the reveal rule in `restyle()` was,
+            // and bisecting says so. It is the work that has no business happening mid-gesture, and
+            // keeping it out is what stops the layout being rebuilt underneath a live drag.
+            //
+            // Deferred, not dropped: ``MarkdownNSTextView/mouseDown(with:)`` calls
+            // ``endMouseTracking()`` the moment `super` returns, which is the moment the mouse came
+            // up, so the reveal lands before the next frame either way.
+            guard !isTracking else { return }
+            restyle()
+            publishRects()
+        }
+
+        /// True while the text view is inside its own mouse-tracking loop.
+        private var isTracking: Bool {
+            (textView as? MarkdownNSTextView)?.isTrackingMouse ?? false
+        }
+
+        /// The gesture is over: catch up on everything that was held back during it.
+        func endMouseTracking() {
             restyle()
             publishRects()
         }
 
         func publishRects() {
-            guard let textView else { return }
+            // Not mid-gesture. This is a read — it moves nothing — but it writes SwiftUI state, and
+            // a SwiftUI update landing inside `NSTextView`'s tracking loop is a re-entrancy nobody
+            // needs while a selection is being dragged. It runs again the moment the mouse comes up.
+            guard let textView, !isTracking else { return }
             let range = textView.selectedRange()
             parent.caretRect = rect(for: NSRange(location: range.location, length: 0))
             parent.selectionRect = range.length > 0 ? rect(for: range) : nil
@@ -254,7 +291,33 @@ struct MarkdownTextView: NSViewRepresentable {
             // Handed over as a UTF-16 offset rather than as a `String.Index`. Every bridge of the
             // storage's string is a separate `String` value, and an index taken from one of them
             // and compared against lines carved out of another is only accidentally right.
-            MarkdownStyle.apply(to: storage, caret: textView.selectedRange().location)
+            //
+            // **A caret reveals; a selection does not**, and this one line fixes two things.
+            //
+            // The one you can see: the reveal exists so the line you are *editing* shows the
+            // characters you are editing, and a selection is not an edit. Following the selection's
+            // start meant a row inside a highlight showed its raw markers while the rows either
+            // side of it showed a checkbox, which reads as the rendering having failed.
+            //
+            // The one you could not: **this is what made a single click select a block of text.**
+            // `NSTextView.mouseDown` runs until the mouse comes up, mapping the pointer to a
+            // character on every event and extending the selection to it — and it passes through a
+            // one-character range on the way, because the two ends of a real click round across a
+            // glyph boundary differently. Recomputing the reveal from a selection that is moving
+            // re-lays-out a line mid-gesture, the loop's next reading of the same screen point
+            // lands on a different character, and the caret becomes a range that runs away.
+            //
+            // Bisected on this view at 560 pt, offscreen, with synthesised events through the real
+            // tracking loop: with the reveal following the selection, a click in the last action
+            // line came back `selectedRange() = {323, 22}` — twenty-two characters, to the end of
+            // the document — and a double-click on `cutover` selected `the`, three words away.
+            // With the reveal restricted to a collapsed caret, `{322, 1}` and `cutover`, both
+            // matching a stock `NSTextView` handed the identical events. Reverting this line alone,
+            // with every other change in this branch in place, brings both back.
+            let selection = textView.selectedRange()
+            MarkdownStyle.apply(
+                to: storage, caret: selection.length == 0 ? selection.location : nil
+            )
             storage.endEditing()
             // Attributes are not text, so none of the above touched the undo stack — but the caret
             // sitting just after a dimmed marker would otherwise inherit its colour and size onto
@@ -308,32 +371,57 @@ final class MarkdownNSTextView: NSTextView {
         let rect: CGRect
     }
 
-    /// **`drawBackground(in:)` and never `draw(_:)`.** Measured on macOS 26: overriding `draw(_:)`
-    /// on an `NSTextView` silently drops it to **TextKit 1** — `textLayoutManager` comes back nil,
-    /// and with it the gutter's measurements, the document height and the rects the slash menu and
-    /// the toolbar hang off. Overriding this one does not; the text view stays on TextKit 2.
+    /// The checkboxes, on a view of their own that sits over the text. See
+    /// ``MarkdownCheckboxOverlay`` for why they are not painted into the background any more.
+    private let overlay = MarkdownCheckboxOverlay()
+
+    /// The overlay is fitted and marked for redraw here, at the top of every draw cycle.
     ///
-    /// It paints under the glyphs, which is exactly right here: the three characters of the box are
-    /// transparent, so the checkbox shows through the space they hold. A selection dragged across it
-    /// tints over the checkbox, the same way it tints over a word.
-    override func drawBackground(in rect: NSRect) {
-        super.drawBackground(in: rect)
-        for box in checkboxes() where box.rect.intersects(rect) {
-            MarkdownStyle.drawCheckbox(done: box.done, in: box.rect)
-        }
+    /// **`viewWillDraw()` and never `draw(_:)`.** Measured on macOS 26: overriding `draw(_:)` on an
+    /// `NSTextView` silently drops it to **TextKit 1** — `textLayoutManager` comes back nil, and
+    /// with it the gutter's measurements, the document height and the rects the slash menu and the
+    /// toolbar hang off. This one does not touch the drawing path at all; it runs before it, and
+    /// `super` then carries the same call down into the subviews, so the overlay repaints in *this*
+    /// pass rather than a frame late.
+    ///
+    /// Every pass, because a checkbox's position is a fact about the *layout* and the layout moves
+    /// for reasons no notification covers — a rewrap when the pane narrows, a heading that grew, a
+    /// line that wrapped. Repainting it costs three small rounded rectangles.
+    override func viewWillDraw() {
+        if overlay.superview !== self { addSubview(overlay) }
+        if overlay.frame != bounds { overlay.frame = bounds }
+        overlay.needsDisplay = true
+        super.viewWillDraw()
     }
 
+    /// True from the moment `mouseDown` hands over to `NSTextView` until the mouse comes up.
+    ///
+    /// `NSTextView.mouseDown` is not a notification that a button went down — it is the whole
+    /// gesture, and it does not return until the button comes up again. Anything that changes the
+    /// document's attributes while this is true is changing the layout out from under a loop that
+    /// is mapping screen points onto characters, which is how a click becomes a range selection.
+    private(set) var isTrackingMouse = false
+
     /// A click inside a box ticks it and goes no further — the text view never sees it, so it does
-    /// not also start a selection drag from inside the marker.
+    /// not also start a selection drag from inside the marker. Nothing has begun tracking on this
+    /// path: `super` is what starts the tracking loop, and it is never reached.
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
         // Slop, because a checkbox is a small target and the three characters it is drawn over are
         // about twenty points wide. Not so much that clicking the word ticks it.
         if let hit = checkboxes().first(where: { $0.rect.insetBy(dx: -2, dy: -1).contains(point) }) {
+            // The one thing `super` would have done that ticking still needs: focus. Without it a
+            // box ticked in a write-up nobody had clicked into yet would be a change ⌘Z could not
+            // reach, because the undo manager it landed on is this view's.
+            if window?.firstResponder !== self { window?.makeFirstResponder(self) }
             toggleTask?(hit.offset)
             return
         }
+        isTrackingMouse = true
+        // Returns when the mouse comes up, having run the whole selection gesture in between.
         super.mouseDown(with: event)
+        isTrackingMouse = false
+        (delegate as? MarkdownTextView.Coordinator)?.endMouseTracking()
     }
 
     /// ponytail: the whole document is walked per draw and per click. That is the same order of work
@@ -590,25 +678,78 @@ extension NSTextView {
         }
     }
 
-    /// The checkbox itself: SF Symbols, drawn into the space the `[ ]` characters occupy.
-    static func drawCheckbox(done: Bool, in rect: CGRect) {
-        let side = min(rect.height, rect.width) - 1
-        guard side > 4 else { return }
-        let box = CGRect(
-            x: rect.midX - side / 2, y: rect.midY - side / 2, width: side, height: side
+    /// The system checkbox — the control itself, asked to draw, rather than a picture of one.
+    ///
+    /// This was an SF Symbol (`square` / `checkmark.square.fill`) and it read as what it was: a
+    /// glyph. A symbol square is a font character with a stroke weight that follows the text, no
+    /// fill, no inner shadow and no accent colour of its own, so next to real prose it looked
+    /// drawn rather than clickable — and the ticked state was an accent-coloured *letter* rather
+    /// than the filled, checked control macOS puts everywhere else.
+    ///
+    /// `NSButtonCell` set to `.switch` **is** the checkbox: it is the cell
+    /// `NSButton(checkboxWithTitle:target:action:)` is built out of, and `draw(withFrame:in:)` asks
+    /// AppKit to render it exactly as it renders one in a dialog. Every one of the things that
+    /// makes it look native therefore comes from the system and not from here — the control shape
+    /// and its corner radius, the border and inner shadow of the empty box, the user's accent
+    /// colour when ticked, the check glyph, and light and dark mode, which arrives via the
+    /// `NSAppearance` that is already current on the view being drawn into.
+    ///
+    /// It carries no accessibility label of its own, and it should not: the `[ ]` characters are
+    /// still in the string at their own offsets, so VoiceOver reads `- [x] book the war room` off
+    /// the text the way it reads every other line. A second label would be a second answer.
+    ///
+    /// **A cell rather than an `NSTextAttachment` hosting a real `NSButton`.** An attachment is a
+    /// *character*: drawing the box that way means either inserting U+FFFC into the document — a
+    /// character the store would then hold and the CLI would write into somebody's markdown file —
+    /// or hanging an attachment on characters the layout engine does not expect to carry one. Both
+    /// break the rule the whole editor rests on, which is that the drawn document and the stored
+    /// string have the same characters at the same offsets. A cell is not in the text model at
+    /// all. It draws, and that is the entire extent of its involvement.
+    ///
+    /// One cell, reused for every box, because a cell carries no state between draws beyond the
+    /// `state` set here — the same reason AppKit's own table views draw a column with one.
+    private static let checkboxCell: NSButtonCell = {
+        let cell = NSButtonCell()
+        cell.setButtonType(.switch)
+        cell.title = ""
+        cell.imagePosition = .imageOnly
+        // The control size whose box is closest to the text it sits beside: measured against
+        // `bodyFont` at the system default of 13 pt, `.small` draws a 12 pt box against a 13 pt
+        // cap-and-ascender run, which is the proportion a checkbox has next to its own label in a
+        // dialog. `.regular`'s 14 pt box next to 13 pt prose reads a size too big.
+        cell.controlSize = bodyFont.pointSize >= 15 ? .regular : .small
+        return cell
+    }()
+
+    /// Painted over the space the `[ ]` characters hold, sitting on the text's baseline.
+    ///
+    /// The cell is drawn at its own `cellSize` and never scaled: a control stretched to fill a
+    /// glyph box is a blurred control, and the system draws these at fixed sizes for a reason.
+    static func drawCheckbox(done: Bool, over rect: CGRect, in view: NSView) {
+        let cell = checkboxCell
+        cell.state = done ? .on : .off
+        let size = cell.cellSize
+        guard size.width > 0, size.height > 0, rect.width > 0 else { return }
+        // Left-aligned in the space the three characters occupy rather than centred in it: the box
+        // then lines up with the `-` of a plain bullet on the line above, which is what makes the
+        // gutter read as one column instead of two.
+        //
+        // Vertically it is centred between the baseline and the cap height — where the eye puts
+        // the middle of a line of text — and not on the middle of the line fragment, which sits
+        // low because the fragment carries the descender and the 1.15 line height underneath.
+        //
+        // The fragment is taller than the type by its leading, and the baseline is that much above
+        // the fragment's bottom, less the descender's own depth. `descender` is negative, so adding
+        // it moves up.
+        let leading = max(rect.height - (bodyFont.ascender - bodyFont.descender), 0)
+        let baseline = rect.maxY - leading / 2 + bodyFont.descender
+        let middle = baseline - bodyFont.capHeight / 2
+        cell.draw(
+            withFrame: CGRect(
+                x: rect.minX, y: middle - size.height / 2, width: size.width, height: size.height
+            ),
+            in: view
         )
-        // An empty box has to be *visible*, which `tertiaryLabelColor` on a thin `square` outline is
-        // not — rendered at 17 pt it is a light grey hairline on a white page and reads as nothing
-        // at all, which is the same failure as the checklist that could not be ticked.
-        let colour = done ? NSColor.controlAccentColor : NSColor.secondaryLabelColor
-        let configuration = NSImage.SymbolConfiguration(pointSize: side, weight: .regular)
-            .applying(NSImage.SymbolConfiguration(paletteColors: [colour]))
-        NSImage(
-            systemSymbolName: done ? "checkmark.square.fill" : "square",
-            accessibilityDescription: done ? "Done" : "Not done"
-        )?
-        .withSymbolConfiguration(configuration)?
-        .draw(in: box)
     }
 
     static func paragraphStyle(for line: some StringProtocol) -> NSParagraphStyle {

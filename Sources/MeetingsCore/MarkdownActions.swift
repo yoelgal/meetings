@@ -43,6 +43,26 @@ public enum MarkdownActions {
         "- [\(action.done ? "x" : " ")] \(action.text)"
     }
 
+    /// The actions worth writing a line for.
+    ///
+    /// **An action with no text is not an action**, and ``action(in:)`` has always said so on the
+    /// way in — it refuses to parse `- [ ]` as something anybody owes. This is the same rule on the
+    /// way out, and without it the two disagreed in a way that showed: an `Action` carrying an empty
+    /// text rendered as `- [ ] ` and landed at the end of somebody's action list as a checkbox with
+    /// nothing beside it. Worse, ``appending(_:to:)``'s idempotency is `parse`-based, and `parse`
+    /// cannot see the line it just wrote — so every re-run of the migration added another one.
+    ///
+    /// `ActionsInput` rejects an empty text, so this is not the CLI's path; it is the store
+    /// migration's, which decodes the legacy `actions` column with `JSONDecoder` and validates
+    /// nothing, and any other caller holding an `Action` it did not parse from markdown.
+    ///
+    /// **This never touches a line already in the document.** A `- [ ]` somebody typed into their
+    /// write-up is theirs — the item they are in the middle of writing — and nothing here reads or
+    /// rewrites it. Only actions arriving from outside the markdown are filtered.
+    private static func meaningful(_ actions: [Action]) -> [Action] {
+        actions.filter { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    }
+
     /// Whether any line of the document is a task list item.
     public static func carriesActions(_ markdown: String) -> Bool {
         markdown.split(separator: "\n", omittingEmptySubsequences: false)
@@ -64,7 +84,7 @@ public enum MarkdownActions {
         guard let first = lines.firstIndex(where: { MarkdownSyntax.taskItem($0) != nil }) else {
             return appending(actions, to: markdown)
         }
-        let list = actions.map(rendered(_:))
+        let list = meaningful(actions).map(rendered(_:))
         var rebuilt: [String] = []
         for (index, existing) in lines.enumerated() {
             if index == first { rebuilt.append(contentsOf: list) }
@@ -87,7 +107,7 @@ public enum MarkdownActions {
     /// already-migrated action is skipped and an un-migrated one is never lost.
     public static func appending(_ actions: [Action], to markdown: String) -> String {
         let present = Set(parse(markdown).map(\.text))
-        let missing = actions.filter { !present.contains($0.text) }
+        let missing = meaningful(actions).filter { !present.contains($0.text) }
         guard !missing.isEmpty else { return markdown }
         let block = "## Actions\n\n" + missing.map(rendered(_:)).joined(separator: "\n")
         let existing = markdown.trimmingCharacters(in: .whitespacesAndNewlines)

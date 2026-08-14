@@ -38,5 +38,13 @@ let package = Package(
             name: "MeetingsCoreTests",
             dependencies: ["MeetingsCore"]
         ),
+        // The editor's behaviour under a real mouse. It needs the app target itself — the guard
+        // tests in MeetingsCoreTests read this code as *text*, and text cannot tell you what a
+        // click does. Runs headless: the window is parked offscreen and the process never
+        // activates, so `swift test` steals no focus.
+        .testTarget(
+            name: "MeetingsAppTests",
+            dependencies: ["MeetingsApp"]
+        ),
     ]
 )

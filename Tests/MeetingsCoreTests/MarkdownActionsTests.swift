@@ -176,4 +176,41 @@ import Testing
         #expect(MarkdownActions.appending([], to: "# Standup") == "# Standup")
         #expect(MarkdownActions.carriesActions("# Standup") == false)
     }
+
+    /// An `Action` with no text does not become a line.
+    ///
+    /// This is where the empty checkbox at the bottom of a write-up came from. `ActionsInput`
+    /// rejects an empty text, so the CLI cannot produce one — but the store migration decodes the
+    /// legacy `actions` column straight through `JSONDecoder`, which validates nothing, and one
+    /// `{"text": ""}` in there rendered as `- [ ] ` and landed at the end of the action list as a
+    /// checkbox beside nothing.
+    @Test func anActionWithNoTextDoesNotBecomeALine() {
+        let appended = MarkdownActions.appending(
+            [Action(text: "ship it"), Action(text: ""), Action(text: "   ")], to: "# Standup"
+        )
+        #expect(appended == "# Standup\n\n## Actions\n\n- [ ] ship it")
+
+        let replaced = MarkdownActions.replace(
+            [Action(text: ""), Action(text: "ship it")], in: "- [ ] old"
+        )
+        #expect(replaced == "- [ ] ship it")
+    }
+
+    /// And the reason it mattered twice over: `appending` is idempotent by *text*, and `parse`
+    /// cannot see an item with no text — so the empty one was never "already present" and every
+    /// re-run of the migration added another. Measured before the fix: three runs, three boxes.
+    @Test func anEmptyActionCannotAccumulateAcrossMigrationRuns() {
+        let actions = [Action(text: "ship it"), Action(text: "")]
+        var document = "# Standup"
+        for _ in 0..<3 { document = MarkdownActions.appending(actions, to: document) }
+        #expect(document == "# Standup\n\n## Actions\n\n- [ ] ship it")
+    }
+
+    /// The line the user typed is theirs. Nothing above filters the *document*: an item somebody is
+    /// in the middle of writing survives being parsed, rendered around, and appended to.
+    @Test func anEmptyItemTheUserTypedIsLeftAlone() {
+        let typed = "## Actions\n\n- [ ] ship it\n- [ ] "
+        #expect(MarkdownActions.appending([Action(text: "ship it")], to: typed) == typed)
+        #expect(typed.contains("- [ ] "))
+    }
 }
