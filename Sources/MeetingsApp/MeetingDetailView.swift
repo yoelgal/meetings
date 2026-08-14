@@ -678,7 +678,12 @@ private struct ActionRow: View {
                 .frame(width: 16, alignment: .center)
                 .help(action.done ? "Mark as not done" : "Mark as done")
 
-            TextField("", text: $text)
+            // Vertical axis so a long action wraps instead of being clipped. A single-line field
+            // does not ellipsize, it simply stops drawing: "…decide if it can replace the 12" ran
+            // under the owner column with the rest of the sentence nowhere on screen, which is worse
+            // than a truncation because nothing says it happened.
+            TextField("", text: $text, axis: .vertical)
+                .lineLimit(1...4)
                 .textFieldStyle(.plain)
                 .focused($editing)
                 .onSubmit(commitText)
@@ -694,6 +699,8 @@ private struct ActionRow: View {
                 Text(detail)
                     .font(.callout)
                     .foregroundStyle(.secondary)
+                    // Owner and due are short and fixed; the sentence is the part that should give.
+                    .fixedSize()
             }
 
             Button {
