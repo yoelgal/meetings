@@ -21,7 +21,10 @@ struct SlashMenu: View {
                     Text(command.group.uppercased())
                         .font(.caption2.weight(.semibold))
                         .kerning(0.8)
-                        .foregroundStyle(.tertiary)
+                        // `.secondary`, not `.tertiary`: over `.regularMaterial` in dark mode a
+                        // tertiary caption2 is close to unreadable, and these labels are the only
+                        // thing telling you the menu is grouped at all.
+                        .foregroundStyle(.secondary)
                         .padding(.horizontal, 9)
                         .padding(.top, index == 0 ? 6 : 8)
                         .padding(.bottom, 3)
@@ -39,6 +42,19 @@ struct SlashMenu: View {
         .shadow(color: .black.opacity(0.18), radius: 12, y: 6)
     }
 
+    /// A heading row is set at the weight and size it inserts; everything else stays at body size.
+    ///
+    /// Deliberately capped well below the real heading scale — this is a menu row, not a preview
+    /// pane, and a 26pt "Heading 1" would set the row height for the whole list.
+    private func previewFont(for command: MarkdownEditing.SlashCommand) -> Font {
+        switch command.id {
+        case "h1": .system(size: 16, weight: .bold)
+        case "h2": .system(size: 14.5, weight: .semibold)
+        case "h3": .system(size: 13.5, weight: .semibold)
+        default: .body
+        }
+    }
+
     private func row(_ command: MarkdownEditing.SlashCommand, selected: Bool) -> some View {
         // A Button rather than a tap gesture, so it is one thing to VoiceOver and to the pointer.
         Button {
@@ -48,12 +64,19 @@ struct SlashMenu: View {
                 Image(systemName: command.symbol)
                     .frame(width: 18)
                     .foregroundStyle(selected ? AnyShapeStyle(.white) : AnyShapeStyle(.secondary))
+                // The heading rows are set at the size they produce, which is the only reliable way
+                // to tell them apart: `textformat.size.larger` and `.smaller` both draw as an `A`,
+                // so H1 and H3 arrived on screen as the same glyph carrying no information. Showing
+                // the result is also how every editor that does this well labels them.
                 Text(command.title)
+                    .font(previewFont(for: command))
                     .foregroundStyle(selected ? AnyShapeStyle(.white) : AnyShapeStyle(.primary))
                 Spacer(minLength: 12)
                 Text(command.shorthand)
                     .font(.caption.monospaced())
-                    .foregroundStyle(selected ? AnyShapeStyle(.white.opacity(0.75)) : AnyShapeStyle(.tertiary))
+                    // Was `.tertiary`, which left the one thing worth learning — the shorthand that
+                    // means you never need this menu again — as the least legible text in it.
+                    .foregroundStyle(selected ? AnyShapeStyle(.white.opacity(0.85)) : AnyShapeStyle(.secondary))
             }
             .padding(.horizontal, 5)
             .padding(.vertical, 4)
