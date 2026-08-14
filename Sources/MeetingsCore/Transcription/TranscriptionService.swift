@@ -101,15 +101,43 @@ public actor TranscriptionService {
     }
 
     private func runPreparation() async throws {
+        let option: LocalTranscriptionOption
+        switch plan() {
+        case .cloud:
+            // Cloud downloads nothing at all — not the batch model, and not the live one either.
+            // That is the point of the option: somebody who chose an endpoint to avoid a 600 MB
+            // fetch has not agreed to a 250 MB one for a live pane. It costs them the live
+            // transcript, which the wizard and Settings both say in as many words.
+            return publish(1)
+        case .injected:
+            // A handed-in engine is still prepared — that is what a caller injecting one is asking
+            // for — but there is no live model behind it to go and fetch.
+            try await resolvedEngine().prepare(progress: { [weak self] value in
+                Task { await self?.publish(value * 0.6) }
+            })
+            return publish(1)
+        case .local(let chosen):
+            option = chosen
+        }
+
         // The batch model is the larger of the two, and the one a meeting cannot be written up
-        // without, so it goes first and takes the bigger share of the bar.
-        try await resolvedEngine().prepare(progress: { [weak self] value in
-            Task { await self?.publish(value * 0.6) }
-        })
-        guard !FluidAudioStreamingTranscriber.modelsAreCached() else { return publish(1) }
-        try await FluidAudioStreamingTranscriber.prepareModels(progress: { [weak self] value in
-            Task { await self?.publish(0.6 + value * 0.4) }
-        })
+        // without, so it goes first and takes the bigger share of the bar. An option with no
+        // separate batch pass has one model, which then owns the whole bar.
+        let liveShare = option.runsSeparateBatchPass ? 0.4 : 1.0
+        if liveShare < 1 {
+            try await resolvedEngine().prepare(progress: { [weak self] value in
+                Task { await self?.publish(value * (1 - liveShare)) }
+            })
+        }
+        guard !FluidAudioStreamingTranscriber.modelsAreCached(option.liveVariant) else {
+            return publish(1)
+        }
+        try await FluidAudioStreamingTranscriber.prepareModels(
+            variant: option.liveVariant,
+            progress: { [weak self] value in
+                Task { await self?.publish((1 - liveShare) + value * liveShare) }
+            }
+        )
         publish(1)
     }
 
@@ -125,16 +153,92 @@ public actor TranscriptionService {
     /// than offering a button that starts one.
     public var isPreparingModels: Bool { preparation != nil }
 
-    /// Cheap, synchronous-ish check used by onboarding and `meetings status`. No download.
+    /// Drops the engine resolved on first use, so the next pass reads the settings again.
     ///
-    /// True only when everything a recording needs is present. Reporting ready on the batch model
-    /// alone is what let a fresh install finish setup, start its first meeting, and find the live
-    /// transcript empty with nothing having warned it would be.
+    /// The cache exists to load 600 MB of Core ML once per process rather than once per meeting,
+    /// and it is right for that — but it also outlives a user changing the engine in Settings or in
+    /// the wizard, which is how "I switched to my own endpoint and it still transcribed locally"
+    /// happens. An injected engine is never dropped: a test's stub is not a cached resolution.
+    public func forgetResolvedEngine() async {
+        guard let current = engine, current is FluidAudioBatchEngine || current is OpenAICompatibleRemoteEngine
+        else { return }
+        await current.release()
+        engine = nil
+    }
+
+    /// What this store is actually set up to do, resolved once. Every gate below reads it, so no two
+    /// of them can disagree about whether this install needs a download at all.
+    ///
+    /// The injected-engine case comes first and stays first: tests hand in a stub engine precisely
+    /// so they never touch settings, the network or 600 MB of Core ML.
+    enum Plan {
+        /// Models on this Mac, and which ones.
+        case local(LocalTranscriptionOption)
+        /// A remote endpoint was chosen. Nothing is downloaded, whether or not it is fully filled
+        /// in — an unconfigured endpoint is a setup problem to report, never a reason to quietly
+        /// fetch 600 MB of models the user explicitly declined.
+        case cloud(configured: Bool)
+        /// An engine was handed in. Nothing to download and nothing to check.
+        case injected
+    }
+
+    func plan() -> Plan {
+        if engine != nil, !(engine is FluidAudioBatchEngine) { return .injected }
+        guard store.transcriptionEngine() == .cloud else { return .local(localOption()) }
+        return .cloud(configured: remoteConfiguration() != nil)
+    }
+
+    func localOption() -> LocalTranscriptionOption {
+        store.localTranscriptionOption()
+    }
+
+    /// Cheap, synchronous-ish check used by onboarding, the recording prerequisites and
+    /// `meetings status`. No download, and no network.
+    ///
+    /// "Ready" means *this engine* can transcribe, which is why it is not a file-existence check any
+    /// more. On the cloud path there are no models by design and a hard "the models are missing"
+    /// would have told a correctly configured user that recording was broken, on every launch,
+    /// forever. On the local path it is still every model the chosen option needs: reporting ready
+    /// on the batch model alone is what let a fresh install finish setup, start its first meeting,
+    /// and find the live transcript empty with nothing having warned it would be.
     public func modelsReady() async -> Bool {
-        guard FluidAudioStreamingTranscriber.modelsAreCached() else { return false }
-        if let engine, !(engine is FluidAudioBatchEngine) { return true }
-        if engine == nil, remoteConfiguration() != nil { return true }
-        return FluidAudioBatchEngine.modelsAreCached()
+        switch plan() {
+        case .injected:
+            return true
+        case .cloud(let configured):
+            return configured
+        case .local(let option):
+            guard FluidAudioStreamingTranscriber.modelsAreCached(option.liveVariant) else {
+                return false
+            }
+            guard option.runsSeparateBatchPass else { return true }
+            return FluidAudioBatchEngine.modelsAreCached()
+        }
+    }
+
+    /// One sentence naming what transcription is wired up to do, for `meetings status` and Settings.
+    /// Says what is configured *and* whether it can run, because a cloud endpoint with a missing key
+    /// and a local model that was never downloaded look identical from outside.
+    public func engineSummary() async -> String {
+        switch plan() {
+        case .injected:
+            return "a test engine is installed"
+        case .cloud(let configured):
+            let model = setting(.transcribeRemoteModel) ?? "?"
+            let host = (setting(.transcribeRemoteBaseURL)).flatMap { URL(string: $0)?.host() } ?? "?"
+            guard configured else {
+                return "a remote endpoint is selected but not fully configured, so no meeting can "
+                    + "be transcribed. Set transcribe.remote.baseURL, .model and .keyRef, and put "
+                    + "the key in the Keychain"
+            }
+            return "remote endpoint \(host) (model \(model)); audio for each meeting is uploaded there"
+        case .local(let option):
+            let ready = await modelsReady()
+            return ready
+                ? "on this Mac: \(option.title) — \(option.liveModel) live, \(option.finalModel)"
+                : "on this Mac: \(option.title) — not downloaded yet (\(option.downloadSizeText)). "
+                    + "The app downloads it on first run"
+        }
     }
 
     // MARK: - The batch pass
@@ -176,6 +280,26 @@ public actor TranscriptionService {
             if meeting.audioPath == nil, meeting.audioPurgedAt == nil {
                 meeting.audioPath = directory.path
             }
+        }
+
+        // An option whose live model *is* its final model has no second pass to run. The live rows
+        // are already the transcript, so they are handed back through the same replace-and-remap
+        // transaction every other path ends in — which is what promotes them from `live` to `final`,
+        // remaps the notes and moves the meeting to `ready`. Skipping the call instead would leave
+        // the meeting at `transcribing` forever.
+        if case .local(let option) = plan(), !option.runsSeparateBatchPass {
+            let live = try store.segments(meetingID: meetingID)
+            try store.replaceLiveSegments(
+                meetingID: meetingID,
+                with: live.filter { !$0.edited }.map {
+                    TranscriptSegment(
+                        meetingID: meetingID, channel: $0.channel, tStartMs: $0.tStartMs,
+                        tEndMs: $0.tEndMs, text: $0.text, pass: .final)
+                },
+                channels: Set(files.map(\.channel))
+            )
+            progress(1)
+            return
         }
 
         let engine = try resolvedEngine()
@@ -348,9 +472,23 @@ public actor TranscriptionService {
     private func resolvedEngine() throws -> TranscriptionEngine {
         if let engine { return engine }
         let resolved: TranscriptionEngine
-        if let configuration = remoteConfiguration() {
+        switch plan() {
+        case .injected:
+            // Unreachable: `.injected` is only returned when `engine` is non-nil, which returned
+            // above. Falling back to the local model here rather than trapping.
+            resolved = FluidAudioBatchEngine()
+        case .cloud(let configured):
+            guard configured, let configuration = remoteConfiguration() else {
+                // The important half of this branch. Before, an incomplete remote configuration fell
+                // through to `FluidAudioBatchEngine()`, which downloads 600 MB on its first
+                // `prepare` — silently fetching the models the user chose the cloud to avoid, and
+                // producing a local transcript from a setting that says remote.
+                throw TranscriptionError.remoteFailed(
+                    "the remote endpoint is selected but incomplete: base URL, model and a Keychain "
+                        + "key reference are all required")
+            }
             resolved = OpenAICompatibleRemoteEngine(configuration: configuration)
-        } else {
+        case .local:
             resolved = FluidAudioBatchEngine()
         }
         engine = resolved

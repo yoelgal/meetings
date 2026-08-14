@@ -63,7 +63,7 @@ struct SettingsView: View {
 /// store is the state, and a second copy of it in memory is how the CLI's writes and the window's
 /// disagree.
 @MainActor
-private struct SettingBinding {
+struct SettingBinding {
     let store: MeetingStore
     let key: SettingKey
 
@@ -79,7 +79,7 @@ private struct SettingBinding {
 }
 
 @MainActor
-private func loadSetting(_ store: MeetingStore, _ key: SettingKey) -> String {
+func loadSetting(_ store: MeetingStore, _ key: SettingKey) -> String {
     ((try? store.setting(key)) ?? nil) ?? key.defaultValue ?? ""
 }
 
@@ -564,14 +564,17 @@ struct VerifyResultLabel: View {
 
 // MARK: - Transcription
 
+/// The same choice the setup wizard makes, changeable afterwards — including the two directions
+/// that used to be dead ends: cloud back to local has to be able to run the download it skipped, and
+/// local to cloud must not look like it silently threw the models away.
 private struct TranscriptionSettings: View {
     let model: AppModel
 
-    @State private var engine = ""
-    @State private var remoteBaseURL = ""
-    @State private var remoteModel = ""
-    @State private var remoteKeyRef = ""
-    @State private var remoteKey = ""
+    @State private var engine = TranscriptionEngineChoice.local
+    @State private var option = LocalTranscriptionOption.fallback
+    @State private var record: FitRecord?
+    @State private var fitting = false
+    @State private var fitStage: FitStage?
     @State private var modelsReady: Bool?
     @State private var downloading = false
     @State private var progress = 0.0
@@ -579,88 +582,163 @@ private struct TranscriptionSettings: View {
 
     var body: some View {
         Form {
-            Section("On-device model") {
-                LabeledContent("Parakeet TDT v3") {
-                    HStack(spacing: 10) {
-                        Text(modelLabel).foregroundStyle(.secondary)
-                        Spacer()
-                        if downloading {
-                            ProgressView(value: progress).frame(width: 120)
-                        } else if modelsReady == false {
-                            Button("Download") { download() }
+            Section("Where transcription runs") {
+                Picker("Engine", selection: engineBinding) {
+                    Text("On this Mac").tag(TranscriptionEngineChoice.local)
+                    Text("A remote OpenAI-compatible endpoint").tag(TranscriptionEngineChoice.cloud)
+                }
+                .pickerStyle(.inline)
+            }
+
+            if engine == .local {
+                Section("Model") {
+                    Picker("Model set", selection: optionBinding) {
+                        ForEach(LocalTranscriptionOption.all) { candidate in
+                            Text("\(candidate.title) — \(candidate.downloadSizeText)").tag(candidate)
                         }
                     }
-                }
-                if let downloadProblem {
-                    Text(downloadProblem).font(.caption).foregroundStyle(.secondary)
-                }
-                Text("About 600 MB, downloaded once. Everything after that runs on this Mac with "
-                    + "no network.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+                    Text("Live: \(option.liveModel) · Final: \(option.finalModel) · \(option.languages)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
 
-            Section("Batch engine") {
-                Picker("Final pass", selection: SettingBinding(store: model.store, key: .transcribeBatchEngine).binding($engine)) {
-                    Text("On this Mac (Parakeet)").tag("fluidaudio")
-                    Text("Remote OpenAI-compatible endpoint").tag("remote")
+                    LabeledContent("On this Mac") {
+                        HStack(spacing: 10) {
+                            Text(modelLabel).foregroundStyle(.secondary)
+                            Spacer()
+                            if downloading {
+                                ProgressView(value: progress).frame(width: 120)
+                            } else if modelsReady == false {
+                                // The one control that closes the cloud-to-local dead end: a store
+                                // that skipped its download during setup has nothing on disk, and
+                                // this is where it gets it.
+                                Button("Download \(option.downloadSizeText)") { download() }
+                            }
+                        }
+                    }
+                    if let downloadProblem {
+                        Text(downloadProblem).font(.caption).foregroundStyle(.secondary)
+                    }
                 }
-                Text("The live pass during a meeting is always on-device.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
 
-            if engine == "remote" {
-                Section("Remote endpoint") {
-                    TextField("Base URL", text: SettingBinding(store: model.store, key: .transcribeRemoteBaseURL).binding($remoteBaseURL))
-                    TextField("Model", text: SettingBinding(store: model.store, key: .transcribeRemoteModel).binding($remoteModel))
-                    SecureField("API key", text: $remoteKey)
-                        .onSubmit(saveRemoteKey)
-                    // Same disclosure and the same reason as the cloud one: an account name is a
-                    // label with no correct value, and it does not belong between two fields that
-                    // have one.
-                    DisclosureGroup("Keychain account") {
-                        TextField(
-                            "Keychain account",
-                            text: SettingBinding(store: model.store, key: .transcribeRemoteKeyRef)
-                                .binding($remoteKeyRef)
-                        )
-                        .labelsHidden()
-                        Text("The name this key is filed under in your Keychain. Any name works. "
-                            + "Left blank, Meetings uses \"transcribe\".")
+                Section("What runs best on this Mac") {
+                    if let record {
+                        FitResultRow(record: record)
+                        Text("Measured \(record.ranAt.formatted(date: .abbreviated, time: .shortened)).")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("Not measured yet. Meetings can download one model, run it here on two "
+                            + "channels at once the way a meeting does, and pick from what it "
+                            + "measures rather than from the spec sheet.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
+                    }
+                    HStack(spacing: 10) {
+                        Button(record == nil ? "Check now" : "Check again", action: runFit)
+                            .disabled(fitting)
+                        if fitting {
+                            ProgressView().controlSize(.small)
+                            Text(fitStage.map(FitCheck.sentence) ?? "")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    Text("Up to \(Int(FitRunner.defaultCap / 60)) minutes, and it replaces the model "
+                        + "chosen above with whatever verifies.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            if engine == .cloud {
+                Section("Remote endpoint") {
+                    RemoteTranscriptionFields(store: model.store)
+                }
+                Section {
+                    // Switching away does not delete anything, and saying so is the point: models
+                    // that took twenty minutes to fetch, silently deleted by a picker, would be
+                    // unforgivable — and a user who assumes they *were* deleted will not switch
+                    // back. Neither the assumption nor the deletion, then: the files stay and the
+                    // pane says where.
+                    Label {
+                        Text(localModelsPresent
+                            ? "The models already on this Mac are left where they are, at "
+                                + "~/Library/Application Support/FluidAudio. Switching back to "
+                                + "\"On this Mac\" uses them again with no second download."
+                            : "There is nothing downloaded on this Mac, and choosing this endpoint "
+                                + "downloads nothing. There is also no live transcript while you "
+                                + "talk — the live pane is an on-device model, and a remote "
+                                + "endpoint transcribes the recording after the meeting instead.")
+                            .font(.callout)
+                            .fixedSize(horizontal: false, vertical: true)
+                    } icon: {
+                        Image(systemName: "info.circle.fill")
+                            .foregroundStyle(Color(nsColor: .systemBlue))
                     }
                 }
             }
         }
         .formStyle(.grouped)
-        .task {
-            engine = loadSetting(model.store, .transcribeBatchEngine)
-            remoteBaseURL = loadSetting(model.store, .transcribeRemoteBaseURL)
-            remoteModel = loadSetting(model.store, .transcribeRemoteModel)
-            remoteKeyRef = loadSetting(model.store, .transcribeRemoteKeyRef)
-            modelsReady = await model.transcription.modelsReady()
-            // Same reason as the wizard's step: this pane can be opened, closed and reopened while a
-            // download runs, and its `downloading` flag dies with it. `prepareModels` joins the one
-            // in flight rather than starting another, so rejoining is just calling it again.
-            if await model.transcription.isPreparingModels { download() }
-        }
+        .task { await load() }
     }
 
-    /// The same rule the cloud key follows. Before this, a key typed with the account field left
-    /// blank was dropped on the floor: the field cleared, nothing was written, and the endpoint went
-    /// on reporting no key. Silently discarding a pasted API key is the worst of the options here,
-    /// and the account name is a label, so one can be picked.
-    private func saveRemoteKey() {
-        guard !remoteKey.isEmpty else { return }
-        if remoteKeyRef.isEmpty {
-            remoteKeyRef = "transcribe"
-            try? model.store.setSetting(.transcribeRemoteKeyRef, remoteKeyRef)
+    // MARK: -
+
+    /// Written through a binding rather than in an `onChange`, so the setting, the cached engine and
+    /// the readiness label move together and the pane cannot draw a state the store is not in.
+    private var engineBinding: Binding<TranscriptionEngineChoice> {
+        Binding(get: { engine }, set: { choice in
+            engine = choice
+            try? model.store.setSetting(.transcribeBatchEngine, choice.rawValue)
+            Task { await refreshEngine() }
+        })
+    }
+
+    private var optionBinding: Binding<LocalTranscriptionOption> {
+        Binding(get: { option }, set: { choice in
+            option = choice
+            try? model.store.setSetting(.transcribeLocalModel, choice.id)
+            Task { await refreshEngine() }
+        })
+    }
+
+    private var localModelsPresent: Bool {
+        LocalTranscriptionOption.all.contains {
+            FluidAudioStreamingTranscriber.modelsAreCached($0.liveVariant)
+        } || FluidAudioBatchEngine.modelsAreCached()
+    }
+
+    private func load() async {
+        engine = model.store.transcriptionEngine()
+        option = model.store.localTranscriptionOption()
+        record = model.store.fitRecord()
+        modelsReady = await model.transcription.modelsReady()
+        // Same reason as the wizard's step: this pane can be opened, closed and reopened while a
+        // download runs, and its `downloading` flag dies with it. `prepareModels` joins the one
+        // in flight rather than starting another, so rejoining is just calling it again.
+        if await model.transcription.isPreparingModels { download() }
+    }
+
+    private func refreshEngine() async {
+        await model.transcription.forgetResolvedEngine()
+        modelsReady = await model.transcription.modelsReady()
+    }
+
+    private func runFit() {
+        fitting = true
+        Task {
+            let outcome = await FitCheck.run(store: model.store) { stage in
+                Task { @MainActor in fitStage = stage }
+            }
+            record = outcome
+            option = outcome.chosen
+            engine = .local
+            await refreshEngine()
+            fitting = false
         }
-        MeetingsKeychain.setSecret(remoteKey, account: remoteKeyRef)
-        remoteKey = ""
     }
 
     private var modelLabel: String {

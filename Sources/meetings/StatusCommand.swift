@@ -24,7 +24,15 @@ struct StatusCommand: AsyncParsableCommand {
             var byState: [String: Int] = [:]
             for meeting in meetings { byState[meeting.state.rawValue, default: 0] += 1 }
 
-            let modelsReady = await TranscriptionService(store: context.store).modelsReady()
+            let transcription = TranscriptionService(store: context.store)
+            let modelsReady = await transcription.modelsReady()
+            // Two facts, not one. `modelsReady` on the cloud path says "the endpoint is configured",
+            // which is a different claim from "the models are on disk" and used to be reported with
+            // the same words — a cloud user read "Parakeet models ready" about models they had
+            // deliberately never downloaded.
+            let engineSummary = await transcription.engineSummary()
+            let engine = context.store.transcriptionEngine()
+            let fit = context.store.fitRecord()
             let retentionDays = try context.store.settingInt(.audioRetentionDays) ?? 30
             let installed = installedOnPath()
             let fixture = Paths.calendarFixtureURL
@@ -39,7 +47,13 @@ struct StatusCommand: AsyncParsableCommand {
                             ($0.rawValue, byState[$0.rawValue] ?? 0)
                         })
                     ),
-                    transcription: .init(modelsReady: modelsReady),
+                    transcription: .init(
+                        modelsReady: modelsReady,
+                        engine: engine.rawValue,
+                        localModel: context.store.localTranscriptionOption().id,
+                        summary: engineSummary,
+                        fit: fit
+                    ),
                     calendar: .init(
                         source: fixture == nil ? "eventkit" : "fixture",
                         authorization: context.calendar.authorizationStatus().rawValue,
@@ -58,9 +72,9 @@ struct StatusCommand: AsyncParsableCommand {
             Out.line(Format.columns([
                 ["store", "\(databaseURL.path)\(existed ? " (\(Format.bytes(size)))" : " (created just now)")"],
                 ["meetings", meetings.isEmpty ? "none yet" : "\(meetings.count) total (\(stateSummary))"],
-                ["transcription", modelsReady
-                    ? "Parakeet models ready"
-                    : "Parakeet models not downloaded yet. The app downloads them on first run"],
+                ["transcription", engineSummary],
+                ["fit", fit.map { $0.headline }
+                    ?? "not measured. `meetings fit` picks the model that runs best on this Mac"],
                 ["calendar", calendarLine(context: context, fixture: fixture)],
                 ["cli", installed.map { "on PATH at \($0)" }
                     ?? "not on PATH. Install it from Settings > Command line"],
@@ -106,7 +120,14 @@ private struct StatusJSON: Encodable {
         let byState: [String: Int]
     }
     struct Transcription: Encodable {
+        /// Whether transcription can actually run: models on disk for the local engine, a complete
+        /// configuration for the remote one. Not "files exist" — see `engine`.
         let modelsReady: Bool
+        /// `fluidaudio` or `remote`.
+        let engine: String
+        let localModel: String
+        let summary: String
+        let fit: FitRecord?
     }
     struct Calendar: Encodable {
         let source: String

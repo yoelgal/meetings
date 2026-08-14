@@ -776,7 +776,7 @@ final class AppModel {
 
     @discardableResult
     func startRecording(meetingID: String) async -> Bool {
-        recordingBlockers = await Prerequisites.forRecording(transcription)
+        recordingBlockers = await Prerequisites.forRecording(transcription, store: store)
         // The microphone is the only fatal one. Without it the recorder still opens a file, still
         // runs its clock and captures nothing at all, and the first the user hears of it is an empty
         // transcript half an hour later. Missing system audio or missing models each cost part of a
@@ -798,7 +798,7 @@ final class AppModel {
     /// for System Settings and coming back, and having to press Start a second time to discover it
     /// worked is how a user concludes it did not.
     func recheckRecordingBlockers() async {
-        recordingBlockers = await Prerequisites.forRecording(transcription)
+        recordingBlockers = await Prerequisites.forRecording(transcription, store: store)
     }
 
     func stopRecording() async {

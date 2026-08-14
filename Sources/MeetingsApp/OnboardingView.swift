@@ -15,6 +15,20 @@ struct OnboardingView: View {
 
     @State private var step = OnboardingView.resumedStep()
 
+    /// Set by the model step when transcription is pointed at a remote endpoint that has not been
+    /// proved to work. It holds Continue on that one step, and on that one condition.
+    ///
+    /// Every other step here is skippable and stays skippable — a permission ungranted or a model
+    /// undownloaded announces itself the moment it matters, loudly, in the app. A wrong API key does
+    /// not: it fails after the first real meeting, with the audio already recorded, and the only
+    /// cheap moment to catch it is this one. Hence a gate here and nowhere else, and hence
+    /// ``verifyRequested`` rather than a locked door — "Skip setup" still works, and one failed
+    /// verification puts a way past it on screen.
+    @State private var remoteUnverified = false
+    /// Bumped to ask the model step to run its verification now.
+    @State private var verifyRequested = 0
+    @State private var allowUnverified = false
+
     /// The size the wizard was designed at, and the shape it is cut to.
     /// Not private: the window scene opens at this size on a first run, so the wizard is never
     /// watched resizing into place.
@@ -65,6 +79,12 @@ struct OnboardingView: View {
                 // captions look like, and the one way out of the wizard has to look like a way out.
                 Button("Skip setup", action: complete)
                     .buttonStyle(.link)
+                if gating, allowUnverified {
+                    Button("Continue without verifying") {
+                        withAnimation { step = step.next ?? step }
+                    }
+                    .buttonStyle(.link)
+                }
                 Spacer()
                 // Only once there is something behind you. A Back button greyed out on page one is
                 // a control that spends its first impression telling you it does not work.
@@ -81,8 +101,11 @@ struct OnboardingView: View {
                 Text("\(step.rawValue + 1) of \(Step.allCases.count)")
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.tertiary)
-                Button(step.next == nil ? "Start using Meetings" : "Continue") {
-                    if let next = step.next {
+                Button(gating ? "Verify and continue" : (step.next == nil ? "Start using Meetings" : "Continue")) {
+                    if gating {
+                        allowUnverified = true
+                        verifyRequested += 1
+                    } else if let next = step.next {
                         withAnimation { step = next }
                     } else {
                         complete()
@@ -108,6 +131,9 @@ struct OnboardingView: View {
         }
     }
 
+    /// The one condition Continue is held on: the model step, a remote endpoint, nothing proven yet.
+    private var gating: Bool { step == .model && remoteUnverified }
+
     private var title: String {
         switch step {
         case .welcome: "Welcome to Meetings"
@@ -123,7 +149,10 @@ struct OnboardingView: View {
         switch step {
         case .welcome: WelcomeStep()
         case .permissions: PermissionsStep()
-        case .model: ModelStep(model: model)
+        case .model:
+            ModelStep(model: model, unverified: $remoteUnverified, verifyRequested: verifyRequested) {
+                withAnimation { step = step.next ?? step }
+            }
         case .mode: ModeStep(model: model)
         case .cli: CLIStep()
         }
@@ -302,8 +331,27 @@ private struct PermissionsStep: View {
     }
 }
 
+/// Choosing where transcription runs, and on what.
+///
+/// The shape is deliberate: the app measures what actually runs well on *this* Mac and presents that
+/// as the answer, and the list underneath is the override. A picker of equal-looking options makes
+/// the user do work the machine can do — and the safest option is not the best one on most machines.
 private struct ModelStep: View {
     let model: AppModel
+    /// True while transcription is pointed at a remote endpoint nothing has proved works. Read by
+    /// the wizard's footer.
+    @Binding var unverified: Bool
+    /// A counter the wizard bumps to mean "run the verification now".
+    let verifyRequested: Int
+    /// Called when a verification passes, so Continue does not need a second press.
+    let advance: () -> Void
+
+    @State private var engine = TranscriptionEngineChoice.local
+    @State private var selected = LocalTranscriptionOption.fallback
+    @State private var record: FitRecord?
+    @State private var fitStage: FitStage?
+    @State private var fitting = false
+    @State private var showAllModels = false
 
     @State private var ready: Bool?
     @State private var downloading = false
@@ -311,67 +359,188 @@ private struct ModelStep: View {
     @State private var problem: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 24) {
-            FeatureRow(
-                symbol: "arrow.down.circle",
-                heading: "Two Parakeet models, about 1 GB together",
-                detail: "The live one keeps up while you talk. The larger one makes the accurate "
-                    + "pass when you stop. Downloaded once, then transcription needs no network."
-            )
-            FeatureRow(
-                symbol: "bolt",
-                heading: "Runs on the Neural Engine",
-                detail: "An hour of meeting transcribes in well under a minute."
-            )
+        VStack(alignment: .leading, spacing: 20) {
+            EngineCard(
+                title: "On this Mac",
+                detail: "Audio never leaves the machine. One download, then transcription needs no "
+                    + "network and no account.",
+                badge: "Recommended",
+                selected: engine == .local
+            ) { select(.local) }
 
-            VStack(alignment: .leading, spacing: 10) {
-                switch (ready, downloading) {
-                case (true, _):
-                    Label("Both models are on this Mac and ready", systemImage: "checkmark.circle.fill")
-                        .foregroundStyle(Color(nsColor: .systemGreen))
-                case (_, true):
-                    ProgressView(value: progress) {
-                        Text("Downloading the models")
-                    } currentValueLabel: {
-                        Text(progress.formatted(.percent.precision(.fractionLength(0))))
-                            .monospacedDigit()
+            if engine == .local { localBody }
+
+            EngineCard(
+                title: "A transcription service",
+                detail: "Nothing is downloaded. The audio of every meeting is uploaded to the "
+                    + "endpoint you configure, and transcribed there.",
+                badge: nil,
+                selected: engine == .cloud
+            ) { select(.cloud) }
+
+            if engine == .cloud {
+                ConfigurationPanel {
+                    RemoteTranscriptionFields(
+                        store: model.store,
+                        verifyRequested: verifyRequested
+                    ) { outcome in
+                        unverified = !(outcome?.ok ?? false)
+                        if outcome?.ok == true { advance() }
                     }
-                    // Full width of the column. 380 was a number with nothing behind it: it left
-                    // the bar stopping short of everything above and below it, which reads as a
-                    // layout mistake rather than a measurement.
-                    .frame(maxWidth: .infinity)
-                default:
-                    Button("Download now") { download() }
-                        .buttonStyle(.bordered)
-                        .controlSize(.large)
-                    // The old copy read "you can skip this and still record", which is true and
-                    // misleading in the same breath. Recording works; nothing downstream of it does.
-                    // No transcript means no search, and no summary, because there is nothing for an
-                    // agent to write one from. Someone deciding whether to wait for 1 GB should be
-                    // told what they are trading, not reassured.
-                    Text("Without them you get audio and nothing else: no transcript, no search, "
-                        + "and no write-up, since there is nothing for your agent to read. You can "
-                        + "download later from Settings.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                if let problem {
-                    Text(problem).font(.caption).foregroundStyle(Color(nsColor: .systemRed))
                 }
             }
-            .padding(16)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.quaternary.opacity(0.4), in: .rect(cornerRadius: 10, style: .continuous))
         }
-        .task {
+        .task { await load() }
+        .onDisappear { unverified = false }
+    }
+
+    // MARK: - Local
+
+    @ViewBuilder
+    private var localBody: some View {
+        ConfigurationPanel {
+            if let record {
+                FitResultRow(record: record)
+            } else if fitting {
+                VStack(alignment: .leading, spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text(fitStage.map(FitCheck.sentence) ?? "Checking what runs best on your Mac…")
+                        .font(.callout)
+                    Text("It downloads one model and runs it here, on two channels at once, the way "
+                        + "a real meeting does. Up to \(Int(FitRunner.defaultCap / 60)) minutes.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            } else {
+                VStack(alignment: .leading, spacing: 8) {
+                    Button("Check what runs best on this Mac") { runFit() }
+                        .buttonStyle(.bordered)
+                        .controlSize(.large)
+                    Text("Downloads one model and measures it here rather than guessing from the "
+                        + "spec sheet. Up to \(Int(FitRunner.defaultCap / 60)) minutes.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            Divider()
+
+            if showAllModels || record == nil {
+                ForEach(LocalTranscriptionOption.all) { option in
+                    ModelRow(option: option, selected: option.id == selected.id) { choose(option) }
+                }
+            } else {
+                Button {
+                    withAnimation { showAllModels = true }
+                } label: {
+                    Label("Choose a different model", systemImage: "chevron.down")
+                }
+                .buttonStyle(.link)
+            }
+
+            Divider()
+            downloadState
+        }
+    }
+
+    @ViewBuilder
+    private var downloadState: some View {
+        switch (ready, downloading) {
+        case (true, _):
+            Label(
+                selected.runsSeparateBatchPass
+                    ? "Both models are on this Mac and ready"
+                    : "The model is on this Mac and ready",
+                systemImage: "checkmark.circle.fill"
+            )
+            .foregroundStyle(Color(nsColor: .systemGreen))
+        case (_, true):
+            ProgressView(value: progress) {
+                Text("Downloading \(selected.title) — \(selected.downloadSizeText)")
+            } currentValueLabel: {
+                Text(progress.formatted(.percent.precision(.fractionLength(0))))
+                    .monospacedDigit()
+            }
+            .frame(maxWidth: .infinity)
+        default:
+            Button("Download \(selected.downloadSizeText) now") { download() }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+            // The old copy read "you can skip this and still record", which is true and
+            // misleading in the same breath. Recording works; nothing downstream of it does.
+            // No transcript means no search, and no summary, because there is nothing for an
+            // agent to write one from. Someone deciding whether to wait should be told what
+            // they are trading, not reassured.
+            Text("Without it you get audio and nothing else: no transcript, no search, and no "
+                + "write-up, since there is nothing for your agent to read. You can download "
+                + "later from Settings.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        if let problem {
+            Text(problem).font(.caption).foregroundStyle(Color(nsColor: .systemRed))
+        }
+    }
+
+    // MARK: -
+
+    private func load() async {
+        engine = model.store.transcriptionEngine()
+        unverified = engine == .cloud
+        selected = model.store.localTranscriptionOption()
+        record = model.store.fitRecord()
+        ready = await model.transcription.modelsReady()
+        // Leaving this step tears the view down and takes `downloading` and `progress` with it,
+        // while the download itself carries on. Coming back therefore offered a Download button
+        // for a download already running, and pressing it used to start a second one.
+        //
+        // Rejoining is now the same call: `prepareModels` attaches to the download in flight
+        // rather than starting one, so this needs no separate resume path.
+        if await model.transcription.isPreparingModels { download() }
+    }
+
+    private func select(_ choice: TranscriptionEngineChoice) {
+        engine = choice
+        // Choosing the endpoint arms the gate; choosing local disarms it. Picking cloud and then
+        // changing your mind must not leave Continue held on a verification for an engine that is
+        // no longer selected.
+        unverified = choice == .cloud
+        try? model.store.setSetting(.transcribeBatchEngine, choice.rawValue)
+        // The service caches the engine it resolved on first use, and that cache outlives this
+        // press. Without dropping it, switching here and recording in the same launch would still
+        // run the previous engine.
+        Task {
+            await model.transcription.forgetResolvedEngine()
             ready = await model.transcription.modelsReady()
-            // Leaving this step tears the view down and takes `downloading` and `progress` with it,
-            // while the download itself carries on. Coming back therefore offered a Download button
-            // for a download already running, and pressing it used to start a second one.
-            //
-            // Rejoining is now the same call: `prepareModels` attaches to the download in flight
-            // rather than starting one, so this needs no separate resume path.
-            if await model.transcription.isPreparingModels { download() }
+        }
+    }
+
+    private func choose(_ option: LocalTranscriptionOption) {
+        selected = option
+        try? model.store.setSetting(.transcribeLocalModel, option.id)
+        Task {
+            await model.transcription.forgetResolvedEngine()
+            ready = await model.transcription.modelsReady()
+        }
+    }
+
+    private func runFit() {
+        fitting = true
+        problem = nil
+        Task {
+            let outcome = await FitCheck.run(store: model.store) { stage in
+                Task { @MainActor in fitStage = stage }
+            }
+            record = outcome
+            selected = outcome.chosen
+            engine = .local
+            await model.transcription.forgetResolvedEngine()
+            ready = await model.transcription.modelsReady()
+            fitting = false
         }
     }
 
@@ -389,6 +558,92 @@ private struct ModelStep: View {
             }
             downloading = false
         }
+    }
+}
+
+/// What `fit` decided, with the numbers that decided it — or, when it could not measure, that fact
+/// in the same place and the same size.
+struct FitResultRow: View {
+    let record: FitRecord
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: record.verified ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
+                .font(.title3)
+                .foregroundStyle(record.verified
+                    ? AnyShapeStyle(Color(nsColor: .systemGreen))
+                    : AnyShapeStyle(Color(nsColor: .systemOrange)))
+            VStack(alignment: .leading, spacing: 3) {
+                Text(record.chosen.title).font(.headline)
+                Text(record.reason)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(record.machine.summary)
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+            Spacer(minLength: 0)
+        }
+    }
+}
+
+/// One model set in the picker: what it is, what it costs, and the numbers if anyone has measured
+/// it. A tier with no `measured` shows no numbers rather than plausible ones.
+struct ModelRow: View {
+    let option: LocalTranscriptionOption
+    let selected: Bool
+    let select: () -> Void
+
+    var body: some View {
+        Button(action: select) {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: selected ? "largecircle.fill.circle" : "circle")
+                    .foregroundStyle(selected ? AnyShapeStyle(.tint) : AnyShapeStyle(.tertiary))
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 8) {
+                        Text(option.title).font(.headline)
+                        Text(option.downloadSizeText)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Text(option.summary)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text("Live: \(option.liveModel) · Final: \(option.finalModel) · \(option.languages)")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if let measured = option.measured {
+                        Text(String(
+                            format: "Measured on an %@: %d ms to first text, %.1f%% word error",
+                            measured.machine, measured.timeToFirstTextMs, measured.wordErrorPercent))
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+            .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+/// The engine cards, drawn like the AI mode cards on the next step — same control, same meaning.
+private struct EngineCard: View {
+    let title: String
+    let detail: String
+    let badge: String?
+    let selected: Bool
+    let select: () -> Void
+
+    var body: some View {
+        ModeCard(title: title, detail: detail, badge: badge, selected: selected, select: select)
     }
 }
 

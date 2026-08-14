@@ -166,7 +166,11 @@ enum ConfigKeys {
         case .aiMode:
             return try oneOf(value, ["manual", "localAgent", "cloud"], key: key)
         case .transcribeBatchEngine:
-            return try oneOf(value, ["fluidaudio", "remote"], key: key)
+            return try oneOf(value, TranscriptionEngineChoice.allCases.map(\.rawValue), key: key)
+        case .transcribeLocalModel:
+            // Straight off the catalogue, so a tier added to `LocalTranscriptionOption.all` is
+            // settable here the moment it exists and a retired one stops being settable.
+            return try oneOf(value, LocalTranscriptionOption.all.map(\.id), key: key)
         case .exportMarkdownOnComplete, .onboardingCompleted,
              .notesPanelHiddenFromCapture, .notesPanelFloats:
             guard let flag = boolean(value) else {
