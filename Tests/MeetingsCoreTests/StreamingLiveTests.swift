@@ -1,4 +1,5 @@
 import AVFoundation
+import FluidAudio
 import Foundation
 import Testing
 
@@ -176,5 +177,102 @@ struct LiveStreamingTests {
         guard !values.isEmpty else { return 0 }
         let sorted = values.sorted()
         return sorted[sorted.count / 2]
+    }
+}
+
+/// The one thing the app's live path owes the model: to not be worse than it.
+///
+/// `meetings fit` measured `accurate-en` at 16.4% word error on a Mac where the same Nemotron 560 ms
+/// checkpoint benchmarks at 2.9%, and the transcript assembly was the suspect. It was not — driven on
+/// the same audio the two paths agree word for word. What differed was the warm-up: the app fed 700
+/// ms of silence to make Core ML compile, the recogniser slices from the first sample it is ever
+/// handed, and 700 is not a whole number of 560 ms chunks, so the meeting began 140 ms inside a chunk
+/// and every boundary after it landed inside a word. 2.9% became 4.0% for that and nothing else.
+///
+/// The warm-up is now thrown away with `reset()` before the meeting starts, so the app decodes what
+/// a cold recogniser decodes. This pins that as an invariant rather than pinning the constant: the
+/// live path must score what the model scores on the same audio, whatever either of them is doing.
+///
+///     MEETINGS_LIVE_STREAM=1 MEETINGS_HOME=$(mktemp -d) swift test --filter LiveStreamingAssembly
+@Suite(.serialized, .enabled(if: ProcessInfo.processInfo.environment["MEETINGS_LIVE_STREAM"] != nil))
+struct LiveStreamingAssemblyTests {
+    /// Long enough for the number to mean something: on the 13 s fixture `fit` uses, two hard proper
+    /// nouns are eight points of word error between them.
+    static let script = LiveStreamingTests.micLine + " " + """
+        The interferometry bench is the one I am worried about, because the last characterization \
+        run came back unrepresentative and we shipped it anyway. \
+        If the superconductivity numbers are controversially low again, we will have to redo the \
+        whole sweep before the quarterly review. \
+        I have asked Renata to pull the raw frames off the array and stage them somewhere we can \
+        all read them. \
+        Dan wants the summary by Wednesday, which means the calibration has to be finished on \
+        Monday at the latest.
+        """
+
+    @Test func theAppsAssemblyCostsNoAccuracyAgainstTheModelDrivenDirectly() async throws {
+        let directory = try TestStore.makeDirectory()
+        defer { TestStore.remove(directory) }
+        let wav = directory.appendingPathComponent("assembly.wav")
+        try LiveStreamingTests.synthesise(Self.script, voice: "Samantha", to: wav)
+        let samples = try LiveStreamingTests.readSamples(wav)
+
+        let variant = StreamingModelVariant.nemotron560ms
+        try await FluidAudioStreamingTranscriber.prepareModels(variant: variant) { _ in }
+
+        let direct = try await Self.throughTheManager(variant, samples: samples)
+        let app = try await Self.throughTheApp(variant, samples: samples)
+        let directWER = TranscriptScore.wordErrorPercent(reference: Self.script, heard: direct)
+        let appWER = TranscriptScore.wordErrorPercent(reference: Self.script, heard: app)
+
+        print("\n  manager : \(String(format: "%.1f", directWER))%  \(direct)")
+        print("  app     : \(String(format: "%.1f", appWER))%  \(app)\n")
+
+        // Half a point of slack for the tail: the app pads the last utterance with a second of
+        // silence and the manager pads to a whole chunk, so the final word can differ.
+        // Suspect what `start()` leaves in front of the meeting before suspecting the word assembly.
+        #expect(appWER <= directWER + 0.5, "the live path lost accuracy the model did not")
+    }
+
+    // MARK: -
+
+    /// The benchmark's path: append, decode, and read the whole transcript out at the end.
+    static func throughTheManager(
+        _ variant: StreamingModelVariant, samples: [Float]
+    ) async throws -> String {
+        guard let manager = variant.createManager() as? StreamingNemotronAsrManager else { return "" }
+        try await manager.loadModels()
+        var offset = 0
+        while offset < samples.count {
+            let end = min(offset + 1_280, samples.count)
+            if let buffer = FluidAudioStreamingTranscriber.buffer(from: Array(samples[offset..<end])) {
+                try await manager.appendAudio(buffer)
+                try await manager.processBufferedAudio()
+            }
+            offset = end
+        }
+        let text = try await manager.finishWithTokenTimings().text
+        await manager.cleanup()
+        return text
+    }
+
+    /// The app's path: warm up, feed, poll, assemble words, group them into segments.
+    static func throughTheApp(
+        _ variant: StreamingModelVariant, samples: [Float]
+    ) async throws -> String {
+        let transcriber = FluidAudioStreamingTranscriber(variant: variant)
+        try await transcriber.start(channel: .mic)
+        let collector = Task { () -> [String] in
+            var pieces: [String] = []
+            for await segment in transcriber.segments { pieces.append(segment.text) }
+            return pieces
+        }
+        var offset = 0
+        while offset < samples.count {
+            let end = min(offset + 1_280, samples.count)
+            try await transcriber.feed(Array(samples[offset..<end]), atMs: offset * 1000 / 16_000)
+            offset = end
+        }
+        await transcriber.finish()
+        return await collector.value.joined(separator: " ")
     }
 }

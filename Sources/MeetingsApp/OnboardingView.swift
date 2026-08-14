@@ -360,6 +360,15 @@ private struct ModelStep: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
+            // Both choices first, then the panel belonging to whichever is selected — unlike the
+            // mode step, which can afford a panel tucked under each of its cards.
+            //
+            // The panels here are not the same size. "On this Mac" carries the fit check, the model
+            // rows and the download state: about 350 pt, against a 620x580 wizard whose scroll
+            // viewport is roughly 515 pt once the footer is out. With the cloud card sitting under
+            // all of that it began around 575 pt down — past the bottom edge, and macOS hides the
+            // scrollbar until something scrolls, so it was not below the fold so much as absent.
+            // The step read as offering one engine.
             EngineCard(
                 title: "On this Mac",
                 detail: "Audio never leaves the machine. One download, then transcription needs no "
@@ -367,8 +376,6 @@ private struct ModelStep: View {
                 badge: "Recommended",
                 selected: engine == .local
             ) { select(.local) }
-
-            if engine == .local { localBody }
 
             EngineCard(
                 title: "A transcription service",
@@ -378,7 +385,10 @@ private struct ModelStep: View {
                 selected: engine == .cloud
             ) { select(.cloud) }
 
-            if engine == .cloud {
+            switch engine {
+            case .local:
+                localBody
+            case .cloud:
                 ConfigurationPanel {
                     RemoteTranscriptionFields(
                         store: model.store,
@@ -430,7 +440,9 @@ private struct ModelStep: View {
 
             if showAllModels || record == nil {
                 ForEach(LocalTranscriptionOption.all) { option in
-                    ModelRow(option: option, selected: option.id == selected.id) { choose(option) }
+                    ModelRow(option: option, record: record, selected: option.id == selected.id) {
+                        choose(option)
+                    }
                 }
             } else {
                 Button {
@@ -589,9 +601,12 @@ struct FitResultRow: View {
 }
 
 /// One model set in the picker: what it is, what it costs, and the numbers if anyone has measured
-/// it. A tier with no `measured` shows no numbers rather than plausible ones.
+/// it. A tier nobody has measured shows no numbers rather than plausible ones.
 struct ModelRow: View {
     let option: LocalTranscriptionOption
+    /// What `fit` last measured on this Mac, if it has run. It outranks the shipped claim — see
+    /// ``LocalTranscriptionOption/performanceLine(measuredBy:)``.
+    let record: FitRecord?
     let selected: Bool
     let select: () -> Void
 
@@ -617,10 +632,8 @@ struct ModelRow: View {
                         .foregroundStyle(.tertiary)
                         .multilineTextAlignment(.leading)
                         .fixedSize(horizontal: false, vertical: true)
-                    if let measured = option.measured {
-                        Text(String(
-                            format: "Measured on an %@: %d ms to first text, %.1f%% word error",
-                            measured.machine, measured.timeToFirstTextMs, measured.wordErrorPercent))
+                    if let line = option.performanceLine(measuredBy: record) {
+                        Text(line)
                             .font(.caption)
                             .foregroundStyle(.tertiary)
                             .fixedSize(horizontal: false, vertical: true)

@@ -214,6 +214,49 @@ private final class TickCount: @unchecked Sendable {
         #expect(store.transcriptionEngine() == .local)
     }
 
+    /// The test above passes a whole-second date, which is why it never caught this: `ranAt` is
+    /// stored as ISO 8601 and comes back without the fraction, so a record made from `Date()` — which
+    /// is every real one — did not equal itself after a round trip, by a margin too small to appear
+    /// in either printed value. `FitLiveTests` failed on it and nothing ungated did.
+    @Test func aRecordMadeAtAnArbitraryInstantStillRoundTrips() throws {
+        let directory = try TestStore.makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try TestStore.open(directory)
+
+        let option = LocalTranscriptionOption.all[0]
+        let record = FitRecord(
+            chosenOptionID: option.id, reason: "6.4x real-time", verified: true,
+            machine: Self.fastMac, thresholds: .standard,
+            measurements: [ScriptedProbe.measurement(option.id, rtfx: 6.4)],
+            ranAt: Date(timeIntervalSince1970: 1_700_000_000.4567), capSeconds: 360)
+
+        try store.applyFitRecord(record)
+        #expect(store.fitRecord() == record)
+    }
+
+    /// The picker used to print the shipped `measured` claim unconditionally, so `accurate-en` read
+    /// "2.9% word error" on a Mac where `fit` had just reported 16.4% on its own shorter fixture.
+    /// Both numbers are real; shown as one claim they contradict each other.
+    @Test func aMeasurementFromThisMacReplacesTheShippedClaim() {
+        let option = LocalTranscriptionOption.accurateEnglish
+        let run = FitMeasurement(
+            optionID: option.id, realTimeFactor: 6.4, timeToFirstTextMs: 1_056,
+            peakMemoryBytes: 1_000_000_000, audioSeconds: 15, wordErrorPercent: 16.4)
+        let record = FitRecord(
+            chosenOptionID: option.id, reason: "6.4x real-time", verified: true,
+            machine: Self.fastMac, thresholds: .standard, measurements: [run],
+            ranAt: Date(timeIntervalSince1970: 1_700_000_000), capSeconds: 360)
+
+        let measured = option.performanceLine(measuredBy: record)
+        #expect(measured == "Measured on this Mac: 1056 ms to first text, 16.4% word error, on 15 s of audio")
+
+        // Nothing measured this option, so the shipped claim stands — and both forms name the audio
+        // they rest on, which is the whole reason the two numbers differ.
+        let other = LocalTranscriptionOption.balanced.performanceLine(measuredBy: record)
+        #expect(other == "Measured on an M1 Pro: 811 ms to first text, 4.6% word error, on 54 s of audio")
+        #expect(option.performanceLine(measuredBy: nil)?.contains("2.9% word error") == true)
+    }
+
     @Test func anUnreadableFitRowIsAMissingExplanationRatherThanAnError() throws {
         let directory = try TestStore.makeDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }

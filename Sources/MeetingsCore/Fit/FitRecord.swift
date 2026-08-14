@@ -81,6 +81,8 @@ public struct FitRecord: Sendable, Codable, Equatable {
     public let thresholds: FitThresholds
     /// Every candidate tried, in the order tried, including the ones that were rejected.
     public let measurements: [FitMeasurement]
+    /// Whole seconds, always — see the initialiser for why that is enforced there rather than left to
+    /// whoever constructs one.
     public let ranAt: Date
     /// The wall-clock ceiling the run was given, in seconds, so a short run is legible as a capped
     /// one rather than a broken one.
@@ -96,7 +98,14 @@ public struct FitRecord: Sendable, Codable, Equatable {
         self.machine = machine
         self.thresholds = thresholds
         self.measurements = measurements
-        self.ranAt = ranAt
+        // Rounded to the second on the way in, because this type is `Equatable` and its stored form
+        // is ISO 8601, which has no room for the fraction. Left alone, a record never equals itself
+        // after a round trip through the store — by a difference too small to print, so the two
+        // values look identical in any failure message. Rounding here rather than comparing with a
+        // tolerance at the call sites: a value type whose stored form cannot equal its in-memory form
+        // is broken for every caller, not just the one that noticed. When `fit` ran is a fact about a
+        // minute of somebody's afternoon; the microseconds were never meaningful.
+        self.ranAt = Date(timeIntervalSince1970: ranAt.timeIntervalSince1970.rounded())
         self.capSeconds = capSeconds
     }
 
@@ -123,6 +132,33 @@ public struct FitRecord: Sendable, Codable, Equatable {
         decoder.dateDecodingStrategy = .iso8601
         return decoder
     }()
+}
+
+extension LocalTranscriptionOption {
+    /// The one performance line shown under this option: what `fit` measured on this Mac if it has
+    /// ever measured this option, and the shipped ``measured`` claim otherwise.
+    ///
+    /// One or the other, never both, and the run from this machine wins. The two are not comparable
+    /// and were free to contradict each other on screen: `accurate-en` ships "2.9% word error",
+    /// scored on a 54.5 s fixture, while `fit` on the same M1 Pro reported 16.4% on the much shorter
+    /// fixture it synthesises. Both read as claims about the same thing, so both forms name the
+    /// length of audio they rest on — the numbers then differ legibly rather than one looking wrong.
+    ///
+    /// Nil where nothing has been measured at all, which is still the honest answer for a tier
+    /// nobody has run.
+    public func performanceLine(measuredBy record: FitRecord?) -> String? {
+        if let run = record?.measurements.last(where: { $0.optionID == id }) {
+            let wer = run.wordErrorPercent.map { String(format: ", %.1f%% word error", $0) } ?? ""
+            return String(
+                format: "Measured on this Mac: %d ms to first text%@, on %.0f s of audio",
+                run.timeToFirstTextMs, wer, run.audioSeconds)
+        }
+        guard let measured else { return nil }
+        return String(
+            format: "Measured on an %@: %d ms to first text, %.1f%% word error, on %.0f s of audio",
+            measured.machine, measured.timeToFirstTextMs, measured.wordErrorPercent,
+            measured.fixtureSeconds)
+    }
 }
 
 extension MeetingStore {
