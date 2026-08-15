@@ -12,52 +12,52 @@ struct ScheduledDetailView: View {
         // screen: the editor grows to its document and the page carries it, which is the same rule
         // the written-up detail follows.
         ScrollView {
-        VStack(alignment: .leading, spacing: 20) {
-            DetailHeader(title: meeting.title, subtitle: subtitle)
-            HStack(spacing: 10) {
-                Button {
-                    Task { await model.startRecording(meetingID: meeting.id) }
-                } label: {
-                    Label("Start recording", systemImage: "record.circle")
-                }
-                .buttonStyle(.borderedProminent)
-                .keyboardShortcut("r", modifiers: [.command, .shift])
-                // The link the meeting is on, when it came from the calendar and is still in the
-                // look-ahead window. Losing it would mean leaving this pane to find the invitation
-                // in Calendar, which is where somebody about to join a call actually is.
-                if let link = model.calendarEvent(for: meeting)?.videoLink {
-                    Link(destination: link) {
-                        Label(link.host() ?? link.absoluteString, systemImage: "video")
+            VStack(alignment: .leading, spacing: 20) {
+                DetailHeader(title: meeting.title, subtitle: subtitle)
+                HStack(spacing: 10) {
+                    Button {
+                        Task { await model.startRecording(meetingID: meeting.id) }
+                    } label: {
+                        Label("Start recording", systemImage: "record.circle")
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut("r", modifiers: [.command, .shift])
+                    // The link the meeting is on, when it came from the calendar and is still in the
+                    // look-ahead window. Losing it would mean leaving this pane to find the invitation
+                    // in Calendar, which is where somebody about to join a call actually is.
+                    if let link = model.calendarEvent(for: meeting)?.videoLink {
+                        Link(destination: link) {
+                            Label(link.host() ?? link.absoluteString, systemImage: "video")
+                        }
+                        .buttonStyle(.bordered)
+                    }
                 }
-            }
-            .controlSize(.large)
+                .controlSize(.large)
 
-            // On its own line, and it can be opened. Squeezed beside the Start button it was one
-            // truncated line: a nine-person meeting showed five names and lost four with nothing on
-            // screen saying so. the attendee list is detail-view content.
-            if !meeting.attendees.isEmpty {
-                AttendeeSummary(attendees: meeting.attendees)
-            }
-            // The editor takes the rest of the pane. It is the only thing on this screen you can
-            // actually do before the meeting starts, and wave 2 gave it a 220 pt box with six
-            // hundred points of empty pane underneath.
-            if model.notesPanelHolds(meeting, .preNotes) {
-                DetachedNotesNotice(what: "These pre-meeting notes") {
-                    model.setNotesPanel(.preNotes, open: false)
+                // On its own line, and it can be opened. Squeezed beside the Start button it was one
+                // truncated line: a nine-person meeting showed five names and lost four with nothing on
+                // screen saying so. the attendee list is detail-view content.
+                if !meeting.attendees.isEmpty {
+                    AttendeeSummary(attendees: meeting.attendees)
                 }
-            } else {
-                PreNotesEditor(meeting: meeting) { text in
-                    model.savePreNotes(meetingID: meeting.id, text: text)
-                } popOut: {
-                    model.setNotesPanel(.preNotes, open: true)
+                // The editor takes the rest of the pane. It is the only thing on this screen you can
+                // actually do before the meeting starts, and wave 2 gave it a 220 pt box with six
+                // hundred points of empty pane underneath.
+                if model.notesPanelHolds(meeting, .preNotes) {
+                    DetachedNotesNotice(what: "These pre-meeting notes") {
+                        model.setNotesPanel(.preNotes, open: false)
+                    }
+                } else {
+                    PreNotesEditor(meeting: meeting) { text in
+                        model.savePreNotes(meetingID: meeting.id, text: text)
+                    } popOut: {
+                        model.setNotesPanel(.preNotes, open: true)
+                    }
                 }
             }
-        }
-        .padding(detailInset)
-        .frame(maxWidth: 720, alignment: .leading)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
+            .padding(detailInset)
+            .frame(maxWidth: 720, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
@@ -421,6 +421,9 @@ struct SharedFieldEditor: View {
     }
 }
 
+/// "Updated externally", with the diff rather than a shrug. Showing what changed is the difference
+/// between a decision and a coin toss — the choice this offers is keep mine, take theirs, or keep
+/// both, and nobody can make it from the fact that *something* moved.
 private struct ExternalChangeBanner: View {
     let mine: String
     let theirs: String

@@ -474,9 +474,12 @@ public actor TranscriptionService {
         let resolved: TranscriptionEngine
         switch plan() {
         case .injected:
-            // Unreachable: `.injected` is only returned when `engine` is non-nil, which returned
-            // above. Falling back to the local model here rather than trapping.
-            resolved = FluidAudioBatchEngine()
+            // Unreachable by construction: `plan()` returns `.injected` only when `engine` is
+            // non-nil, and a non-nil `engine` returned on the first line of this function. It traps
+            // rather than falling back, because the fallback was `FluidAudioBatchEngine()` — 600 MB
+            // fetched on its first `prepare` from a branch documented as impossible, which is the
+            // same silent download the `.cloud` arm below was rewritten to stop.
+            preconditionFailure("resolvedEngine reached .injected with no injected engine")
         case .cloud(let configured):
             guard configured, let configuration = remoteConfiguration() else {
                 // The important half of this branch. Before, an incomplete remote configuration fell
@@ -498,7 +501,7 @@ public actor TranscriptionService {
     /// Nil in every configuration but the one where the user has explicitly asked for a remote batch
     /// engine *and* filled in all of it. Nil means no network call is possible.
     func remoteConfiguration() -> OpenAICompatibleRemoteEngine.Configuration? {
-        guard setting(.transcribeBatchEngine) == "remote" else { return nil }
+        guard store.transcriptionEngine() == .cloud else { return nil }
         return OpenAICompatibleRemoteEngine.Configuration.resolve(
             baseURL: setting(.transcribeRemoteBaseURL),
             model: setting(.transcribeRemoteModel),

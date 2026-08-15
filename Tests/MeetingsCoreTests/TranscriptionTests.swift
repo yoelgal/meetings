@@ -431,6 +431,35 @@ private struct StubEngine: TranscriptionEngine, Sendable {
     }
 }
 
+/// One scripted HTTP answer, so the remote engine's own failure handling can be driven without a
+/// network. `URLProtocol` rather than a transport closure because the engine takes a `URLSession` —
+/// the request it builds, and everything it does with the response, is what is under test.
+private final class StubHTTP: URLProtocol {
+    nonisolated(unsafe) static var status = 200
+    nonisolated(unsafe) static var body = Data()
+
+    static func session() -> URLSession {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StubHTTP.self]
+        return URLSession(configuration: configuration)
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        if let url = request.url, let response = HTTPURLResponse(
+            url: url, statusCode: Self.status, httpVersion: "HTTP/1.1", headerFields: nil
+        ) {
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: Self.body)
+        }
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}
+
 @Suite final class RemoteTranscriptionEngineTests {
     let directory: URL
     let store: MeetingStore
@@ -487,6 +516,42 @@ private struct StubEngine: TranscriptionEngine, Sendable {
         #expect(decoded.engineSegments() == [
             EngineSegment(startMs: 0, endMs: 0, text: "Whole meeting in one blob.")
         ])
+    }
+
+    /// A rejected key must not survive the failure it caused.
+    ///
+    /// The path this closes is not a screenshot: `runBatchPass` writes `String(describing:)` of
+    /// this error into `transcript_issues.reason`, which lands in the world-readable store and is
+    /// carried into the `issues.json` of every exported bundle. OpenAI's 401 body quotes the key
+    /// straight back, so a provider echo plus an export is a key handed to a colleague.
+    @Test func aProviderThatQuotesTheKeyBackNeverGetsItIntoTheError() async throws {
+        let key = "sk-meetings-0123456789abcdefghij"
+        StubHTTP.status = 401
+        StubHTTP.body = Data(#"{"error":{"message":"Incorrect API key provided: \#(key)"}}"#.utf8)
+        let audio = directory.appendingPathComponent("mic.wav")
+        try Data("RIFFDATA".utf8).write(to: audio)
+
+        let engine = OpenAICompatibleRemoteEngine(
+            configuration: OpenAICompatibleRemoteEngine.Configuration(
+                baseURL: try #require(URL(string: "https://api.example.com/v1")),
+                model: "whisper-1",
+                apiKey: key
+            ),
+            session: StubHTTP.session()
+        )
+
+        do {
+            _ = try await engine.transcribe(audio, vocabulary: [], progress: { _ in })
+            Issue.record("a 401 has to fail the pass rather than return an empty transcript")
+        } catch {
+            let written = String(describing: error)
+            #expect(!written.contains(key), """
+                The provider's 401 body reached the error verbatim. This string is written to \
+                `transcript_issues.reason` and exported in `issues.json`.
+                """)
+            #expect(written.contains("[redacted]"), "and the echo is visibly removed, not silently dropped")
+            #expect(written.contains("401"), "the status the user has to act on still has to be readable")
+        }
     }
 
     @Test func multipartBodyCarriesTheModelAndTheFile() throws {

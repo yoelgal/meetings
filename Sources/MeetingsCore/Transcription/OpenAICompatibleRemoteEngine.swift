@@ -81,7 +81,13 @@ public struct OpenAICompatibleRemoteEngine: TranscriptionEngine {
             throw TranscriptionError.remoteFailed("no HTTP response from \(configuration.baseURL)")
         }
         guard (200..<300).contains(http.statusCode) else {
-            let detail = String(data: body.prefix(512), encoding: .utf8) ?? ""
+            // Scrubbed for the same reason ``TranscriptionVerify`` scrubs, and it matters more
+            // here: this text does not stop at a window. It is written into `transcript_issues`
+            // by the batch pass, which puts it in the world-readable store and in the `issues.json`
+            // of every bundle the user exports — and OpenAI's 401 body quotes the rejected key
+            // straight back at you.
+            let detail = AIVerify.redacting(
+                configuration.apiKey, in: String(data: body.prefix(512), encoding: .utf8) ?? "")
             throw TranscriptionError.remoteFailed("HTTP \(http.statusCode) from \(configuration.baseURL): \(detail)")
         }
 

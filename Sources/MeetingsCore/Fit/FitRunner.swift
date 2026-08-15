@@ -101,9 +101,15 @@ public struct FitRunner: Sendable {
 
             do {
                 stage(.downloading(option: candidate.id, fraction: 0))
-                try await probe.download(candidate) { stage(.downloading(option: candidate.id, fraction: $0)) }
+                try await bounded(since: started) {
+                    try await probe.download(candidate) {
+                        stage(.downloading(option: candidate.id, fraction: $0))
+                    }
+                }
                 stage(.measuring(option: candidate.id))
-                let measurement = try await probe.measure(candidate, fixture: fixture)
+                let measurement = try await bounded(since: started) {
+                    try await probe.measure(candidate, fixture: fixture)
+                }
                 measurements.append(measurement)
 
                 if measurement.meets(thresholds) {
@@ -117,6 +123,10 @@ public struct FitRunner: Sendable {
                 lastFailure = "\(candidate.title) managed only \(measurement.sentence), under the "
                     + String(format: "%.1fx", thresholds.realTimeFactor)
                     + " and \(thresholds.timeToFirstTextMs) ms this needs"
+            } catch is CapReached {
+                // Not a candidate failure: nothing about this model was learned, so it is not
+                // stepped past and the reason does not blame it.
+                return cappedRecord(started: started, measurements: measurements)
             } catch {
                 lastFailure = "\(candidate.title) could not be measured: \(error)"
             }
@@ -148,6 +158,36 @@ public struct FitRunner: Sendable {
 
     private func remaining(since started: Date) -> TimeInterval {
         cap - now().timeIntervalSince(started)
+    }
+
+    /// The cap ran out *inside* a probe call, rather than between two of them.
+    private struct CapReached: Error {}
+
+    /// One probe call, with the rest of the budget as its deadline.
+    ///
+    /// Checking the clock between candidates is not a bound: the thing that overruns is a single
+    /// 643 MB download on a slow connection, and it is one call. Both the wizard and Settings
+    /// promise "up to 6 minutes", and a promise the code cannot keep is worse than a lower one —
+    /// the user cannot tell an honest long download from a hang. Losing the download is the cheap
+    /// half of this: the next run resumes it, and the fallback model already works.
+    private func bounded<T: Sendable>(
+        since started: Date,
+        _ operation: @escaping @Sendable () async throws -> T
+    ) async throws -> T {
+        let budget = remaining(since: started)
+        guard budget > 0 else { throw CapReached() }
+        return try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask { try await operation() }
+            group.addTask {
+                try await Task.sleep(for: .seconds(budget))
+                throw CapReached()
+            }
+            // Whichever finishes first is the answer; the other is cancelled on the way out and its
+            // result — including the `CancellationError` a cut-off download throws — is discarded.
+            defer { group.cancelAll() }
+            guard let first = try await group.next() else { throw CapReached() }
+            return first
+        }
     }
 
     private func fallbackRecord(

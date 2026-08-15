@@ -106,7 +106,11 @@ struct MarkdownEditorProbeView: NSViewRepresentable {
 /// one shared name, ⌘B in the floating notes panel would also embolden the write-up behind it.
 @MainActor @Observable final class MarkdownEditorBridge {
     /// Unique per mounted editor. Also the identity the Format menu's focused value is keyed on.
-    let id = Int.random(in: Int.min...Int.max)
+    ///
+    /// The object's own address, not a random number: two live bridges cannot share one, which is
+    /// what the bus names need, and it says so rather than arguing from 2⁻⁶⁴. Read fresh each time
+    /// because a bridge that is gone has no bus and no menu entry to collide with.
+    var id: Int { Int(bitPattern: ObjectIdentifier(self)) }
 
     private(set) var selection = NSRange(location: 0, length: 0)
     private(set) var isBold = false
@@ -506,7 +510,7 @@ struct MarkdownEditorProbeView: NSViewRepresentable {
             return true
         }
         // Nil, never a rect nobody measured. Every caller is gated on this being non-nil and hides
-        // its surface when it is not — see ``LiveMarkdownEditor/menuOverlay``.
+        // its surface when it is not — see ``EditorSurfacePanel``.
         guard !measured.isNull, measured.height > 0, measured.origin.y.isFinite else { return nil }
         // Segments are in the text container's space; the origin is the inset the engine was
         // configured with.

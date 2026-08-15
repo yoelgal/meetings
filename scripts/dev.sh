@@ -80,9 +80,12 @@ ditto "$ROOT/dist/Meetings.app" "$TARGET"
 
 mkdir -p "$DEV_HOME"
 
-# -n because the installed app shares this bundle identifier and would otherwise just come to the
-# front instead of a second instance starting. -g leaves whatever you are working in on top; the
-# background-only default is deliberate, DEV_FOREGROUND=1 when you actually want to look at it.
+# -n because `open` on a bundle already running just activates it, and this script has just replaced
+# the bundle on disk: without it you would be looking at the previous build, or at the installed app
+# if it happened to be frontmost. The dev build has its own identifier ($DEV_BUNDLE_ID, set above),
+# so this is about *this* app's own instance, not about colliding with the installed one.
+# -g leaves whatever you are working in on top; the background-only default is deliberate,
+# DEV_FOREGROUND=1 when you actually want to look at it.
 args=(-n --env "MEETINGS_HOME=$DEV_HOME")
 [ "${DEV_FOREGROUND:-0}" = "1" ] || args+=(-g)
 open "${args[@]}" "$TARGET"

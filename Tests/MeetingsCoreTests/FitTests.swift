@@ -10,6 +10,9 @@ private final class ScriptedProbe: FitProbe, @unchecked Sendable {
     /// Keyed by option id. A missing key throws, which is how "this download failed" is expressed.
     var results: [String: FitMeasurement] = [:]
     var downloadFailures: Set<String> = []
+    /// Downloads that never finish — the 643 MB one on hotel wifi, which is the thing the cap is
+    /// actually protecting the user from.
+    var downloadHangs: Set<String> = []
     private let lock = NSLock()
     private var order: [String] = []
     /// Every candidate actually measured, in order. The ladder's behaviour is as much about what it
@@ -21,6 +24,11 @@ private final class ScriptedProbe: FitProbe, @unchecked Sendable {
 
     func download(_ option: LocalTranscriptionOption, progress: @Sendable @escaping (Double) -> Void) async throws {
         guard !downloadFailures.contains(option.id) else { throw DownloadFailed() }
+        if downloadHangs.contains(option.id) {
+            // Longer than any cap a test sets: either the runner cancels this, or the suite hangs,
+            // which is the failure being asserted against.
+            try await Task.sleep(for: .seconds(600))
+        }
         progress(1)
     }
 
@@ -191,6 +199,25 @@ private final class TickCount: @unchecked Sendable {
         #expect(record.verified == false)
         #expect(record.capSeconds == 60)
         #expect(record.reason.contains("60 second limit"))
+    }
+
+    /// And the cap bounds the *download*, not just the gap between two of them.
+    ///
+    /// The clock is real here, and small, because the thing under test is a call that never
+    /// returns: checking `remaining` between candidates cannot end one, so a wizard promising "up
+    /// to 6 minutes" would sit on a single slow download for as long as it took.
+    @Test func aDownloadThatNeverFinishesIsCutOffAtTheCap() async {
+        let probe = ScriptedProbe()
+        for option in LocalTranscriptionOption.all {
+            probe.results[option.id] = ScriptedProbe.measurement(option.id, rtfx: 9)
+            probe.downloadHangs.insert(option.id)
+        }
+        let record = await FitRunner(probe: probe, profile: Self.fastMac, cap: 0.25)
+            .run(fixture: Self.stubFixture())
+
+        #expect(probe.measured.isEmpty, "nothing was measured, because nothing finished downloading")
+        #expect(record.verified == false)
+        #expect(record.reason.contains("limit was reached"), "\(record.reason)")
     }
 
     // MARK: - The record

@@ -68,8 +68,8 @@ struct ImportSheet: View {
             }
             .formStyle(.grouped)
 
-            Text("The audio is copied into Meetings and transcribed on this Mac. There is one "
-                + "track, so the transcript has no microphone / system split.")
+            Text(whereItIsTranscribed + " There is one track, so the transcript has no "
+                + "microphone / system split.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -104,6 +104,26 @@ struct ImportSheet: View {
         .padding(24)
         .frame(width: 460)
         .task { prerequisites = await Prerequisites.forTranscription(transcription, store: store) }
+    }
+
+    /// The sentence the user reads immediately before pressing Import, and the last moment before
+    /// the file leaves this Mac — so it says which of the two things actually happens. With the
+    /// remote engine selected and fully configured nothing warns: `Prerequisites.forTranscription`
+    /// is empty by design (there is nothing to download), and a claim of "transcribed on this Mac"
+    /// beside an Import button that uploads is the one sentence in the app that must not be wrong.
+    /// The wording is ``RemoteTranscriptionFields``', so setup and import say the same thing.
+    ///
+    /// ponytail: read on every body pass rather than cached in `@State` — one settings row, and a
+    /// cached copy is how this goes stale the next time the setting moves.
+    private var whereItIsTranscribed: String {
+        switch store.transcriptionEngine() {
+        case .local:
+            "The audio is copied into Meetings and transcribed on this Mac."
+        case .cloud:
+            "The audio is copied into Meetings and uploaded to the remote endpoint you configured, "
+                + "which transcribes it. Nothing else about Meetings changes — notes, search and "
+                + "your write-up stay on this Mac — but the recording itself leaves it."
+        }
     }
 }
 

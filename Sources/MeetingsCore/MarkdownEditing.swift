@@ -9,9 +9,11 @@ import Foundation
 /// the half the engine ships nothing for: which commands the menu lists, and the arithmetic that
 /// keeps a floating surface inside the editor.
 ///
-/// It stays in `MeetingsCore` rather than in the app for the reason it always did — `MeetingsApp` is
-/// an executable target with no tests behind it, and "the menu never opens mid-word" and "the
-/// toolbar is never drawn outside the column" are decisions, not layout.
+/// It stays in `MeetingsCore` rather than in the app for the reason it always did: "the menu never
+/// opens mid-word" and "the toolbar is never drawn outside the column" are decisions, not layout,
+/// and they are testable here without an executable target, a window, or a text view. `MeetingsApp`
+/// does have a test target now (`MeetingsAppTests`, for the bridge onto the engine's text view),
+/// but every suite in it that mounts an editor is gated behind `MEETINGS_LIVE_EDITOR`.
 public enum MarkdownEditing {
     // MARK: - Where a floating surface goes
 

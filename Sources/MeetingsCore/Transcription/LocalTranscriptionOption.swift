@@ -12,7 +12,7 @@ public struct MeasuredTier: Sendable, Hashable, Codable {
     /// Word error rate as a percentage, scored against the fixture's script.
     public let wordErrorPercent: Double
     /// The one machine this was measured on. Named because it is the only one: see
-    /// ``MachineProfile/startingTier(for:)`` for what is and is not extrapolated from it.
+    /// ``MachineProfile/startingIndex(among:)`` for what is and is not extrapolated from it.
     public let machine: String
     /// How long the fixture was, so a reader can tell how much audio the number rests on.
     public let fixtureSeconds: Double
