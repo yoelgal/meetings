@@ -26,10 +26,12 @@ struct ActionsSet: AsyncParsableCommand {
 
             The actions are stored as GFM task list items in the write-up itself, so this rewrites \
             the `- [ ]` lines of the summary and leaves every other line of it alone. The nth item \
-            you send rewrites the nth one in the document, where it stands and with its own \
-            indentation, so send them in the order `actions list` gave them; extras land after the \
-            last one and leftovers are deleted. With no task list there yet, one is appended under \
-            an "## Actions" heading. An empty array removes the task items and nothing else.
+            you send rewrites the nth action in the document — counted the way `actions list` counts \
+            them, so an empty half-typed box is skipped, not numbered — where it stands and with its \
+            own indentation, so send them in the order `actions list` gave them; extras land after \
+            the last one as top-level items and leftovers are deleted. With no actions there yet, a \
+            list is appended under an "## Actions" heading. An empty array removes them and nothing \
+            else.
 
             owner and due are accepted and echoed back in --json, but the markdown has nowhere to \
             put them yet, so neither is stored: --json names them in droppedFields when you send \

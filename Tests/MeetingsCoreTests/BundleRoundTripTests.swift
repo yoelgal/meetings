@@ -423,6 +423,46 @@ enum BundleFixture {
                 "the column is untouched — it just stopped being what the bundle carries")
     }
 
+    /// **`owner` and `due` survive the machine-loss copy.** The markdown cannot express either, so
+    /// the legacy column is still their only copy — which made deriving `actions.json` from the
+    /// write-up the one operation that destroyed them: export, move to another machine, import, and
+    /// both fields were gone with nothing anywhere to recover them from. They are carried onto the
+    /// derived list by text before the file is written.
+    @Test func ownerAndDueSurviveExportAndImport() throws {
+        let meeting = try BundleFixture.loadedMeeting(in: store)
+        let bundle = try MeetingBundle.export(meeting, store: store, to: directory)
+        let exported = try #require(try MeetingBundle.read(at: bundle).actions)
+        #expect(exported.map(\.text) == ["Send the ptychography numbers", "Book the follow-up"])
+        #expect(exported.map(\.owner) == ["Sofia", nil])
+        #expect(exported.map(\.due) == ["end of week", nil])
+
+        let elsewhere = try TestStore.makeDirectory()
+        defer { TestStore.remove(elsewhere) }
+        let restoredStore = try TestStore.open(elsewhere)
+        let result = try MeetingBundle.restore(at: bundle, into: restoredStore)
+        let restored = try #require(try restoredStore.meeting(id: result.meeting.id))
+        #expect(restored.actions?.map(\.owner) == ["Sofia", nil])
+        #expect(restored.actions?.map(\.due) == ["end of week", nil])
+        // And the write-up is still the record for the text and the tick.
+        #expect(MarkdownActions.parse(restored.summary ?? "").map(\.text)
+            == ["Send the ptychography numbers", "Book the follow-up"])
+    }
+
+    /// The column only gets a say about the two fields the markdown cannot hold. An action the user
+    /// deleted from the write-up stays deleted however loudly the column still lists it, and one they
+    /// typed since carries no owner, because there never was one.
+    @Test func theColumnDecidesNeitherWhichActionsExistNorTheirText() throws {
+        var meeting = try BundleFixture.loadedMeeting(in: store)
+        meeting = try store.updateMeeting(id: meeting.id) {
+            $0.summary = "## Actions\n\n- [x] Send the ptychography numbers\n- [ ] Chase the invoice"
+        }
+        let bundle = try MeetingBundle.export(meeting, store: store, to: directory)
+        let exported = try #require(try MeetingBundle.read(at: bundle).actions)
+        #expect(exported.map(\.text) == ["Send the ptychography numbers", "Chase the invoice"])
+        #expect(exported.map(\.done) == [true, false], "the tick is the write-up's, not the column's")
+        #expect(exported.map(\.owner) == ["Sofia", nil])
+    }
+
     /// Absence stays absence: a whole transcript writes no `issues.json`, so every bundle this build
     /// produces for a healthy meeting is byte-identical to the ones the previous build produced.
     @Test func aWholeTranscriptWritesNoIssuesFile() throws {

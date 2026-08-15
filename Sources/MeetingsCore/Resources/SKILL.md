@@ -243,12 +243,14 @@ A `cal:` ref is fine here. The write materialises the row.
    leaves every other line of it alone. It replaces the whole list, so include the ones already
    there that still stand — read them from `meetings show <ref> --json` first.
 
-   The nth item you send rewrites the nth `- [ ]` line of the document, where it stands and with its
-   own indentation: a sub-checklist nested under a decision stays nested, and a checkbox the user
-   typed under "Open questions" is still under "Open questions" afterwards. Send fewer items than
-   the document has and the leftover lines go; send more and the extras land after the last one. So
-   send them in the order `meetings actions list` gave them, or you will rewrite one item over
-   another.
+   The nth item you send rewrites the nth **action** of the document — the nth line `meetings
+   actions list` gave you, counted exactly the way that command counts: an empty `- [ ]` the user is
+   half-way through typing is not an action, so it is skipped and left alone rather than numbered.
+   Each one is rewritten where it stands, with its own indentation: a sub-checklist nested under a
+   decision stays nested, and a checkbox the user typed under "Open questions" is still under "Open
+   questions" afterwards. Send fewer items than the document has and the leftover lines go; send
+   more and the extras land after the last one, as new top-level actions. So send them
+   in the order `meetings actions list` gave them, or you will rewrite one item over another.
 
    `owner` and `due` are still in the JSON shape and are still accepted, but **nothing stores them
    yet**: the markdown has nowhere to put them. They come back null. If who owes an action matters,

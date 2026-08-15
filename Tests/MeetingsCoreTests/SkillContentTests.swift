@@ -109,8 +109,14 @@ import Testing
 
     /// `actions set` rewrites task items where they stand. An agent that believes it can send the
     /// list in any order will overwrite one item with another, so the ordering rule is asserted.
+    ///
+    /// The unit is the **action**, not the `- [ ]` line: the two counts differ the moment the user
+    /// leaves a half-typed empty box in the document, and the skill said one index in one sentence
+    /// and the other in the next. An agent following both loses alignment on a real write-up.
     @Test func saysActionsSetRewritesItemsInPlaceAndInOrder() {
-        #expect(skill.contains("rewrites the nth `- [ ]` line of the document"))
+        #expect(skill.contains("rewrites the nth **action** of the document"))
         #expect(skill.contains("in the order `meetings actions list` gave them"))
+        #expect(skill.contains("is not an action, so it is skipped"),
+                "the two indices agree only if the skipped case is stated where the index is")
     }
 }

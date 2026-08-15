@@ -37,8 +37,9 @@ public enum Schema {
     /// **The column is not dropped and not cleared.** Nothing reads it after this, but it is the
     /// only copy of `owner` and `due`, which the markdown does not represent yet, and it is the
     /// safety net if this migration got a document wrong: the row still holds exactly what the agent
-    /// wrote. `meetings export --format bundle` carries it out, and a `SELECT actions FROM meetings`
-    /// reads it back.
+    /// wrote. `meetings export --format bundle` carries `owner` and `due` out onto the write-up's own
+    /// actions — see ``MeetingBundle`` — and a `SELECT actions FROM meetings` reads the whole column
+    /// back, including anything since deleted from the write-up.
     ///
     /// **Idempotent**, because it has to be: ``MarkdownActions/appending(_:to:)`` returns a document
     /// that already carries task items untouched, so a re-run — which the orphan repair and

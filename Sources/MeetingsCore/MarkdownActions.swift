@@ -82,23 +82,30 @@ public enum MarkdownActions {
     /// has to obey is that the rest of the write-up survives: an agent replacing three action items
     /// must not take the decisions and the open questions with them.
     ///
-    /// **Each item is rewritten where it stands.** The nth task item of the document becomes the nth
-    /// action, in place, keeping its own indentation and list marker; a shorter list deletes the
-    /// leftover lines and a longer one adds its extras after the last existing item. Collecting
-    /// every match at the position of the first one looked equivalent and was not — ``parse(_:)``
-    /// reads task items from anywhere in the document, so a nested sub-checklist, or one the author
-    /// typed under "Open questions", was hoisted into the Actions block and flattened to top level
-    /// by ``rendered(_:)``. That is structure the user typed, and `actions set` does not own it.
+    /// **Each item is rewritten where it stands.** The nth *action* of the document becomes the nth
+    /// action sent, in place, keeping its own indentation, list marker and spacing; a shorter list
+    /// deletes the leftover lines and a longer one adds its extras after the last existing item.
+    /// Collecting every match at the position of the first one looked equivalent and was not —
+    /// ``parse(_:)`` reads task items from anywhere in the document, so a nested sub-checklist, or
+    /// one the author typed under "Open questions", was hoisted into the Actions block and flattened
+    /// to top level by ``rendered(_:)``. That is structure the user typed, and `actions set` does not
+    /// own it.
+    ///
+    /// **Positions are counted the way ``parse(_:)`` counts them**, so an empty half-typed `- [ ]` is
+    /// skipped rather than numbered. `actions list` never showed it, and the docs tell an agent to
+    /// send items in the order that command gave them — counting boxes here instead meant one box the
+    /// user was in the middle of typing shifted every action after it by one, and the agent's third
+    /// item landed on the user's fourth. Skipped means untouched: the line stays exactly as typed.
     ///
     /// Rewriting positionally is also what makes the round trip safe: `actions list` reads every
-    /// task item in the document, so writing that same list straight back has to reproduce the
-    /// document rather than rearrange it.
+    /// action in the document, so writing that same list straight back reproduces the document —
+    /// byte for byte, including the author's own spacing — rather than rearranging it.
     ///
-    /// With no task items in the document already, the list is appended under an `## Actions`
+    /// With no actions in the document already, the list is appended under an `## Actions`
     /// heading — see ``appending(_:to:)``, which is the same operation the store migration runs.
     public static func replace(_ actions: [Action], in markdown: String) -> String {
         let lines = markdown.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
-        let items = lines.indices.filter { taskItem(lines[$0]) != nil }
+        let items = lines.indices.filter { action(in: lines[$0]) != nil }
         guard let last = items.last else { return appending(actions, to: markdown) }
         let list = meaningful(actions)
 
@@ -108,17 +115,30 @@ public enum MarkdownActions {
             rewritten[index] = position < list.count ? [written(list[position], like: lines[index])] : []
         }
         if list.count > items.count {
-            rewritten[last, default: []] += list[items.count...].map { written($0, like: lines[last]) }
+            // A brand-new action is a top-level action. Writing the extras like the last line put
+            // them at whatever indentation and marker that line happened to have — so a document
+            // whose final checkbox is a nested sub-item, or one under "## Open questions", turned
+            // every new action into a child of it. The one thing the last line does earn is its own
+            // list style, when it is itself top level: appending a `*` item to a `*` list.
+            let indented = lines[last].first.map { $0 == " " || $0 == "\t" } ?? false
+            rewritten[last, default: []] += list[items.count...].map {
+                indented ? rendered($0) : written($0, like: lines[last])
+            }
         }
         return lines.indices.flatMap { rewritten[$0] ?? [lines[$0]] }.joined(separator: "\n")
     }
 
-    /// One action written as a task item, wearing the indentation and list marker of the line it is
-    /// replacing — `  * [ ] x` stays two spaces in and a `*`, because the shape of the list is the
-    /// author's and only the box and the sentence belong to `actions set`.
+    /// One action written as a task item, wearing the indentation, list marker and spacing of the
+    /// line it is replacing — `  * [ ] x` stays two spaces in and a `*`, and `- [x]done` stays closed
+    /// up, because the shape of the list is the author's and only the tick and the sentence belong to
+    /// `actions set`. Reflowing the gap to one space was a diff on a line nobody asked to change,
+    /// and it broke the identity `replace(parse(doc), in: doc) == doc` on every shape the editor
+    /// draws a box on but GFM spells differently.
     private static func written(_ action: Action, like line: String) -> String {
         guard let item = taskItem(line) else { return rendered(action) }
-        return String(Array(line)[..<item.box.lowerBound]) + "[\(action.done ? "x" : " ")] \(action.text)"
+        let characters = Array(line)
+        return String(characters[..<item.box.lowerBound]) + "[\(action.done ? "x" : " ")]"
+            + String(characters[item.box.upperBound..<item.textStart]) + action.text
     }
 
     /// The actions added to the end of the document under an `## Actions` heading.
@@ -187,6 +207,12 @@ public enum MarkdownActions {
     /// `- [x]done` and `-\t[ ] x` were both drawn with a clickable checkbox and both invisible to
     /// `meetings actions list`. Strictness is the wrong instinct here: the box on screen is the thing
     /// the user pressed, so the box on screen is the action.
+    ///
+    /// The loosening admits one shape worth naming: `- [x](https://example.com/report)`, a list item
+    /// whose *link label* is `x`. The engine draws a ticked, clickable checkbox on it and renders the
+    /// rest as a link — measured, not assumed, and pinned in the probe set — so this reads it as a
+    /// done action with the text `(https://example.com/report)`. That is the rule working: the user
+    /// can tick that box, and a box the user can tick is an action.
     ///
     /// The two parsers now agree on every shape probed, quotes and malformed boxes included. Nothing
     /// makes them agree by construction, which is why the test drives the engine rather than trusting

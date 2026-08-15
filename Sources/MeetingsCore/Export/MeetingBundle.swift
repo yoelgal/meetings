@@ -42,9 +42,20 @@ import Foundation
 ///    The file stays in the format, and at schema 1, so a build from before the migration still
 ///    imports these bundles and still finds the actions where it looks for them.
 ///
+///    **`owner` and `due` still come off the column**, matched onto the derived list by text. The
+///    markdown has nowhere to put either, and the column is their only copy — deriving the whole
+///    action from the write-up made export the one operation that destroyed them, on the machine-loss
+///    copy, where there is by definition nothing left to recover them from.
+///
 /// Optional-but-empty is preserved as absence: a write-up with no task items writes no `actions.json`
-/// and a NULL summary writes no `summary.md`, so a re-export of an imported bundle is byte-identical
-/// rather than turning NULL into `[]` or `""`.
+/// and a NULL summary writes no `summary.md`, so a re-export is byte-identical rather than turning
+/// NULL into `[]` or `""`.
+///
+/// **Byte-identical means a bundle this build wrote.** A pre-v6 bundle — a populated `actions.json`
+/// beside a `summary.md` with no task items — is *upgraded* on import rather than restored as
+/// written: the actions are merged into the write-up, and a meeting that was `ready` with no write-up
+/// becomes `complete`. Re-exporting it gives the upgraded shape, which is the point of the upgrade;
+/// the original file is not what the meeting is any more.
 public enum MeetingBundle {
     /// Bumped only for a change the current reader cannot handle. A reader refuses a version it does
     /// not know rather than silently dropping the fields it has never heard of.
@@ -277,7 +288,12 @@ public enum MeetingBundle {
         // Derived rather than dropped so the format stays at schema 1: a build that predates the
         // migration reads this bundle exactly as it always did, and what it puts in its column now
         // agrees with the summary it puts beside it.
-        let actions = MarkdownActions.parse(meeting.summary ?? "")
+        //
+        // `owner` and `due` are the exception, and they come off the column: the markdown cannot
+        // express either, so the column is still their only copy — the reason `Schema
+        // .actionsIntoTheWriteUp` keeps it. Deriving them away here made export the operation that
+        // destroyed them, on the copy that exists for the case where the original machine is gone.
+        let actions = withLegacyOwnerAndDue(MarkdownActions.parse(meeting.summary ?? ""), from: meeting.actions)
         if !actions.isEmpty {
             try write(actions, to: directory.appendingPathComponent(File.actions))
         }
@@ -292,6 +308,34 @@ public enum MeetingBundle {
             try copyAudio(for: meeting, audioRoot: audioRoot, into: directory)
         }
         return directory
+    }
+
+    /// The write-up's actions, wearing the `owner` and `due` the legacy column still holds for them.
+    ///
+    /// Matched on the text, and by *count* rather than by presence — the same rule
+    /// ``MarkdownActions/appending(_:to:)`` migrated the column out under, so two commitments that
+    /// read the same take one legacy row each instead of both wearing the first one's owner.
+    ///
+    /// An action the user has since typed into the write-up matches nothing and carries no owner,
+    /// which is correct: there never was one. An action deleted from the write-up is gone from the
+    /// bundle whatever the column still says — the write-up is the record for *whether* an action
+    /// exists, and only for the two fields it cannot express does the column get a say.
+    private static func withLegacyOwnerAndDue(_ actions: [Action], from legacy: [Action]?) -> [Action] {
+        guard let legacy else { return actions }
+        var byText: [String: [Action]] = [:]
+        for action in legacy where action.owner != nil || action.due != nil {
+            byText[action.text, default: []].append(action)
+        }
+        guard !byText.isEmpty else { return actions }
+        return actions.map { action in
+            guard var matches = byText[action.text], !matches.isEmpty else { return action }
+            let match = matches.removeFirst()
+            byText[action.text] = matches
+            var carried = action
+            carried.owner = match.owner
+            carried.due = match.due
+            return carried
+        }
     }
 
     private static func copyAudio(for meeting: Meeting, audioRoot: URL?, into directory: URL) throws {

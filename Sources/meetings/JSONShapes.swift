@@ -212,13 +212,15 @@ struct ActionItemJSON: Encodable {
         self.done = action.done
     }
 
-    /// `owner` and `due` are written even when they are nothing, for the same reason ``Action``
-    /// writes them: the markdown does not carry either yet, and a key that vanishes is a shape
-    /// change to whatever is reading this.
+    /// **One rule: this is 0.1.2's synthesised encoding, written out by hand.** Every optional is
+    /// omitted when it is nil, exactly as the synthesised `Encodable` omitted it, so nothing
+    /// downstream sees a key appear or disappear that was not already doing both.
     ///
-    /// `folder` is the opposite case and is written the way the synthesised encoding wrote it —
-    /// omitted when there is none — because an unfiled meeting has never carried the key and adding
-    /// it here would be a wire-format change nobody asked for.
+    /// **`owner` and `due` are the one exception**, and it is the loosening this shape exists for:
+    /// the markdown became the record and cannot carry either, so both are *always* nil now, not
+    /// nil for some actions. Omitting them would not vary a key per item — it would delete two keys
+    /// from every payload the CLI has ever emitted, which is the shape change a reader notices. Nil
+    /// `folder` is per item, an unfiled meeting among filed ones, and the key stays as it was.
     func encode(to encoder: any Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(ref, forKey: .ref)
