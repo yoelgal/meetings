@@ -4,13 +4,34 @@ import Foundation
 /// agree on one store, and acceptance runs have to be able to point the whole thing at a throwaway
 /// directory, so no path is ever written literally anywhere else.
 public enum Paths {
-    /// `$MEETINGS_HOME`, else `~/Library/Application Support/Meetings`.
+    /// `$MEETINGS_HOME`, else `~/Library/Application Support/Meetings` — or the dev store when the
+    /// running bundle is the dev build.
+    ///
+    /// That last clause exists because the environment variable is not a safe place to keep the two
+    /// apart. `scripts/dev.sh` launches the dev bundle with `MEETINGS_HOME` set, but **any other way
+    /// of starting it does not**: the Dock, Spotlight, `open -a`, a relaunch after a crash. Started
+    /// that way the dev build fell back to this default and opened the real store — which ran a
+    /// schema migration the shipping build did not know, and left the installed app and the CLI
+    /// refusing to open their own data until it was rolled back. A build that can reach the real
+    /// store by being double-clicked is not isolated, whatever the launch script does.
+    ///
+    /// So isolation is a property of the bundle now. The CLI has no bundle identifier and is
+    /// unaffected; an explicit `MEETINGS_HOME` still wins, so pointing the dev build at real data
+    /// stays possible on purpose and impossible by accident.
     public static var root: URL {
         if let override = env("MEETINGS_HOME") {
             return URL(fileURLWithPath: expand(override), isDirectory: true)
         }
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        return support.appendingPathComponent("Meetings", isDirectory: true)
+        return support.appendingPathComponent(defaultStoreFolder, isDirectory: true)
+    }
+
+    /// `meetings-dev` for the dev bundle, `Meetings` for everything else.
+    static var defaultStoreFolder: String {
+        guard let id = Bundle.main.bundleIdentifier, id.hasSuffix(".meetings-dev") else {
+            return "Meetings"
+        }
+        return "meetings-dev"
     }
 
     /// `$MEETINGS_DB`, else `<root>/store.db`. The app exports this to the Mode-B agent process so a

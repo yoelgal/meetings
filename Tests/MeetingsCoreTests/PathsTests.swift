@@ -27,3 +27,16 @@ func databaseSitsUnderRootByDefault() {
     #expect(Paths.audioRoot.deletingLastPathComponent() == Paths.root)
     #expect(Paths.backupsRoot.deletingLastPathComponent() == Paths.root)
 }
+
+/// The dev bundle must not be able to reach the real store by being double-clicked.
+    ///
+    /// `scripts/dev.sh` sets `MEETINGS_HOME`, but the Dock, Spotlight, `open -a` and a relaunch
+    /// after a crash do not — and started that way the dev build opened the real store and ran a
+    /// migration the shipping build could not read, locking the installed app out of its own data.
+@Test func theDevBundleDefaultsToItsOwnStore() {
+    // A test process has no dev bundle identifier, so it takes the shipping default.
+    #expect(Paths.defaultStoreFolder == "Meetings")
+    // The rule itself, checkable without launching a bundle.
+    #expect("com.yoelgal.meetings-dev".hasSuffix(".meetings-dev"))
+    #expect(!"com.yoelgal.Meetings".hasSuffix(".meetings-dev"))
+}
