@@ -671,24 +671,6 @@ private struct SecondarySection<Content: View>: View {
     }
 }
 
-/// Where the actions used to be.
-///
-/// `ActionChecklist` and `ActionRow` drew a panel under the write-up: a checkbox, an editable field,
-/// an "Add an action" row and a per-row delete, all writing a JSON column that only they and
-/// `meetings actions set` knew about. All of it is gone, and nothing replaced it.
-///
-/// An action is a GFM task list item **in the write-up** now — `- [ ] ship it`. Adding one is typing
-/// `- [ ] `, which the editor's shorthand already offers and the slash menu already lists; ticking
-/// one is clicking the checkbox the editor draws over its box; deleting one is deleting the line;
-/// and the "Actions" heading is a `## Actions` the author wrote, because it is part of what they
-/// wrote. There is one record, so the window and `meetings actions list` cannot disagree.
-///
-/// The two-writer protection came with it. `AppModel.saveActions` had a compare-and-set of its own
-/// — the whole array had to still be what the window was showing, or the click was dropped — and
-/// that existed because the column had two writers and no other guard. The summary already has one:
-/// ``SharedFieldEdit`` decides echo / reload / conflict for every write to this field, and a tick is
-/// now just another edit to it. One mechanism instead of two that had to agree.
-
 /// The one-click copy of the exact command. In the default manual mode nothing writes a
 /// summary on its own, and the gap between "I should write this up" and "what was that command
 /// again" is where fifty transcripts go to die.

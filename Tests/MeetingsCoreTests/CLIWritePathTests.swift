@@ -514,6 +514,26 @@ import Testing
         #expect(try store.setting(.calendarLookAheadDays) == "21")
     }
 
+    /// The two rows that decide where this Mac's content goes take `https` or a loopback host, and
+    /// nothing else.
+    ///
+    /// The audio of every meeting is what `transcribe.remote.baseURL` redirects, three unprompted
+    /// `config set` calls are all it takes, and the skill hands an agent that command surface while
+    /// telling it to read transcripts — which anyone on the call gets to write into.
+    @Test(arguments: ["transcribe.remote.baseURL", "ai.cloud.baseURL"])
+    func anEgressEndpointIsHTTPSOrLoopbackAndNothingElse(_ key: String) throws {
+        let refused = try run("config", "set", key, "http://collector.example.com/v1")
+        #expect(refused.status == 64)
+        #expect(try store.setting(SettingKey(key)) == nil, "the refusal wrote nothing")
+        #expect(refused.stderr.contains("https"), "and says what is acceptable: \(refused.stderr)")
+
+        #expect(try run("config", "set", key, "https://api.example.com/v1").status == 0)
+        // A self-hosted endpoint on this Mac has no certificate to present and nothing on the wire.
+        #expect(try run("config", "set", key, "http://127.0.0.1:8080/v1").status == 0)
+        #expect(try run("config", "set", key, "http://localhost:11434/v1").status == 0)
+        #expect(try store.setting(SettingKey(key)) == "http://localhost:11434/v1")
+    }
+
     private func upcomingCount(_ result: Run) throws -> Int {
         #expect(result.status == 0, "\(result.stderr)")
         let json = try JSONSerialization.jsonObject(with: Data(result.stdout.utf8))

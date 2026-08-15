@@ -939,13 +939,6 @@ final class AppModel {
         }
     }
 
-    // `saveActions(meetingID:from:to:)` used to be here, with a compare-and-set that dropped a
-    // click if `meetings actions set` had rewritten the column in between. Actions are task list
-    // items inside the summary now, so ticking one is an edit to the write-up and goes through
-    // `saveSummary` above — and the two-writer question it answered is the one ``SharedFieldEdit``
-    // already answers for this field: an untouched editor reloads silently, a touched one raises
-    // the banner rather than letting either side win. One mechanism, not two.
-
     /// An empty title is not a rename, it is a mistake — "Meeting at 17:06" is generated, and a row
     /// with no name at all cannot be told from its neighbours in the list.
     ///
