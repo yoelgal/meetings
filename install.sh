@@ -109,8 +109,38 @@ bash scripts/build-app.sh
 # ---------------------------------------------------------------- install the app
 if [ -d "$APPS/Meetings.app" ]; then
     say "Replacing $APPS/Meetings.app"
-    # A running copy holds its bundle open, and mv over a live app leaves it half-replaced.
-    pkill -x Meetings 2>/dev/null && sleep 1 || true
+    # A running copy holds its bundle open, and mv over a live app leaves it half-replaced. It also
+    # holds the *store* open, which is the worse half: an old process still sitting on a write-up it
+    # read before the upgrade will write that stale text back over a schema migration the new build
+    # has meanwhile run and recorded as done. Migrations do not run twice, so nothing puts it back.
+    #
+    # So this waits for the process to really be gone rather than assuming it. One second was never
+    # enough: while a recording is in flight the app *catches* SIGTERM on purpose
+    # (RecordingController.installTerminationGuard) to close both WAVs and move the meeting on before
+    # it exits, and stopping a ScreenCaptureKit stream takes longer than the sleep it was given. Ten
+    # seconds and then a refusal — this is a one-shot upgrade, not the edit-run loop, so it can
+    # afford to wait, and stopping is always better than replacing the app underneath a live process.
+    #
+    # Matched on the full executable path rather than `pkill -x Meetings`: scripts/build-app.sh keeps
+    # CFBundleExecutable as `Meetings` for the dev bundle too, so the name alone also kills a running
+    # meetings-dev — the same collateral scripts/dev.sh matches by path to avoid in the other
+    # direction.
+    EXEC_PATH="$APPS/Meetings.app/Contents/MacOS/Meetings"
+    if pgrep -f "^$EXEC_PATH$" >/dev/null 2>&1; then
+        say "Waiting for the running app to finish and quit"
+        pkill -f "^$EXEC_PATH$" 2>/dev/null || true
+        for _ in $(seq 40); do
+            pgrep -f "^$EXEC_PATH$" >/dev/null 2>&1 || break
+            sleep 0.25
+        done
+        if pgrep -f "^$EXEC_PATH$" >/dev/null 2>&1; then
+            die "Meetings is still running and will not quit.
+
+    Quit it yourself — stop any recording first, then Meetings > Quit — and run this again.
+    Replacing the app now would leave the old process writing to a store this build has
+    already migrated."
+        fi
+    fi
     rm -rf "$APPS/Meetings.app"
 fi
 say "Installing to $APPS"

@@ -225,13 +225,17 @@ public actor TranscriptionService {
             return "a test engine is installed"
         case .cloud(let configured):
             let model = setting(.transcribeRemoteModel) ?? "?"
-            let host = (setting(.transcribeRemoteBaseURL)).flatMap { URL(string: $0)?.host() } ?? "?"
+            let base = setting(.transcribeRemoteBaseURL)
+            let host = base.flatMap { URL(string: $0)?.host() } ?? "?"
             guard configured else {
                 return "a remote endpoint is selected but not fully configured, so no meeting can "
                     + "be transcribed. Set transcribe.remote.baseURL, .model and .keyRef, and put "
                     + "the key in the Keychain"
             }
             return "remote endpoint \(host) (model \(model)); audio for each meeting is uploaded there"
+                + (isCleartextEgress(base) ? ", in the clear over http — anything between this Mac "
+                    + "and \(host) can read it. `meetings config set transcribe.remote.baseURL` no "
+                    + "longer accepts http, but a URL stored before that is still used" : "")
         case .local(let option):
             let ready = await modelsReady()
             return ready
@@ -239,6 +243,20 @@ public actor TranscriptionService {
                 : "on this Mac: \(option.title) — not downloaded yet (\(option.downloadSizeText)). "
                     + "The app downloads it on first run"
         }
+    }
+
+    /// Whether the stored endpoint uploads over cleartext `http` to somewhere other than this Mac.
+    ///
+    /// The refusal in ``SettingKey/egressRefusal(_:for:)`` is a *write* gate, so a URL written
+    /// before it existed keeps uploading every meeting's audio in the clear. Settings says so under
+    /// the field; until now `meetings status` did not, and an upgrade is exactly when somebody is
+    /// looking at that line. Same predicate as the gate, narrowed to `http` so a merely malformed
+    /// URL — which the gate also refuses — is not described as cleartext.
+    private func isCleartextEgress(_ value: String?) -> Bool {
+        guard let value, let url = URL(string: value), url.scheme?.lowercased() == "http" else {
+            return false
+        }
+        return SettingKey.egressRefusal(value, for: .transcribeRemoteBaseURL) != nil
     }
 
     // MARK: - The batch pass
