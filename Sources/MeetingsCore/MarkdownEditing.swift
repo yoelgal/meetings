@@ -37,6 +37,47 @@ public enum MarkdownEditing {
     /// — a list that appears three hundred points above the caret reads as somebody else's menu.
     public enum Side: Sendable { case above, below }
 
+    /// Which floating surface belongs on screen, if either.
+    ///
+    /// There is one of these at a time by construction: the menu belongs to a caret and the toolbar
+    /// to a range, so the two cannot both be right.
+    public enum Surface: Equatable, Sendable {
+        case menu
+        case toolbar
+
+        /// The side each one asks ``MarkdownEditing/floating(over:size:in:prefer:gap:)`` for.
+        public var prefer: Side {
+            switch self {
+            case .menu: .below
+            case .toolbar: .above
+            }
+        }
+    }
+
+    /// Whether either surface is up, and which — the one gate behind both, so they cannot end up
+    /// showing together or living by different rules.
+    ///
+    /// **No anchor, no surface, ever.** An unmeasurable caret used to be worth falling back to the
+    /// origin for, and the origin is the worst answer there is: a menu 1000 pt from the caret reads
+    /// as a placement bug and costs a day to chase, where a menu that does not open is a bug you can
+    /// find in a minute.
+    ///
+    /// `visible` closes the surfaces when the line they belong to is scrolled off. They are drawn in
+    /// a window of their own now, which no scroll view clips — so what used to be handled by
+    /// clipping has to be a decision here instead. The test is vertical overlap rather than
+    /// `intersects`: a caret has no width, and `CGRect.intersects` is false for every empty rect.
+    public static func surface(
+        anchor: CGRect?, visible: CGRect, hasQuery: Bool, selectionLength: Int,
+        focused: Bool, dismissed: Bool
+    ) -> Surface? {
+        guard focused, let anchor, anchor.maxY > visible.minY, anchor.minY < visible.maxY else {
+            return nil
+        }
+        if hasQuery { return .menu }
+        guard selectionLength > 0, !dismissed else { return nil }
+        return .toolbar
+    }
+
     /// Touching `anchor` — always — on whichever side of it the visible viewport has room for.
     ///
     /// `visible` is the editor's visible slice in the editor's own coordinates: the clip view of the

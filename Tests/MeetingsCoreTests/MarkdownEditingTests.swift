@@ -307,14 +307,94 @@ import Testing
         #expect(low.below == false, "324 pt above the caret against 46 below it")
         #expect(low.y == 25)
         // A caret in the middle of that panel has room for it on neither side. It goes on the side
-        // with more room, still touching the caret, and the panel's scroll view clips the overflow
-        // — so the rows nearest the caret are the ones showing. Pinned to an edge instead, the menu
-        // sits over the line that summoned it.
+        // with more room, still touching the caret, and overflows the far edge of the panel — which
+        // it may, because it is drawn in a window of its own rather than inside the panel. Pinned
+        // to an edge instead, the menu would sit over the line that summoned it.
         let middle = MarkdownEditing.floating(
             over: CGRect(x: 120, y: 200, width: 0, height: 18), size: Self.menu, in: panel,
             prefer: .below
         )
         #expect(middle.below == false, "194 pt above the caret against 176 below it")
         #expect(middle.y == -105)
+    }
+
+    // MARK: - Which surface is up
+
+    /// The viewport the decisions below are made in: a page scrolled to show 1200…1800.
+    private static let scrolled = CGRect(x: 0, y: 1200, width: 520, height: 600)
+    private static let caretOnScreen = CGRect(x: 120, y: 1400, width: 0, height: 18)
+
+    /// **No anchor, no surface — ever.** The origin is the worst answer there is: a menu 1000 pt
+    /// from the caret reads as a placement bug and costs a day to chase, where a menu that does not
+    /// open is a bug you can find in a minute.
+    @Test func nothingIsShownWithoutAnAnchorOrWithoutFocus() {
+        #expect(MarkdownEditing.surface(
+            anchor: nil, visible: Self.scrolled, hasQuery: true, selectionLength: 0,
+            focused: true, dismissed: false
+        ) == nil, "an unmeasurable caret means no menu, not a menu at the top of the document")
+
+        #expect(MarkdownEditing.surface(
+            anchor: Self.caretOnScreen, visible: Self.scrolled, hasQuery: true, selectionLength: 4,
+            focused: false, dismissed: false
+        ) == nil, """
+            The editor is not the one being typed into. Both surfaces belong to a caret in this \
+            text view, and a menu left up over an editor you have clicked out of is a menu \
+            belonging to nothing.
+            """)
+    }
+
+    /// One at a time, and each knows its own side. The menu belongs to a caret and the toolbar to a
+    /// range, so the two cannot both be right.
+    @Test func aQueryMeansTheMenuAndASelectionMeansTheToolbar() {
+        let menu = MarkdownEditing.surface(
+            anchor: Self.caretOnScreen, visible: Self.scrolled, hasQuery: true, selectionLength: 0,
+            focused: true, dismissed: false
+        )
+        #expect(menu == .menu)
+        #expect(menu?.prefer == .below, "a caret menu opens under the line being typed")
+
+        let toolbar = MarkdownEditing.surface(
+            anchor: Self.caretOnScreen, visible: Self.scrolled, hasQuery: false, selectionLength: 7,
+            focused: true, dismissed: false
+        )
+        #expect(toolbar == .toolbar)
+        #expect(toolbar?.prefer == .above, "and a toolbar sits over the selection the pointer is on")
+
+        #expect(MarkdownEditing.surface(
+            anchor: Self.caretOnScreen, visible: Self.scrolled, hasQuery: true, selectionLength: 7,
+            focused: true, dismissed: false
+        ) == .menu, "a query wins: a `/` typed into a selection has replaced it")
+
+        #expect(MarkdownEditing.surface(
+            anchor: Self.caretOnScreen, visible: Self.scrolled, hasQuery: false, selectionLength: 0,
+            focused: true, dismissed: false
+        ) == nil, "a caret with nothing typed at it has neither")
+
+        #expect(MarkdownEditing.surface(
+            anchor: Self.caretOnScreen, visible: Self.scrolled, hasQuery: false, selectionLength: 7,
+            focused: true, dismissed: true
+        ) == nil, "and Escape takes the toolbar down over a selection you are keeping")
+    }
+
+    /// A caret scrolled off the screen takes its surface with it.
+    ///
+    /// This used to be free: the surfaces were overlays and the page's scroll view clipped them.
+    /// They are a window now — nothing clips a window — so scrolling the line out from under an
+    /// open menu has to close it, or the menu is left floating over the transcript.
+    @Test func aCaretScrolledOutOfTheViewportClosesItsSurface() {
+        // Above the top of what is showing, and below the bottom of it.
+        for offScreen in [CGRect(x: 120, y: 900, width: 0, height: 18),
+                          CGRect(x: 120, y: 1850, width: 0, height: 18)] {
+            #expect(MarkdownEditing.surface(
+                anchor: offScreen, visible: Self.scrolled, hasQuery: true, selectionLength: 0,
+                focused: true, dismissed: false
+            ) == nil, "the line at \(offScreen.minY) is not on a page showing 1200…1800")
+        }
+        // A caret has no width, so the test has to be vertical overlap: `CGRect.intersects` is
+        // false for every empty rect, and an editor whose menu never opened would be the result.
+        #expect(MarkdownEditing.surface(
+            anchor: CGRect(x: 120, y: 1790, width: 0, height: 18), visible: Self.scrolled,
+            hasQuery: true, selectionLength: 0, focused: true, dismissed: false
+        ) == .menu, "the last line showing still has its menu, even though it is a zero-width rect")
     }
 }

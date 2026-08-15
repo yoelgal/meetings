@@ -18,6 +18,13 @@ import MeetingsCore
 /// **No window**, for the reason `EditorMountTests` gives: an `NSHostingView` is laid out off-screen
 /// and nothing is ordered onto a screen. The page is scrolled by moving its clip view, which is what
 /// a trackpad does to it.
+///
+/// That has a consequence worth naming: the shipping viewport is the **window's** content area
+/// converted into the probe's space, and a harness with no window takes the `visibleRect` fallback
+/// instead. What these tests still pin is everything downstream of it — that the slice follows the
+/// scroll, that the caret is inside it, and that the placement it feeds lands on the line being
+/// typed. Which of the two derivations the app reads on a real screen is checked by
+/// `AppSourceGuardTests` and by looking at it.
 @Suite(.serialized, .enabled(if: ProcessInfo.processInfo.environment["MEETINGS_LIVE_EDITOR"] == "1"))
 @MainActor struct ViewportProbeTests {
 

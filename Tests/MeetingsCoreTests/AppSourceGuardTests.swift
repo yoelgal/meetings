@@ -752,42 +752,84 @@ import Testing
             Going out to the screen and back needs a window, which made this untestable and made \
             the panel's second window a coordinate space nobody could check.
             """)
-        #expect(editor.contains("if let query = bridge.openQuery, let anchor = bridge.anchor"),
-                "the slash menu opens under the caret")
-        #expect(editor.contains("if let anchor = bridge.anchor, bridge.selection.length > 0"),
-                "the toolbar appears over the selection, and only over a real one")
+        // **No anchor, no surface.** Falling back to the origin is worse than not opening: a menu
+        // 1000 pt from the caret reads as a placement bug and costs a day, where a menu that does
+        // not open is found in a minute. The gate is one function in MeetingsCore now, so both
+        // surfaces are governed by it and it can be tested.
+        let editing = try Self.source("MarkdownEditing.swift", in: "Sources/MeetingsCore")
+        #expect(editing.contains("guard focused, let anchor,"),
+                "no anchor, no focus, no surface — and never a fallback position")
+        #expect(editor.contains("MarkdownEditing.surface("),
+                "and the app asks that one question rather than writing two `if`s in two views")
 
         // **Where** it lands is a decision with tests behind it, not arithmetic buried in an
         // `alignmentGuide` closure nothing could reach. It was the latter, and it was unbounded:
         // a 280 pt toolbar centred on a selection at the left edge of the text computed a negative
         // origin, which is outside the document column and past the left edge of the split view's
         // detail pane — and an NSSplitView pane clips.
-        #expect(editor.contains(".floating(over: anchor, in: bridge.visible, prefer: .below)")
-                && editor.contains(".floating(over: anchor, in: bridge.visible, prefer: .above)"), """
-            Both surfaces go through the one placement, so they cannot disagree about it — and \
-            each names its own side: a menu belongs under the caret, a toolbar over the selection.
+        let panel = try Self.source("EditorSurfacePanel.swift")
+        #expect(panel.contains("MarkdownEditing.floating("), """
+            Both surfaces go through the one placement — MeetingsCore's, where the clamp and the \
+            flip are tested — so they cannot disagree about what "over the text" means.
             """)
-        #expect(editor.contains("MarkdownEditing.floating("),
-                "and that placement is MeetingsCore's, where the clamp and the flip are tested")
+        #expect(editing.contains("case .menu: .below") && editing.contains("case .toolbar: .above"), """
+            …and which side each prefers is part of that one decision: a menu belongs under the \
+            caret, a toolbar over the selection.
+            """)
+
+        // And it is applied to a **window**, not to an overlay. The placement was measured correct
+        // in the running app — 1854 pt down a 2230 pt editor, caret at 2159 — and the menu still
+        // drew inline with the first heading, because a SwiftUI overlay inside scrolling content
+        // does not draw where it is told. Seven fixes to the guides said the same thing.
+        for gone in [".overlay(alignment: .topLeading)", "alignmentGuide("] {
+            #expect(!editor.contains(gone), """
+                \(gone) is back. The surfaces are a child window positioned in screen coordinates; \
+                an overlay inside the page's scroll view is the arrangement that could not be made \
+                to land, however right the numbers going into it were.
+                """)
+        }
+        #expect(panel.contains("window.addChildWindow(panel, ordered: .above)"), """
+            A child window travels with the editor's window and closes with it — including when \
+            that window is the floating notes panel.
+            """)
+        #expect(panel.contains("override var canBecomeKey: Bool { false }"), """
+            The surface must never take key focus: typing has to keep going into the text view \
+            while the menu filters, and the selection must survive the toolbar appearing.
+            """)
+        #expect(panel.contains(".nonactivatingPanel"),
+                "and a click on it must not deactivate the app behind it")
+        #expect(panel.contains("panel.sharingType = window.sharingType"), """
+            The notes panel is hidden from screen sharing, which is a privacy feature. A menu \
+            opened inside it that a Zoom share could see would be a hole in it.
+            """)
+        #expect(panel.contains("window.convertToScreen(probe.convert(probe.bounds, to: nil))"), """
+            The conversion chain in full: the anchor is in probe coordinates, the probe converts to \
+            window coordinates, and the window converts to the screen the panel is framed in.
+            """)
 
         // Which side of the caret a surface goes on is answered against the editor's **visible
-        // slice**, and that slice comes off the page's clip view: its bounds are the visible rect in
-        // document coordinates, which is the space the anchor is in, and it is the same rect the
-        // scroll notification carries. The editor's frame is one to two thousand points of which a
-        // few hundred are on screen, and a side chosen against the frame is a menu opening upward
-        // into a screen the user is not looking at.
-        #expect(editor.contains("probe.enclosingScrollView.map { probe.convert($0.contentView.bounds"), """
-            The viewport has to be the page's clip view. Anything derived from the editor's frame \
-            is right only on a document short enough not to scroll.
+        // slice**, and that slice is the window's content area converted into the probe's space.
+        // Three derivations from SwiftUI's scroll view were tried and all three lied: with the page
+        // scrolled 1661 pt, `HostingScrollView` reported an offset of −53.
+        #expect(editor.contains("probe.window.map { probe.convert($0.contentLayoutRect, from: nil) }"), """
+            The viewport has to be the window's own content area. Everything derived from \
+            SwiftUI's scroll view described a page that was not on screen.
             """)
-        #expect(editor.contains("probe.visibleRect.intersection(probe.bounds)"), """
-            …with `visibleRect` still behind it for an editor that has no scroll view above it at \
-            all — the mount test has none, and a nil viewport would place nothing.
+        #expect(editor.contains("?? probe.visibleRect"), """
+            …with `visibleRect` still behind it for an editor with no window at all — the mount \
+            tests have none, and a nil viewport would place nothing.
             """)
         #expect(editor.contains("NSView.boundsDidChangeNotification"), """
             And it has to follow the scroll. A viewport read once and kept is a viewport that \
             disagrees with the screen the moment the page moves under an open menu.
             """)
+        for moved in ["NSWindow.didMoveNotification", "NSWindow.didResizeNotification",
+                      "NSWindow.didResignKeyNotification"] {
+            #expect(editor.contains(moved), """
+                A surface positioned in screen coordinates has to follow \(moved) as well — it is \
+                not inside the window any more, so nothing moves it but this.
+                """)
+        }
 
         // An anchor is only as good as its freshness: published from the selection alone it goes
         // stale on any layout change — a resized pane, a rewrapped document, or a selection made

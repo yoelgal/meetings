@@ -11,9 +11,9 @@ import SwiftUI
 /// belonged to. The engine draws the checkbox *inside* the `NSTextLayoutFragment`, with the draw
 /// site and the hit-test site calling one shared `TaskCheckboxGeometry`, "so their rects can't drift
 /// apart". That is the property worth having, and everything hung off this view keeps it: the two
-/// floating surfaces are anchored off `NSTextView.firstRect(forCharacterRange:actualRange:)`, which
-/// is the rect AppKit hands an input method for its candidate window — the layout that is on the
-/// screen, not a lazy estimate of it.
+/// floating surfaces are anchored off the engine's own `NSTextLayoutManager` segments — the layout
+/// that is drawn, not a lazy estimate of it — and drawn in a window of their own, so nothing about
+/// where they land is a second opinion about where the text is.
 ///
 /// The value in and out is the same `String` the CLI writes, handed over through the binding
 /// ``SharedFieldEditor`` owns. Autosave, the two-writer conflict banner and the oversize guard sit
@@ -50,48 +50,17 @@ struct LiveMarkdownEditor: View {
         // ``MarkdownEditorBridge/attach(probe:)``, and `Patches/` for the five-line upstream change
         // that would make this unnecessary.
         .background(MarkdownEditorProbeView(bridge: bridge))
-        // Both float in the editor's own coordinate space, over the rect the text view measured.
-        // Neither is a popover: a popover takes key window, and a menu you cannot keep typing into
-        // while it filters is not a filter.
-        .overlay(alignment: .topLeading) { menuOverlay }
-        .overlay(alignment: .topLeading) { toolbarOverlay }
+        // **Neither surface is here.** They are drawn in a child window — see
+        // ``EditorSurfacePanel``, which the bridge raises and lowers off the same state this view
+        // reads. As overlays they were placed correctly and drawn at the top of the document
+        // anyway: a SwiftUI overlay inside scrolling content does not draw where it is told, and a
+        // popover is not the alternative, because a popover takes key window and a menu you cannot
+        // keep typing into while it filters is not a filter.
+        //
         // The formatting shortcuts are menu items rather than key handlers, because a focused
         // NSTextView owns its own key events and the main menu is the one thing that outranks it.
         // Published only while this editor holds focus, so ⌘B elsewhere still means nothing.
         .focusedValue(\.markdownFormatting, MarkdownFormatting(id: bridge.id) { bridge.run($0) })
-    }
-
-    // MARK: - The slash menu
-
-    /// **No anchor, no menu.** The `let anchor` is a gate, not a convenience: an unmeasurable caret
-    /// used to be worth falling back to the origin for, and the origin is the worst answer there is
-    /// — a menu 1000 pt from the caret reads as a placement bug and costs a day to chase, where a
-    /// menu that does not open is a bug you can find in a minute. ``MarkdownEditorBridge/anchorRect``
-    /// returns nil rather than a guess for the same reason.
-    @ViewBuilder private var menuOverlay: some View {
-        if let query = bridge.openQuery, let anchor = bridge.anchor {
-            SlashMenu(matches: query.matches, highlighted: bridge.highlightedRow) { command in
-                bridge.choose(command)
-            }
-            .fixedSize()
-            // Under the caret. The menu is 299 pt tall and belongs to the line being typed.
-            .floating(over: anchor, in: bridge.visible, prefer: .below)
-        }
-    }
-
-    // MARK: - The selection toolbar
-
-    @ViewBuilder private var toolbarOverlay: some View {
-        // Only over a real selection, and never at the same time as the menu — the menu belongs to
-        // a caret and the toolbar to a range, so the two cannot both be right.
-        if let anchor = bridge.anchor, bridge.selection.length > 0, bridge.openQuery == nil {
-            SelectionToolbar(isBold: bridge.isBold, isItalic: bridge.isItalic) { action in
-                bridge.run(action)
-            }
-            .fixedSize()
-            // Over the selection, which the pointer is sitting on top of.
-            .floating(over: anchor, in: bridge.visible, prefer: .above)
-        }
     }
 }
 
@@ -100,34 +69,6 @@ struct LiveMarkdownEditor: View {
 /// class of bug that put markers and text in different places.
 @MainActor enum MarkdownStyle {
     static let bodyFont = NSFont.preferredFont(forTextStyle: .body)
-}
-
-extension View {
-    /// Places a floating surface over `anchor` in the editor's own coordinate space, through the one
-    /// decision in ``MarkdownEditing/floating(over:size:in:gap:)`` — so the toolbar and the slash
-    /// menu cannot drift apart about what "over the text" means, and neither can be pushed off an
-    /// edge where the split view's pane, or the notes panel, clips it.
-    ///
-    /// Alignment guides rather than an offset: the guide closure is handed the surface's own
-    /// dimensions, which is exactly what the placement needs and what a `.offset` would not have.
-    func floating(
-        over anchor: CGRect, in visible: CGRect, prefer: MarkdownEditing.Side
-    ) -> some View {
-        // Inlined twice rather than lifted into a local helper: a local function here picks up the
-        // view's main-actor isolation, and an alignment guide closure is not isolated.
-        alignmentGuide(.leading) { size in
-            -MarkdownEditing.floating(
-                over: anchor, size: CGSize(width: size.width, height: size.height),
-                in: visible, prefer: prefer
-            ).x
-        }
-        .alignmentGuide(.top) { size in
-            -MarkdownEditing.floating(
-                over: anchor, size: CGSize(width: size.width, height: size.height),
-                in: visible, prefer: prefer
-            ).y
-        }
-    }
 }
 
 // MARK: - The seam onto the engine's text view
@@ -198,11 +139,19 @@ struct MarkdownEditorProbeView: NSViewRepresentable {
     @ObservationIgnored private weak var probe: MarkdownEditorProbe?
     /// The clip view of the page this editor is on, once there is one to watch scrolling on.
     @ObservationIgnored private weak var scrolling: NSClipView?
+    /// The window this editor is in, once there is one to watch moving and resizing.
+    @ObservationIgnored private weak var host: NSWindow?
     @ObservationIgnored private var observers: [NSObjectProtocol] = []
     @ObservationIgnored private var keyMonitor: Any?
     /// Escape closes the menu without moving the caret, which would otherwise re-open it on the very
     /// next keystroke. Cleared when the caret leaves the query.
     @ObservationIgnored private var dismissed: String?
+    /// The same, for the toolbar: the selection Escape dismissed it over. Cleared the moment the
+    /// selection changes, so the next drag brings it back.
+    @ObservationIgnored private var dismissedSelection: NSRange?
+    /// The child window both surfaces are drawn in — built on first use, so an editor that never
+    /// opens one never makes a window at all. That is what keeps `swift test` windowless.
+    @ObservationIgnored private var surfaces: EditorSurfacePanel?
 
     /// The `/query` the caret is in, with the rows it matches. Nil when there is no menu.
     ///
@@ -383,6 +332,9 @@ struct MarkdownEditorProbeView: NSViewRepresentable {
         let center = NotificationCenter.default
         observers.forEach(center.removeObserver(_:))
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
+        // And the surfaces' window, which belongs to this editor and to nothing else — an editor
+        // unmounted with its menu open would otherwise leave a panel on screen owned by nobody.
+        surfaces?.close()
     }
 
     // MARK: - What the chrome reads
@@ -392,50 +344,92 @@ struct MarkdownEditorProbeView: NSViewRepresentable {
     private func refresh() {
         guard let tv = textView, let probe else { return }
         followScrolling(of: probe)
+        followWindow(of: probe)
         let onScreen = Self.viewport(of: probe)
         if visible != onScreen { visible = onScreen }
         let selected = tv.selectedRange()
-        if selection != selected { selection = selected }
+        if selection != selected {
+            selection = selected
+            dismissedSelection = nil
+        }
         let rect = Self.anchorRect(for: selected, in: tv, probe: probe)
         if anchor != rect { anchor = rect }
         let found = query(in: tv, selection: selected)
         if openQuery != found { openQuery = found }
+        syncSurface()
+    }
+
+    // MARK: - The floating surfaces
+
+    /// Whether this editor is the one being typed into. Both surfaces belong to a caret in *this*
+    /// text view, so a click into anything else takes them down with it — and there is no
+    /// notification for a change of first responder, which is why every trigger that could have
+    /// caused one comes back through `refresh`.
+    ///
+    /// **Key window as well as first responder.** Resigning key does not change first responder, so
+    /// without this a menu opened here would still be on screen — floating in front of Zoom, since
+    /// it is a window of its own now — after switching to another app. The notes panel is
+    /// non-activating but still becomes key when typed into, which is what makes this the same
+    /// question in both homes.
+    var focused: Bool {
+        guard let textView, let window = textView.window else { return false }
+        return window.isKeyWindow && window.firstResponder === textView
+    }
+
+    /// Which surface is up, if either — asked of ``MarkdownEditing/surface(anchor:visible:hasQuery:selectionLength:focused:dismissed:)``
+    /// so the decision is a value with tests behind it rather than two `if`s in two views.
+    var surface: MarkdownEditing.Surface? {
+        MarkdownEditing.surface(
+            anchor: anchor, visible: visible, hasQuery: openQuery != nil,
+            selectionLength: selection.length, focused: focused,
+            dismissed: dismissedSelection == selection
+        )
+    }
+
+    /// Raises, moves or lowers the panel — the single point where state becomes a window on screen.
+    ///
+    /// Called from `refresh`, which already runs on every selection, text, frame, scroll, window
+    /// move and focus change, and from the two places that change `openQuery` without one.
+    private func syncSurface() {
+        guard let probe, let anchor, let surface, probe.window != nil else {
+            surfaces?.hide()
+            return
+        }
+        let panel = surfaces ?? EditorSurfacePanel()
+        surfaces = panel
+        panel.show(surface, over: anchor, in: visible, from: probe, bridge: self)
     }
 
     /// The slice of the editor that is on screen, in the probe's own coordinates — the space the
     /// anchor is in.
     ///
-    /// **The clip view of the page is the authority.** SwiftUI's `ScrollView` is `NSScrollView`-
-    /// backed on macOS, and `contentView.bounds` *is* the visible slice in document coordinates; it
-    /// is also the rect the scroll notification carries, so what is placed and what is observed
-    /// cannot disagree. `probe.visibleRect.intersection(probe.bounds)` is the fallback for an editor
-    /// with no scroll view above it at all — the mount test has none — and it is a fallback rather
-    /// than the source because it answers "clipped by every ancestor", a longer question than the
-    /// one being asked.
+    /// **The window's own content area, converted once. Nothing else.** Three derivations from the
+    /// scroll view were tried and all three lie inside SwiftUI's. Traced from the running app with
+    /// the page scrolled 1661 pt and the caret at y = 2182 in the probe:
+    ///
+    ///     probe.convert(clip.bounds, from: clip)          →  (0, -228, 308x794)
+    ///     scroll.documentVisibleRect (from documentView)  →  (0, -226, 308x794)   reported -53
+    ///     probe.visibleRect                               →  (0, -225, 308x794)
+    ///     probe.convert(probe.bounds, to: nil)            →  (-1661, h2230)   ← the truth
+    ///
+    /// `HostingScrollView` reporting an offset of −53 for a page scrolled 1661 is the whole story:
+    /// SwiftUI does not drive its scroll view the way a hand-built `NSScrollView` is driven, and
+    /// every derivation from it described a page that was not on screen. The window's content view
+    /// *is* the visible region by definition, and one conversion puts it in the space the anchor
+    /// already lives in. `visibleRect` stays behind it for an editor with no window at all — the
+    /// mount tests have none, and they must never make one.
     ///
     /// **Clipped to the editor across, not down.** The width is intersected with the editor's own
     /// bounds, because the horizontal clamp exists to keep a surface inside the column rather than
-    /// out in the window beside it. The *height* is the clip view's, untouched — and that is the
-    /// defect this line used to carry.
-    ///
-    /// Intersecting the height with `probe.bounds` made `visible.maxY` the bottom of the **editor**,
-    /// so "is there room below the caret" was asked of the document rather than of the screen. At
-    /// the end of a document there is by definition nothing below the last line, so the answer was
-    /// always no — for every caret at the end of every write-up, which is where a menu is opened
-    /// most. With the page scrolled so the tail of the summary sits near the top of the viewport,
-    /// room *above* is small too, both sides fail, and the menu is drawn 305 pt above the caret and
-    /// off the top of the page: "the shortcuts menu appears right at the top of the summary".
-    ///
-    /// Nothing below the last line is a fact about the editor, not about the screen. These surfaces
-    /// float over the page and are clipped by *its* scroll view, so a menu hanging under the final
-    /// line is drawn over whatever the page has below the write-up, which is exactly where it
-    /// belongs.
+    /// out in the window beside it. The height is deliberately *not*: capping it at the bottom of
+    /// the document made "is there room below the caret" a question about the document, and at the
+    /// end of a write-up the answer is structurally no — which flipped every menu up the page.
     ///
     /// A hierarchy not laid out yet reports an empty rect, and an empty viewport would put both
     /// surfaces on a point.
     private static func viewport(of probe: MarkdownEditorProbe) -> CGRect {
-        let seen = probe.enclosingScrollView.map { probe.convert($0.contentView.bounds, from: $0.contentView) }
-            ?? probe.visibleRect.intersection(probe.bounds)
+        let seen = probe.window.map { probe.convert($0.contentLayoutRect, from: nil) }
+            ?? probe.visibleRect
         let minX = max(seen.minX, probe.bounds.minX)
         let maxX = min(seen.maxX, probe.bounds.maxX)
         guard seen.height > 0, maxX > minX else { return probe.bounds }
@@ -456,6 +450,29 @@ struct MarkdownEditorProbeView: NSViewRepresentable {
                 MainActor.assumeIsolated { self?.refresh() }
             }
         )
+    }
+
+    /// The surfaces are a window now, positioned in screen coordinates, so everything that moves the
+    /// editor's window has to move them: a drag of the title bar, a resize, and going full screen.
+    ///
+    /// The two key notifications are here because **focus** decides whether they are up at all, and
+    /// AppKit posts nothing when first responder changes inside a window — resigning key is the one
+    /// moment it can be caught for free. Registered once, on the same "later than `attach`" schedule
+    /// as the clip view above: a view has no window until SwiftUI has put it in one.
+    private func followWindow(of probe: MarkdownEditorProbe) {
+        guard let window = probe.window, window !== host else { return }
+        host = window
+        let center = NotificationCenter.default
+        for name in [
+            NSWindow.didMoveNotification, NSWindow.didResizeNotification,
+            NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification,
+        ] {
+            observers.append(
+                center.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.refresh() }
+                }
+            )
+        }
     }
 
     /// The rect a floating surface hangs off, **measured against the layout that is on screen** and
@@ -538,8 +555,14 @@ struct MarkdownEditorProbeView: NSViewRepresentable {
     }
 
     private func menuKey(_ keyCode: UInt16) -> Bool {
-        guard let tv = textView, tv.window?.firstResponder === tv, let open = openQuery else {
-            return false
+        guard let tv = textView, tv.window?.firstResponder === tv else { return false }
+        guard let open = openQuery else {
+            // Escape takes the toolbar down too, and only while it is actually up — a surface you
+            // cannot dismiss over a selection you want to keep is a bar sitting on your text.
+            guard keyCode == 53, surface == .toolbar else { return false }
+            dismissedSelection = selection
+            syncSurface()
+            return true
         }
         switch keyCode {
         case 126: highlighted = max(highlightedRow - 1, 0)
@@ -550,6 +573,7 @@ struct MarkdownEditorProbeView: NSViewRepresentable {
         case 53:
             dismissed = open.text
             openQuery = nil
+            syncSurface()
         default: return false
         }
         return true
@@ -561,6 +585,9 @@ struct MarkdownEditorProbeView: NSViewRepresentable {
         let range = openQuery?.range
         openQuery = nil
         highlighted = 0
+        // Before the edit, not after: the menu is closed the instant a row is chosen, rather than
+        // whenever the text change that follows comes back around through `refresh`.
+        syncSurface()
         run(command.action, swallowing: range)
     }
 
