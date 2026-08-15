@@ -20,8 +20,10 @@ import MeetingsCore
 /// reason `MEETINGS_LIVE_EDITOR` gates the suite at all — an ordinary `swift test` builds no AppKit
 /// view hierarchy, because the last editor harness that did put a window in front of the operator.
 ///
-/// What this therefore *cannot* reach is the anchor rect: `firstRect(forCharacterRange:)` is in
-/// screen coordinates and there is no screen. Where the menu lands needs the running app.
+/// The anchor **is** reachable here now. It used to go out to the screen and back through
+/// `firstRect(forCharacterRange:)`, which needs a window and so could not be checked at all; it
+/// comes off the engine's own layout manager and converts straight through the view tree, so
+/// "the toolbar hangs off the line the selection is on" is a test rather than a screenshot.
 @Suite(.serialized, .enabled(if: ProcessInfo.processInfo.environment["MEETINGS_LIVE_EDITOR"] == "1"))
 @MainActor struct EditorMountTests {
 
@@ -82,7 +84,8 @@ import MeetingsCore
     @Test func theProbeFindsTheEnginesTextView() async throws {
         let (bridge, _, _, host) = try await mounted("# Standup\n\nA line of prose.\n\n- [ ] tick me\n")
         #expect(bridge.isAttached)
-        #expect(bridge.width > 0, "and it has to know the width it was laid out at, for the clamp")
+        #expect(bridge.visible.width > 0, "and it has to know the slice it is showing, for the clamp")
+        #expect(bridge.visible.height > 0)
         withExtendedLifetime(host) {}
     }
 
@@ -133,6 +136,107 @@ import MeetingsCore
             The store has to hold a line `meetings actions list` recognises — the box is the \
             contract between the write-up and the CLI, not decoration.
             """)
+        withExtendedLifetime(host) {}
+    }
+
+    // MARK: - Where the surfaces hang
+
+    /// The anchor lands on the line the selection is on, a long way down a document.
+    ///
+    /// Both surfaces are placed against this rect, and the last two times this was wrong they were
+    /// wrong together: an estimate that ran ~50 pt short and got worse further down, then a clamp
+    /// against the editor's frame that put the menu 300 pt above the caret. This checks the first
+    /// half — that the rect is the line's real one — against the engine's own layout manager.
+    @Test func theAnchorLandsOnTheLineTheSelectionIsOn() async throws {
+        let paragraphs = (0..<60).map {
+            "Paragraph \($0) with enough prose on it that the column has to wrap it at least once."
+        }
+        let (bridge, _, tv, host) = try await mounted(paragraphs.joined(separator: "\n\n"))
+        let target = NSRange(location: 3000, length: 9)
+        tv.setSelectedRange(target)
+        try await Task.sleep(for: .milliseconds(120))
+
+        let anchor = try #require(bridge.anchor, """
+            No anchor, so neither surface can be placed. It needs no window now — a nil here is \
+            the walk failing or the layout manager refusing the range, not a missing screen.
+            """)
+        // What the engine's own layout says, measured independently of the bridge.
+        let layout = try #require(tv.textLayoutManager)
+        let content = try #require(layout.textContentManager)
+        let start = try #require(content.location(layout.documentRange.location, offsetBy: target.location))
+        let end = try #require(content.location(start, offsetBy: target.length))
+        let span = try #require(NSTextRange(location: start, end: end))
+        var drawn = CGRect.null
+        layout.enumerateTextSegments(in: span, type: .standard, options: []) { _, segment, _, _ in
+            drawn = drawn.isNull ? segment : drawn.union(segment)
+            return true
+        }
+        #expect(!drawn.isNull)
+        #expect(abs(anchor.minY - (drawn.minY + tv.textContainerOrigin.y)) < 0.5, """
+            The anchor is \(anchor.minY) where the text is drawn at \
+            \(drawn.minY + tv.textContainerOrigin.y). That gap is the class of bug that put both \
+            floating surfaces above the line they belong to, and it grows with the document.
+            """)
+        #expect(abs(anchor.minX - (drawn.minX + tv.textContainerOrigin.x)) < 0.5)
+        #expect(anchor.height > 0)
+        withExtendedLifetime(host) {}
+    }
+
+    /// `~~struck~~` is drawn struck through.
+    ///
+    /// The engine parses pure markdown and ships strikethrough as an **opt-in extension**; with the
+    /// library's empty default the tildes stayed literal text, so the write-up rendered nothing and
+    /// the toolbar offered a mark the document could not show. This asserts the attribute is on the
+    /// storage the engine is drawing from, which is the only place the answer lives.
+    @Test func strikethroughIsRenderedRatherThanLeftAsTildes() async throws {
+        let (_, _, tv, host) = try await mounted("plain ~~struck~~ text\n")
+        try await Task.sleep(for: .milliseconds(120))
+        let storage = try #require(tv.textStorage)
+        var struck: [NSRange] = []
+        storage.enumerateAttribute(
+            .strikethroughStyle, in: NSRange(location: 0, length: storage.length)
+        ) { value, range, _ in
+            if value != nil { struck.append(range) }
+        }
+        #expect(struck.contains { NSEqualRanges($0, NSRange(location: 8, length: 6)) }, """
+            `struck` carries no strikethrough. StrikethroughExtension is not registered in the \
+            editor's configuration, so the engine is treating `~~` as ordinary characters — which \
+            is exactly what "strikethroughs are not rendering" looks like. Found: \(struck).
+            """)
+        withExtendedLifetime(host) {}
+    }
+
+    /// The link button leaves the caret where the URL goes.
+    ///
+    /// The engine wraps the selection as `[text]()` and parks the caret **past** the closing paren,
+    /// so the one thing left to type cannot be typed and the link stays targetless — which the
+    /// theme draws in `incompleteLink` grey.
+    @Test func theLinkButtonLeavesTheCaretInsideTheEmptyTarget() async throws {
+        let (bridge, _, tv, host) = try await mounted("click here\n")
+        tv.setSelectedRange(NSRange(location: 0, length: 5))
+        try await Task.sleep(for: .milliseconds(40))
+        bridge.run(.link)
+        try await Task.sleep(for: .milliseconds(80))
+        #expect(tv.string == "[click]() here\n")
+        #expect(tv.selectedRange() == NSRange(location: 8, length: 0), """
+            The caret is at \(tv.selectedRange().location); the target goes at 8, between the \
+            parens. Anywhere else and the button hands you a link you cannot finish.
+            """)
+        withExtendedLifetime(host) {}
+    }
+
+    /// Bold from the toolbar wraps the selection *and* lights the button, which is the engine's own
+    /// answer coming back on this editor's own bus name.
+    @Test func boldFromTheToolbarWrapsTheSelectionAndLightsTheButton() async throws {
+        let (bridge, document, tv, host) = try await mounted("hello world\n")
+        tv.setSelectedRange(NSRange(location: 6, length: 5))
+        try await Task.sleep(for: .milliseconds(60))
+        #expect(bridge.isBold == false)
+        bridge.run(.bold)
+        try await Task.sleep(for: .milliseconds(80))
+        #expect(tv.string == "hello **world**\n")
+        #expect(document.text == "hello **world**\n")
+        #expect(bridge.isBold, "and the button has to say so, or ⌘B and the toolbar disagree")
         withExtendedLifetime(host) {}
     }
 }

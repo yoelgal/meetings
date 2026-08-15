@@ -1,4 +1,5 @@
 import Foundation
+import MarkdownEngine
 import MeetingsCore
 import Testing
 
@@ -57,11 +58,28 @@ import Testing
         #expect(configuration.scrollers.hasVerticalScroller == false)
     }
 
+    /// `~~struck~~` renders only if the engine is told to parse it.
+    ///
+    /// The library parses **pure markdown**: strikethrough is an extension and `extensions` is empty
+    /// by default, so the tildes stayed literal and the write-up showed no line through anything —
+    /// while `theme.strikethroughColor` was set here all along, which is how the omission read as
+    /// configured. The toolbar and ⌘⇧S both offer the mark, so the parse has to be on.
+    @MainActor @Test func strikethroughIsRegisteredWithTheEngine() {
+        let extensions = MarkdownEditorBridge().configuration.extensions
+        #expect(extensions.contains { $0.id == StrikethroughExtension.identifier }, """
+            Without StrikethroughExtension the engine treats `~~` as ordinary characters: the \
+            toolbar's Strikethrough button writes a mark the document will not draw.
+            """)
+    }
+
     /// Every row the menu draws can be applied. A command with no route to the engine is a menu item
     /// that does nothing, and the menu is the one surface where that is invisible until it is used.
-    @Test func everySlashCommandNamesAnActionASymbolAndAShorthand() {
+    @Test func everySlashCommandNamesAnActionALabelAndAShorthand() {
         for command in MarkdownEditing.slashCommands {
-            #expect(!command.symbol.isEmpty, "\(command.id) has no symbol")
+            switch command.label {
+            case .symbol(let name): #expect(!name.isEmpty, "\(command.id) has no symbol")
+            case .text(let text): #expect(!text.isEmpty, "\(command.id) has no label")
+            }
             #expect(command.shorthand == "/\(command.id)")
         }
         #expect(MarkdownEditing.slashCommands.contains { $0.action == .taskList }, """

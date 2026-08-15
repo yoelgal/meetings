@@ -727,23 +727,30 @@ import Testing
                 "and it is the one move path, which the context menu still calls")
     }
 
-    /// Both floating surfaces hang off a rect **measured against the layout that is on screen**.
+    /// Both floating surfaces hang off a rect **measured against the layout that is on screen**,
+    /// and land inside the part of the editor that is on screen.
     ///
     /// A menu that opens at the top-left while you are typing on line forty is a menu about
-    /// somewhere else — and the way this app got there last time was measuring through a lazy
-    /// layout estimate, which answers before the text has been laid out and never revises itself.
-    /// `firstRect(forCharacterRange:actualRange:)` is the rect AppKit hands an input method for its
-    /// candidate window: it cannot be ahead of the glyphs, because it is what the glyphs produced.
+    /// somewhere else — and this app has now been there twice. First through a lazy layout
+    /// estimate, which answers before the text has been laid out and never revises itself. Then
+    /// through a placement clamped to the editor's *frame*: the editor is as tall as its document
+    /// inside a page that scrolls, so "is there room above the caret" was always yes and the 299 pt
+    /// slash menu was drawn 305 pt up — off the top of the viewport entirely.
     @Test func theMenuAndTheToolbarAnchorToWhereTheTextActuallyIs() throws {
         let editor = try Self.source("MarkdownEditor.swift")
-        #expect(editor.contains("firstRect(forCharacterRange: range, actualRange: nil)"), """
-            The anchor has to come from the on-screen layout. A rect taken from a lazy layout \
-            estimate is the bug that put a checkbox four hundred points below its own text.
+        #expect(editor.contains("layout.enumerateTextSegments(in: span, type: .standard"), """
+            The anchor has to come from the engine's own layout manager — the layout that is \
+            drawn, rather than a re-derivation of it.
             """)
-        #expect(editor.contains("probe.convert(window.convertFromScreen(onScreen), from: nil)"), """
-            Screen coordinates in, view coordinates out, through the real view tree — so the \
-            engine's reading-column centring and its header band are AppKit's arithmetic and not a \
-            second copy of it here.
+        #expect(editor.contains("probe.convert(measured, from: tv)"), """
+            Text-view coordinates in, probe coordinates out, through the real view tree — so the \
+            engine's reading-column centring, its header band and any scroll offset are AppKit's \
+            arithmetic and not a second copy of it here. And no window in the chain: the floating \
+            notes panel is a second editor in a second window, and the mount test has none at all.
+            """)
+        #expect(!editor.contains("convertFromScreen"), """
+            Going out to the screen and back needs a window, which made this untestable and made \
+            the panel's second window a coordinate space nobody could check.
             """)
         #expect(editor.contains("if let query = bridge.openQuery, let anchor = bridge.anchor"),
                 "the slash menu opens under the caret")
@@ -755,17 +762,20 @@ import Testing
         // a 280 pt toolbar centred on a selection at the left edge of the text computed a negative
         // origin, which is outside the document column and past the left edge of the split view's
         // detail pane — and an NSSplitView pane clips.
-        #expect(editor.contains(".floating(over: anchor, in: bridge.width)"),
-                "both surfaces go through the one placement, so they cannot disagree about it")
+        #expect(editor.contains(".floating(over: anchor, in: bridge.visible, prefer: .below)")
+                && editor.contains(".floating(over: anchor, in: bridge.visible, prefer: .above)"), """
+            Both surfaces go through the one placement, so they cannot disagree about it — and \
+            each names its own side: a menu belongs under the caret, a toolbar over the selection.
+            """)
         #expect(editor.contains("MarkdownEditing.floating("),
                 "and that placement is MeetingsCore's, where the clamp and the flip are tested")
 
-        // The width is the editor's own, measured. A constant is how the menu came to be clamped
-        // against a 520 pt column while the floating notes panel lays the editor out at 296, and
-        // ran 224 pt outside the panel's clip.
-        #expect(editor.contains("let laidOut = max(probe.bounds.width, 1)"), """
-            The clamp needs the width the editor was actually laid out at. A constant is right in \
-            the detail pane and wrong in the notes panel by two hundred points.
+        // The bound is the editor's **visible slice**, measured. Its frame is one to two thousand
+        // points of which a few hundred are on screen, and a surface clamped to the frame is a
+        // surface placed somewhere the user is not looking.
+        #expect(editor.contains("probe.visibleRect.intersection(probe.bounds)"), """
+            The clamp needs the part of the editor that is actually showing. The frame is right \
+            only on a document short enough not to scroll.
             """)
 
         // An anchor is only as good as its freshness: published from the selection alone it goes

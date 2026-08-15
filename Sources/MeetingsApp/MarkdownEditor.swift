@@ -69,7 +69,8 @@ struct LiveMarkdownEditor: View {
                 bridge.choose(command)
             }
             .fixedSize()
-            .floating(over: anchor, in: bridge.width)
+            // Under the caret. The menu is 299 pt tall and belongs to the line being typed.
+            .floating(over: anchor, in: bridge.visible, prefer: .below)
         }
     }
 
@@ -83,7 +84,8 @@ struct LiveMarkdownEditor: View {
                 bridge.run(action)
             }
             .fixedSize()
-            .floating(over: anchor, in: bridge.width)
+            // Over the selection, which the pointer is sitting on top of.
+            .floating(over: anchor, in: bridge.visible, prefer: .above)
         }
     }
 }
@@ -103,15 +105,21 @@ extension View {
     ///
     /// Alignment guides rather than an offset: the guide closure is handed the surface's own
     /// dimensions, which is exactly what the placement needs and what a `.offset` would not have.
-    func floating(over anchor: CGRect, in width: CGFloat) -> some View {
+    func floating(
+        over anchor: CGRect, in visible: CGRect, prefer: MarkdownEditing.Side
+    ) -> some View {
+        // Inlined twice rather than lifted into a local helper: a local function here picks up the
+        // view's main-actor isolation, and an alignment guide closure is not isolated.
         alignmentGuide(.leading) { size in
             -MarkdownEditing.floating(
-                over: anchor, size: CGSize(width: size.width, height: size.height), in: width
+                over: anchor, size: CGSize(width: size.width, height: size.height),
+                in: visible, prefer: prefer
             ).x
         }
         .alignmentGuide(.top) { size in
             -MarkdownEditing.floating(
-                over: anchor, size: CGSize(width: size.width, height: size.height), in: width
+                over: anchor, size: CGSize(width: size.width, height: size.height),
+                in: visible, prefer: prefer
             ).y
         }
     }
@@ -159,10 +167,20 @@ struct MarkdownEditorProbeView: NSViewRepresentable {
     private(set) var isItalic = false
     /// Where the floating surfaces hang, in the probe's coordinates. Nil before the first layout.
     private(set) var anchor: CGRect?
-    /// The editor's own laid-out width — never a constant. The notes panel gives this editor about
-    /// 296 pt where the detail pane gives it 520, and a menu clamped against the wider number runs
-    /// two hundred points outside the panel's clip.
-    private(set) var width: CGFloat = SharedFieldEditor.column
+    /// The part of the editor that is **on screen**, in the probe's own coordinates — never the
+    /// editor's frame and never a constant.
+    ///
+    /// This editor is as tall as its document inside a page that scrolls, so its frame is one to
+    /// two thousand points of which a few hundred are visible; placing a surface against the frame
+    /// put the slash menu three hundred points above the caret and off the top of the viewport.
+    /// The width matters for the same reason it always did — the notes panel lays this editor out
+    /// at about 330 pt where the detail pane gives it 520.
+    ///
+    /// ponytail: read on every selection, text and frame change, which is every moment either
+    /// surface *appears*. A page scrolled while the menu is already open leaves it stale until the
+    /// next keystroke; observing the scroll would need a clip view SwiftUI's `ScrollView` does not
+    /// always have.
+    private(set) var visible: CGRect = CGRect(x: 0, y: 0, width: SharedFieldEditor.column, height: 400)
     /// Which row of the slash menu Return would take.
     private(set) var highlighted = 0
     /// Whether the walk below has found the engine's text view. Without it there is no menu, no
@@ -235,7 +253,13 @@ struct MarkdownEditorProbeView: NSViewRepresentable {
             services: MarkdownEditorServices(bus: bus),
             scrollers: .hidden,
             textInsets: TextInsets(horizontal: 0, vertical: 6),
-            heightBehavior: .fitsContent
+            heightBehavior: .fitsContent,
+            // `~~struck~~` is **opt-in**. The engine parses pure markdown and ships strikethrough as
+            // an extension registered by the embedder; with the library's empty default the text
+            // stayed literal — no line through it, and the toolbar's own Strikethrough button
+            // offered a mark the document would not render. `theme.strikethroughColor` was already
+            // set here, which is how it read as configured when nothing was.
+            extensions: [StrikethroughExtension()]
         )
     }
 
@@ -360,8 +384,13 @@ struct MarkdownEditorProbeView: NSViewRepresentable {
     /// keystroke, so an unconditional write here is a SwiftUI invalidation per character typed.
     private func refresh() {
         guard let tv = textView, let probe else { return }
-        let laidOut = max(probe.bounds.width, 1)
-        if width != laidOut { width = laidOut }
+        // `visibleRect` is the slice showing through every clip view above this one, in the probe's
+        // own coordinates; intersecting with `bounds` drops the part of the window that is beside
+        // the editor rather than over it. A hierarchy that has not been laid out yet reports an
+        // empty rect, and an empty viewport would clamp both surfaces to a point.
+        let slice = probe.visibleRect.intersection(probe.bounds)
+        let onScreen = slice.isEmpty ? probe.bounds : slice
+        if visible != onScreen { visible = onScreen }
         let selected = tv.selectedRange()
         if selection != selected { selection = selected }
         let rect = Self.anchorRect(for: selected, in: tv, probe: probe)
@@ -370,20 +399,42 @@ struct MarkdownEditorProbeView: NSViewRepresentable {
         if openQuery != found { openQuery = found }
     }
 
-    /// The rect a floating surface hangs off, **measured against the layout that is on screen**.
+    /// The rect a floating surface hangs off, **measured against the layout that is on screen** and
+    /// converted straight through the view tree.
     ///
-    /// `firstRect(forCharacterRange:actualRange:)` is the rect AppKit hands an input method for its
-    /// candidate window, in screen coordinates. Going out to the screen and back in through the two
-    /// views is what makes this immune to the offsets that broke the last anchor: the engine's
-    /// reading-column centring and its scroll-away header band both move the text view inside its
-    /// document view, and `convert` walks the real view tree rather than re-deriving either.
+    /// The segments come from the engine's own `NSTextLayoutManager`, which is the layout that is
+    /// drawn — not a re-derivation of it — and `probe.convert(_:from:)` walks the real views, so the
+    /// engine's reading-column centring, its scroll-away header band and any scroll offset between
+    /// the text view and the probe are all carried by AppKit rather than re-computed here.
+    ///
+    /// It used to go out to the screen and back in through `firstRect(forCharacterRange:)`. Three
+    /// conversions instead of one, and two of them through a window — which meant no window, no
+    /// anchor: the mount test could not reach this at all, and the floating notes panel puts a
+    /// second editor in a second window, which is exactly where that shape breaks. This needs
+    /// neither, so where the menu lands is a test rather than a screenshot.
+    ///
+    /// A multi-line selection unions its lines, so `minY` is the top of the first one and `maxY` the
+    /// bottom of the last — which is what a surface placed above or below the whole selection wants.
     private static func anchorRect(
         for range: NSRange, in tv: NSTextView, probe: MarkdownEditorProbe
     ) -> CGRect? {
-        guard let window = tv.window else { return nil }
-        let onScreen = tv.firstRect(forCharacterRange: range, actualRange: nil)
-        guard onScreen.width.isFinite, onScreen.height.isFinite, onScreen.height > 0 else { return nil }
-        return probe.convert(window.convertFromScreen(onScreen), from: nil)
+        guard let layout = tv.textLayoutManager,
+              let content = layout.textContentManager,
+              let start = content.location(layout.documentRange.location, offsetBy: range.location),
+              let end = content.location(start, offsetBy: range.length),
+              let span = NSTextRange(location: start, end: end)
+        else { return nil }
+        var measured = CGRect.null
+        layout.enumerateTextSegments(in: span, type: .standard, options: []) { _, segment, _, _ in
+            measured = measured.isNull ? segment : measured.union(segment)
+            return true
+        }
+        guard !measured.isNull, measured.height > 0, measured.origin.y.isFinite else { return nil }
+        // Segments are in the text container's space; the origin is the inset the engine was
+        // configured with.
+        measured.origin.x += tv.textContainerOrigin.x
+        measured.origin.y += tv.textContainerOrigin.y
+        return probe.convert(measured, from: tv)
     }
 
     private func query(in tv: NSTextView, selection: NSRange) -> SlashQuery? {
@@ -474,7 +525,19 @@ struct MarkdownEditorProbeView: NSViewRepresentable {
         case .italic: center.post(name: name("italic"), object: nil)
         case .strikethrough: center.post(name: name("strikethrough"), object: nil)
         case .inlineCode: center.post(name: name("inlineCode"), object: nil)
-        case .link: center.post(name: name("link"), object: nil, userInfo: ["url": ""])
+        case .link:
+            // The engine wraps a selection as `[text]()` and leaves the caret *past* the closing
+            // paren, so the one thing left to type — the target — cannot be typed, and a link with
+            // no target is drawn in the theme's `incompleteLink` grey. Put the caret between the
+            // parens. Over a caret rather than a selection the engine already lands inside the
+            // brackets, which is where the label goes, so that path is left alone.
+            let wrapping = tv.selectedRange().length > 0
+            center.post(name: name("link"), object: nil, userInfo: ["url": ""])
+            if wrapping {
+                OperationQueue.main.addOperation { [weak self] in
+                    MainActor.assumeIsolated { self?.caretInsideEmptyTarget() }
+                }
+            }
         case .heading(let level):
             center.post(name: name("heading"), object: nil, userInfo: ["level": level])
         case .bulletList: center.post(name: name("unorderedList"), object: nil)
@@ -495,6 +558,19 @@ struct MarkdownEditorProbeView: NSViewRepresentable {
                 MainActor.assumeIsolated { self?.typeTaskBox() }
             }
         }
+    }
+
+    /// Steps the caret back inside the `()` the engine just left it behind. Guarded on the two
+    /// characters actually being there, so a bus handler that ever changes its mind about where the
+    /// caret lands moves nothing rather than moving the wrong thing.
+    private func caretInsideEmptyTarget() {
+        guard let tv = textView else { return }
+        let caret = tv.selectedRange()
+        let text = tv.string as NSString
+        guard caret.length == 0, caret.location >= 2, caret.location <= text.length,
+              text.substring(with: NSRange(location: caret.location - 2, length: 2)) == "()"
+        else { return }
+        tv.setSelectedRange(NSRange(location: caret.location - 1, length: 0))
     }
 
     private func typeTaskBox() {

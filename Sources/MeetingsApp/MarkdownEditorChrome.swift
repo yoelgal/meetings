@@ -1,6 +1,35 @@
 import MeetingsCore
 import SwiftUI
 
+/// What a command draws to say which one it is: an SF Symbol, or the two characters that name it.
+///
+/// One view for both surfaces, so the slash menu and the toolbar cannot end up disagreeing about
+/// what Heading 2 looks like.
+///
+/// **`link` is drawn a notch smaller.** The marks are a mix of two families: `bold`, `italic` and
+/// `strikethrough` are drawn at text cap height (44 × 44 px at 13 pt), while `link` is an object
+/// symbol that fills its box (66 × 65 px at the same size). Rendered at one scale the chain came out
+/// half again as large as the letters beside it and read as a blob rather than a link — which is
+/// what "the link is not rendering properly" looks like. `.small` puts it back on the row.
+struct CommandGlyph: View {
+    let label: MarkdownEditing.Label
+
+    var body: some View {
+        switch label {
+        case .symbol(let name):
+            Image(systemName: name)
+                .imageScale(name == "link" ? .small : .medium)
+        case .text(let text):
+            // Semibold and a touch under body: at body weight "H1" reads as prose in a row of
+            // glyphs, and it has to survive being set in the 18 pt slot the symbols get.
+            Text(text)
+                .font(.system(size: 11, weight: .semibold))
+                .monospacedDigit()
+                .fixedSize()
+        }
+    }
+}
+
 /// The menu `/` opens over the write-up: the discoverable path to the same constructs the shorthand
 /// already types. Grouped, because nine flat rows is a list you read rather than a menu you aim at.
 ///
@@ -61,13 +90,11 @@ struct SlashMenu: View {
             choose(command)
         } label: {
             HStack(spacing: 9) {
-                Image(systemName: command.symbol)
+                CommandGlyph(label: command.label)
                     .frame(width: 18)
                     .foregroundStyle(selected ? AnyShapeStyle(.white) : AnyShapeStyle(.secondary))
-                // The heading rows are set at the size they produce, which is the only reliable way
-                // to tell them apart: `textformat.size.larger` and `.smaller` both draw as an `A`,
-                // so H1 and H3 arrived on screen as the same glyph carrying no information. Showing
-                // the result is also how every editor that does this well labels them.
+                // The heading rows are *also* set at the size they produce — the glyph now says
+                // which level it is, and the row still shows what the level looks like.
                 Text(command.title)
                     .font(previewFont(for: command))
                     .foregroundStyle(selected ? AnyShapeStyle(.white) : AnyShapeStyle(.primary))
@@ -108,12 +135,12 @@ struct SelectionToolbar: View {
     let isItalic: Bool
     let run: (MarkdownEditing.Action) -> Void
 
-    private static let marks: [(MarkdownEditing.Action, String, String)] = [
-        (.bold, "bold", "Bold"),
-        (.italic, "italic", "Italic"),
-        (.strikethrough, "strikethrough", "Strikethrough"),
-        (.inlineCode, "chevron.left.forwardslash.chevron.right", "Code"),
-        (.link, "link", "Link"),
+    private static let marks: [(MarkdownEditing.Action, MarkdownEditing.Label, String)] = [
+        (.bold, .symbol("bold"), "Bold"),
+        (.italic, .symbol("italic"), "Italic"),
+        (.strikethrough, .symbol("strikethrough"), "Strikethrough"),
+        (.inlineCode, .symbol("chevron.left.forwardslash.chevron.right"), "Code"),
+        (.link, .symbol("link"), "Link"),
     ]
 
     private func pressed(_ action: MarkdownEditing.Action) -> Bool {
@@ -126,12 +153,12 @@ struct SelectionToolbar: View {
 
     var body: some View {
         HStack(spacing: 2) {
-            ForEach(Self.marks, id: \.0) { action, symbol, name in
-                button(symbol, name, on: pressed(action)) { run(action) }
+            ForEach(Self.marks, id: \.0) { action, label, name in
+                button(label, name, on: pressed(action)) { run(action) }
             }
             Divider().frame(height: 16).padding(.horizontal, 4)
             ForEach(MarkdownEditing.blockCommands) { command in
-                button(command.symbol, command.title, on: false) { run(command.action) }
+                button(command.label, command.title, on: false) { run(command.action) }
             }
         }
         .padding(4)
@@ -141,10 +168,10 @@ struct SelectionToolbar: View {
     }
 
     private func button(
-        _ symbol: String, _ name: String, on: Bool, action: @escaping () -> Void
+        _ label: MarkdownEditing.Label, _ name: String, on: Bool, action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
-            Image(systemName: symbol)
+            CommandGlyph(label: label)
                 .frame(width: 24, height: 22)
                 .background(
                     on ? AnyShapeStyle(.tint) : AnyShapeStyle(.clear),
