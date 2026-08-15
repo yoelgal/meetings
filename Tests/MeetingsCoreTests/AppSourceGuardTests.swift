@@ -7,10 +7,13 @@ import Testing
 /// of the SwiftUI source*, not a value any function returns. Both were found by a critic reading
 /// pixels; both are cheap to catch by reading the source instead.
 ///
-/// These scan `Sources/MeetingsApp`, which has no test target of its own — the package builds it as
-/// an `executableTarget` and nothing links it. Adding `MeetingsAppTests` is a six-line change to
-/// `Package.swift`, which this unit does not own; until it exists, this is where an app-level
-/// regression check can live.
+/// These read `Sources/MeetingsApp` — and `Sources/MeetingsCore` — as **text**. `MeetingsAppTests`
+/// exists now and links the app, so anything reachable as a value belongs there instead and several
+/// guards have moved: the reading measure, the bus names, where the API key ends up, and whether the
+/// search defers. What stays here is what only text can say — that a file was deleted and has not
+/// come back, that a modifier is absent, that a rule has no second implementation somewhere in the
+/// library. A guard that copies out a whole expression from the source it is checking is neither: it
+/// fails on a line wrap and passes on a changed meaning spelled the same way.
 @Suite struct AppSourceGuardTests {
     /// The repository, found from this file rather than from the working directory, so the tests
     /// pass under `swift test` from anywhere.
@@ -118,6 +121,22 @@ import Testing
     }
 
     // MARK: - The window has to say what the CLI says
+
+    /// Every Swift file in `MeetingsCore`, the nested directories included. The library is where a
+    /// deleted rule comes back to, so a guard over it has to see all of it rather than one filename
+    /// somebody remembered to name.
+    static func coreSources() throws -> [(name: String, text: String)] {
+        let root = appSources.deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Sources/MeetingsCore")
+        let files = try FileManager.default
+            .subpathsOfDirectory(atPath: root.path)
+            .filter { $0.hasSuffix(".swift") }
+            .sorted()
+        #expect(files.count > 30, "MeetingsCore moved — this guard is scanning nothing")
+        return try files.map {
+            ($0, try String(contentsOf: root.appendingPathComponent($0), encoding: .utf8))
+        }
+    }
 
     static func source(_ name: String, in directory: String = "Sources/MeetingsApp") throws -> String {
         let root = appSources.deletingLastPathComponent().deletingLastPathComponent()
@@ -469,8 +488,12 @@ import Testing
     /// the interview and not the meeting whose name you typed. The store was answering correctly
     /// the whole time; it was being asked a query nobody typed.
     ///
-    /// There is no test target for `MeetingsApp` and no way to press a key at one, so what is
-    /// checked is the shape: the setter schedules, and `runSearch` reads the field when it runs.
+    /// What is checked here is the **shape**: the setter schedules and does not read. That is one
+    /// level away from the criterion — a `scheduleSearch` that ran the read synchronously would pass
+    /// this and be the same defect under the fixed name — so the criterion itself is asserted by
+    /// `SearchSchedulingTests` in `MeetingsAppTests`, which sets the query and checks the model has
+    /// not moved by the time the setter returns. Both are worth keeping: this one names the mistake
+    /// in the place somebody would make it again.
     @Test func theSearchRunsAfterTheKeystrokeRatherThanInsideIt() throws {
         let model = try Self.source("AppModel.swift")
         let didSet = try #require(model.range(of: "var searchQuery = \"\" {"))
@@ -678,10 +701,12 @@ import Testing
         // And the one command the engine's bus has no verb for still reaches the document, because
         // an action item is the construct `meetings actions list` reads back out of the write-up.
         let editor = try Self.source("MarkdownEditor.swift")
-        #expect(editor.contains("case .taskList:") && editor.contains(#"replaceCharacters(in: caret, with: "[ ] ")"#), """
-            /todo has no verb on the MarkdownEditorBus. It asks for a bullet and types the box into \
-            the line the engine just made — through shouldChangeText/didChangeText, so it is \
-            undoable and it autosaves.
+        #expect(editor.contains("case .taskList:"), """
+            /todo has no verb on the MarkdownEditorBus, so it needs a case of its own here: it asks \
+            for a bullet and types the box into the line the engine just made. That it produces a \
+            line `meetings actions list` reads is asserted end to end by \
+            EditorMountTests.theActionCommandProducesATaskItemTheCLICanRead, which drives the real \
+            command through the real engine — this only pins that the branch still exists.
             """)
     }
 
@@ -713,15 +738,38 @@ import Testing
     /// reasoned about, and the loser is whichever one the document is not actually going through.
     /// So the transforms were deleted rather than left beside the library: `MarkdownEditing` is a
     /// catalogue and a placement rule now, and every edit is a verb posted on the engine's own bus.
+    ///
+    /// **Scanned across the whole of `MeetingsCore`, not one file.** This read only
+    /// `MarkdownEditing.swift` while `MarkdownSyntax.swift` — three hundred lines of line
+    /// classifier, inline-run scanner, marker finder and gutter measure, every one of them a second
+    /// copy of exactly what the principle below forbids — sat untouched in the same directory and
+    /// the guard passed. A guard scoped to one filename does not pin a rule; it pins that filename.
     @Test func theTypingRulesAreTheEnginesAndThereIsNoSecondCopy() throws {
-        let editing = try Self.source("MarkdownEditing.swift", in: "Sources/MeetingsCore")
-        for gone in ["func followUp(", "func toggleTask(", "func applyBlock(", "func toggle(",
-                     "func isActive(", "struct Edit"] {
-            #expect(!editing.contains(gone), """
-                \(gone) is back in MeetingsCore. The engine holds the document and applies these \
-                itself; a second implementation here is a rule that disagrees with the one running.
-                """)
+        // The whole library, so a rule cannot come back by being written somewhere else.
+        for (name, text) in try Self.coreSources() {
+            for gone in ["func followUp(", "func toggleTask(", "func applyBlock(", "func toggle(",
+                         "func isActive(", "struct Edit",
+                         // The markdown parser the deleted editor needed: what a line *is*, which of
+                         // its characters are markup, and where the gutter puts them. All of it is
+                         // inside the engine's own AST now.
+                         "func line(", "func blockMarker(", "func markers(", "func inline(",
+                         "func gutterIndent(", "enum Inline", "struct Span"] {
+                #expect(!text.contains(gone), """
+                    \(name) has \(gone) back in MeetingsCore. The engine holds the document, parses \
+                    it and applies these itself; a second implementation here is a rule that \
+                    disagrees with the one actually running, and the loser is whichever one the \
+                    document is not going through.
+                    """)
+            }
         }
+        // `taskItem` is the deliberate exception and the only one: it is not a markdown parser, it
+        // is what `meetings actions list` reads, and `MarkdownActionsTests` drives the engine's own
+        // parse against it so the two cannot drift apart unnoticed.
+        let actions = try Self.source("MarkdownActions.swift", in: "Sources/MeetingsCore")
+        #expect(actions.contains("public static func taskItem("),
+                "the CLI's definition of an action has to live with the rest of that definition")
+
+        let editing = try Self.source("MarkdownEditing.swift", in: "Sources/MeetingsCore")
         #expect(editing.contains("public static func floating("),
                 "what survives is the placement the engine ships nothing for")
         #expect(editing.contains("public static let slashCommands"),
@@ -774,12 +822,14 @@ import Testing
     ///
     /// 40rem, where a rem is the app's own body text, so it tracks the system text size instead of
     /// being right at exactly one of them. At the default that is 520 pt, about 87 characters.
+    ///
+    /// The measure itself is asserted as a **value** — `SharedFieldEditor.column` really is 40 rem of
+    /// this app's own body font — by `SharedFieldMeasureTests` in `MeetingsAppTests`. It used to be a
+    /// copy of the expression `static var column: CGFloat { 40 * MarkdownStyle.bodyFont.pointSize }`
+    /// pasted in here, which a line wrap or a rename breaks and a changed multiplier under the same
+    /// spelling does not.
     @Test func theWriteUpIsReadAtAMeasureAndTheActionsShareItsColumn() throws {
         let pane = try Self.source("PreNotesEditor.swift")
-        #expect(pane.contains("static var column: CGFloat { 40 * MarkdownStyle.bodyFont.pointSize }"), """
-            The measure is 40rem of this app's own body text. A hardcoded point size is right at \
-            one system text size and wrong at every other.
-            """)
         // `bodyEdge` is gone with the gutter it measured: the engine draws no marker column, so
         // prose starts at the column's own edge and nothing has an indent to line up with.
         #expect(!pane.contains("bodyEdge"),
@@ -906,18 +956,25 @@ import Testing
             The notes panel is hidden from screen sharing, which is a privacy feature. A menu \
             opened inside it that a Zoom share could see would be a hole in it.
             """)
-        #expect(panel.contains("window.convertToScreen(probe.convert(probe.bounds, to: nil))"), """
-            The conversion chain in full: the anchor is in probe coordinates, the probe converts to \
-            window coordinates, and the window converts to the screen the panel is framed in.
+        // The conversion chain: probe coordinates → window coordinates → screen. Each link is named
+        // rather than the whole expression copied out, because a line wrap or a rename would break a
+        // verbatim copy while an equivalent chain spelled differently is the same code. There is no
+        // value assertion behind this one: it needs a real window, and this package opens none.
+        #expect(panel.contains("convertToScreen(") && panel.contains("probe.convert(probe.bounds"), """
+            The panel is framed in screen coordinates, so the anchor has to be converted out of the \
+            probe's space through the window. Going straight from probe coordinates to a frame puts \
+            the surface the same distance the wrong side of the caret.
             """)
 
         // Which side of the caret a surface goes on is answered against the editor's **visible
         // slice**, and that slice is the window's content area converted into the probe's space.
         // Three derivations from SwiftUI's scroll view were tried and all three lied: with the page
         // scrolled 1661 pt, `HostingScrollView` reported an offset of −53.
-        #expect(editor.contains("probe.window.map { probe.convert($0.contentLayoutRect, from: nil) }"), """
+        #expect(editor.contains("contentLayoutRect"), """
             The viewport has to be the window's own content area. Everything derived from \
-            SwiftUI's scroll view described a page that was not on screen.
+            SwiftUI's scroll view described a page that was not on screen. Named rather than \
+            copied out as a whole expression: what matters is which rectangle is read, and no test \
+            can assert it as a value because reading it needs a window.
             """)
         #expect(editor.contains("?? probe.visibleRect"), """
             …with `visibleRect` still behind it for an editor with no window at all — the mount \
@@ -993,12 +1050,22 @@ import Testing
             markdown parser disagreeing with the one holding the document.
             """)
 
-        // And each editor owns its own notification names, because the engine subscribes with
+        // Each editor owns its own notification names, because the engine subscribes with
         // `object: nil`: one shared name means ⌘B in the floating notes panel also emboldens the
-        // write-up behind it.
-        #expect(editor.contains(#"Notification.Name("meetings.editor.\(id).\(verb)")"#), """
-            The bus names have to be unique per mounted editor. The engine observes them with \
-            object: nil, so a shared name is a format request delivered to every editor on screen.
+        // write-up behind it. Asserted as a value rather than as a copy of the interpolation that
+        // builds it — `MarkdownEditorBridgeTests.twoEditorsNeverShareABusName` constructs two
+        // bridges and checks the two sets of names are disjoint, which is the property; the string
+        // that used to be pinned here was one spelling of one way to get it.
+        //
+        // What that value assertion *cannot* say is that the id is not random, because a random id
+        // would pass it — and pass it every time it was run, while still being a collision nobody
+        // can reproduce when it happens. The id is the object's own address, so two live bridges
+        // cannot share one by construction rather than by 2⁻⁶⁴. An absence is the only form this
+        // can take.
+        #expect(!editor.contains("Int.random") && !editor.contains(".random("), """
+            The editor's bus id is random again. Uniqueness by luck is uniqueness that fails once, \
+            in somebody else's session, as ⌘B emboldening the wrong document — the object's address \
+            cannot collide while both bridges are alive, and it says so instead of arguing odds.
             """)
 
         // The formatting shortcuts are menu items, because the main menu is the one thing that
@@ -1020,23 +1087,69 @@ import Testing
     }
 
 
+    /// **No test in this package may put a window in front of the operator.**
+    ///
+    /// This is not a style rule. An editor harness has reached a working operator's screen twice, and
+    /// `scripts/verify.sh` now runs `MeetingsAppTests`' editor suites with `MEETINGS_LIVE_EDITOR=1`
+    /// rather than leaving 670 lines of the only coverage of the probe walk, the bus round trip and
+    /// the anchor unrun — which is only defensible while those suites build views and never a window.
+    /// They already do: an `NSHostingView` lays out off-screen, and the activation policy is
+    /// `.prohibited`. This is what keeps it true.
+    ///
+    /// An absence, deliberately — "nothing appeared on screen" cannot be asserted from inside the
+    /// process that would have shown it.
+    ///
+    /// Scoped to `MeetingsAppTests`, which is the only target that links AppKit and builds views.
+    /// `MeetingsCoreTests` opens no view at all, and this file *quotes* the very calls being banned
+    /// in order to ban them.
+    @Test func noTestOfTheAppEverOpensAWindow() throws {
+        let tests = Self.appSources.deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Tests/MeetingsAppTests")
+        let files = try FileManager.default.contentsOfDirectory(atPath: tests.path)
+            .filter { $0.hasSuffix(".swift") }
+            .sorted()
+        #expect(files.count > 3, "the app's tests moved — this guard is scanning nothing")
+
+        for file in files {
+            let text = try String(contentsOf: tests.appendingPathComponent(file), encoding: .utf8)
+            for opens in ["NSWindow(", "makeKeyAndOrderFront", "orderFront(", "orderFrontRegardless",
+                          "NSApplication.shared.run", "NSApp.run", "activate(ignoringOtherApps",
+                          "addChildWindow", "runModal", "NSPanel("] {
+                #expect(!text.contains(opens), """
+                    \(file) calls \(opens). A test that opens a window takes over the screen of \
+                    whoever is running it, and this suite is run by an operator mid-session — an \
+                    NSHostingView laid out off-screen builds the same view tree without one.
+                    """)
+            }
+        }
+        // And the suites verify.sh unlocks stay explicitly gated, so an ordinary `swift test` still
+        // builds no AppKit hierarchy at all.
+        for suite in ["EditorMountTests.swift", "ViewportProbeTests.swift"] {
+            let source = try String(contentsOf: tests.appendingPathComponent(suite), encoding: .utf8)
+            #expect(source.contains(#"environment["MEETINGS_LIVE_EDITOR"] == "1""#),
+                    "\(suite) lost its gate; a bare `swift test` now lays out AppKit views")
+            #expect(source.contains("setActivationPolicy(.prohibited)"),
+                    "\(suite) has to stay out of the Dock and out of the foreground")
+        }
+    }
+
     // MARK: - The transcription engine choice
 
     /// The API key must never reach the settings table, in either surface that collects one.
     ///
-    /// This is a shape check because the failure is a shape: `setSetting(.transcribeRemoteKeyRef,
-    /// key)` compiles perfectly and writes a secret into a plain SQLite row that `meetings config
-    /// get` will then print. The key may be handed to exactly one function.
-    @Test func theRemoteAPIKeyOnlyEverGoesToTheKeychain() throws {
+    /// **The check that this is true is `RemoteKeyStorageTests`, in `MeetingsAppTests`**: it runs the
+    /// save path against a real store and asserts the typed key is not readable from any settings
+    /// row. What used to be here was a substring scan for `setSetting(` and `, key)` on one physical
+    /// line, which caught precisely one spelling of the mistake — `setSetting(.transcribeRemoteKeyRef,
+    /// self.key)`, a wrapped call, or `key.trimmingCharacters(…)` all passed it. The production code
+    /// was right; the guard was a formatting rule wearing a security guard's clothes.
+    ///
+    /// What is left here is the one thing that is genuinely textual: the field has to be obscured,
+    /// and an obscured field is a `SecureField` and nothing else.
+    @Test func theRemoteAPIKeyFieldIsObscured() throws {
         let fields = try Self.source("RemoteTranscriptionFields.swift")
-        #expect(fields.contains("MeetingsKeychain.setSecret(key, account: keyRef)"))
-        // `key` is the secret and `keyRef` is the account name. The secret must not be written to
-        // any settings row, under any key.
-        for line in fields.components(separatedBy: "\n") where line.contains("setSetting(") {
-            #expect(!line.contains(", key)"),
-                    "the API key was written into the settings table: \(line.trimmingCharacters(in: .whitespaces))")
-        }
         #expect(fields.contains("SecureField(\"API key\""), "the key field has to stay obscured")
+        #expect(!fields.contains("TextField(\"API key\""), "…and never a plain one")
     }
 
     /// Verification is offered, is the default, and is a real request rather than a shape check.

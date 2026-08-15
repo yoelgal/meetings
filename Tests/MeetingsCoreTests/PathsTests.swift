@@ -29,14 +29,23 @@ func databaseSitsUnderRootByDefault() {
 }
 
 /// The dev bundle must not be able to reach the real store by being double-clicked.
-    ///
-    /// `scripts/dev.sh` sets `MEETINGS_HOME`, but the Dock, Spotlight, `open -a` and a relaunch
-    /// after a crash do not — and started that way the dev build opened the real store and ran a
-    /// migration the shipping build could not read, locking the installed app out of its own data.
+///
+/// `scripts/dev.sh` sets `MEETINGS_HOME`, but the Dock, Spotlight, `open -a` and a relaunch after a
+/// crash do not — and started that way the dev build opened the real store and ran a migration the
+/// shipping build could not read, locking the installed app out of its own data.
+///
+/// This used to assert `"com.yoelgal.meetings-dev".hasSuffix(".meetings-dev")`, which tests
+/// `String.hasSuffix` rather than `Paths`: the one real assertion landed on the *shipping* branch,
+/// so the dev-bundle rule the test is named for was covered by nothing.
+/// ``Paths/storeFolder(forBundle:)`` takes the identifier instead of reading it, so both branches
+/// are reachable without launching a bundle.
 @Test func theDevBundleDefaultsToItsOwnStore() {
-    // A test process has no dev bundle identifier, so it takes the shipping default.
+    #expect(Paths.storeFolder(forBundle: "com.yoelgal.meetings-dev") == "meetings-dev")
+    #expect(Paths.storeFolder(forBundle: "com.yoelgal.Meetings") == "Meetings")
+    // The CLI has no bundle at all, and a bundle that merely contains the suffix somewhere other
+    // than the end is not the dev build either.
+    #expect(Paths.storeFolder(forBundle: nil) == "Meetings")
+    #expect(Paths.storeFolder(forBundle: "com.yoelgal.meetings-dev.helper") == "Meetings")
+    // And the process running this test is not the dev bundle, so it takes the shipping store.
     #expect(Paths.defaultStoreFolder == "Meetings")
-    // The rule itself, checkable without launching a bundle.
-    #expect("com.yoelgal.meetings-dev".hasSuffix(".meetings-dev"))
-    #expect(!"com.yoelgal.Meetings".hasSuffix(".meetings-dev"))
 }

@@ -7,10 +7,10 @@ import Foundation
 /// clobbered** and the user picks keep mine / take theirs / keep both.
 ///
 /// The rule lives here rather than in the editor that renders it for the same reason
-/// ``SearchSelection`` does: `MeetingsApp` is an executable target with no test target behind it, and
-/// "the agent's write must not eat what the user was typing" is the part of that editor which is
-/// logic rather than layout. Both fields drive the same functions, so the two editors cannot answer
-/// the question differently.
+/// ``SearchSelection`` does: "the agent's write must not eat what the user was typing" is the part of
+/// that editor which is logic rather than layout, and logic in the library is reachable by the CLI
+/// and by every caller, not only by the view. Both fields drive the same functions, so the two
+/// editors cannot answer the question differently.
 public enum SharedFieldEdit {
     /// What to do with a value that arrived from the store while the editor was open.
     public enum Outcome: Sendable, Equatable {

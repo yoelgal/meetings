@@ -1,4 +1,5 @@
 import Foundation
+import MarkdownEngine
 import Testing
 
 @testable import MeetingsCore
@@ -24,13 +25,81 @@ import Testing
         }
     }
 
-    /// The lines that look like one and are not. The space after the box is the spec's, and without
-    /// it a bullet whose sentence opens with a bracket would grow a checkbox.
+    /// The lines that look like one and are not. A box needs both brackets and a space, an `x` or an
+    /// `X` between them, and a list marker in front of it — a bracket opening a sentence, or one in a
+    /// heading or a quote, is prose.
     @Test func aBulletThatMerelyStartsWithABracketIsNotAnAction() {
-        for line in ["- [x]task", "- [] task", "- [ok] task", "[ ] task", "- task",
+        for line in ["- [] task", "- [ok] task", "[ ] task", "- task",
                      "## [ ] not a list", "> [ ] quoted", "- [ ]"] {
             #expect(MarkdownActions.action(in: line) == nil, "\(line) is not an action")
         }
+    }
+
+    /// The offsets a checkbox is drawn at and a tick is applied to. `box` is the three characters of
+    /// the box itself, so `box.lowerBound + 1` is the one character that changes, and `textStart` is
+    /// where the item's own sentence begins.
+    @Test func aTaskItemSaysWhereItsBoxAndItsTextAre() throws {
+        let item = try #require(MarkdownActions.taskItem("  - [x] ship the write-up"))
+        #expect(item.done)
+        #expect(item.box == 4..<7)
+        #expect(item.textStart == 8)
+        let characters = Array("  - [x] ship the write-up")
+        #expect(String(characters[item.box]) == "[x]")
+        #expect(String(characters[item.textStart...]) == "ship the write-up")
+    }
+
+    // MARK: - The seam with the editor
+
+    /// **Two implementations of "what is a task item", held to one answer.**
+    ///
+    /// `MarkdownActions.taskItem` decides what `meetings actions list` reports. The engine decides,
+    /// independently and in its own AST, what to draw a checkbox over and what a click toggles. A
+    /// line the engine ticks that this rejects is a box the user can click that the CLI never shows —
+    /// the exact disagreement the write-up-is-the-record design exists to remove, arrived at from the
+    /// other end.
+    ///
+    /// The engine's parse is reached through ``MarkdownHTMLRenderer``, which is the same
+    /// `MarkdownAST` list-item walk the styler and the layout fragment use — it emits an
+    /// `<input type="checkbox">` for exactly the items it would draw a box on.
+    @Test func theEngineAndTheCLIAgreeAboutWhichLinesCarryACheckbox() {
+        // Every shape the two parsers could plausibly split on: the box with no space after it, a tab
+        // where a space is expected on either side of the box, ordered markers, and a quote.
+        let probes = [
+            "- [ ] x", "- [x] x", "- [X] x", "* [ ] x", "+ [ ] x",
+            "- [x]done", "-\t[ ] x", "- [ ]\tx", "  - [ ] x", "\t- [ ] x",
+            "1. [ ] x", "10. [ ] x", "2) [ ] x",
+            "> - [ ] x", "- [] x", "- [ok] x", "[ ] x", "## [ ] x", "- x [ ] y",
+        ]
+        for line in probes {
+            let drawn = MarkdownHTMLRenderer.html(from: line).contains("<input type=\"checkbox\"")
+            let read = MarkdownActions.taskItem(line) != nil
+            #expect(drawn == read, """
+                `\(line.debugDescription)`: the engine \(drawn ? "draws" : "draws no") checkbox and \
+                MarkdownActions \(read ? "reads" : "does not read") a task item. Whichever way round \
+                it is, one surface has a box the other cannot see — a checkbox the user clicks that \
+                `meetings actions list` never shows, or an action with nothing to tick.
+                """)
+        }
+    }
+
+    /// The two shapes that made this a real divergence rather than a theoretical one, kept as their
+    /// own case so a re-tightening of ``MarkdownActions/taskItem(_:)`` fails with the reason attached.
+    /// Both were drawn with a clickable checkbox and both were invisible to `meetings actions list`:
+    /// a box with no space after it, and a tab where the list marker's space goes.
+    @Test func theTwoShapesTheEngineTickedAndTheCLICouldNotSee() throws {
+        #expect(try #require(MarkdownActions.taskItem("- [x]done")).done)
+        #expect(MarkdownActions.action(in: "- [x]done")?.text == "done")
+        #expect(MarkdownActions.action(in: "-\t[ ] pick the venue")?.text == "pick the venue")
+    }
+
+    /// The box the engine hands back at the end of `/todo` is one this reads — the contract between
+    /// the write-up and the CLI, checked on the exact string the slash command produces.
+    @Test func theBoxTheSlashCommandTypesIsOneTheCLIReads() throws {
+        let item = try #require(MarkdownActions.taskItem("- [ ] "))
+        #expect(!item.done)
+        #expect(item.box == 2..<5)
+        // …and it is not yet an action, because nobody owes an empty sentence.
+        #expect(MarkdownActions.action(in: "- [ ] ") == nil)
     }
 
     /// A box being typed is a marker, but it is not yet something anybody owes — `meetings actions

@@ -115,8 +115,13 @@ struct ImportSheet: View {
     ///
     /// ponytail: read on every body pass rather than cached in `@State` — one settings row, and a
     /// cached copy is how this goes stale the next time the setting moves.
-    private var whereItIsTranscribed: String {
-        switch store.transcriptionEngine() {
+    private var whereItIsTranscribed: String { Self.whereItIsTranscribed(store.transcriptionEngine()) }
+
+    /// A function of the engine choice and nothing else, so `ImportSheetWordingTests` can ask it both
+    /// questions. As a computed property reading `@State` it was reachable only by opening the sheet,
+    /// which left the one sentence in the app that must not be wrong pinned by nothing.
+    static func whereItIsTranscribed(_ engine: TranscriptionEngineChoice) -> String {
+        switch engine {
         case .local:
             "The audio is copied into Meetings and transcribed on this Mac."
         case .cloud:

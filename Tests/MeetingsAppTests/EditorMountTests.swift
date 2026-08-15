@@ -132,7 +132,7 @@ import MeetingsCore
         bridge.choose(todo)
         try await Task.sleep(for: .milliseconds(50))
         #expect(tv.string == "- [ ] ")
-        #expect(MarkdownSyntax.taskItem(document.text) != nil, """
+        #expect(MarkdownActions.taskItem(document.text) != nil, """
             The store has to hold a line `meetings actions list` recognises — the box is the \
             contract between the write-up and the CLI, not decoration.
             """)

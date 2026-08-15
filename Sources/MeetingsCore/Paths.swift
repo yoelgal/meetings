@@ -27,11 +27,20 @@ public enum Paths {
     }
 
     /// `meetings-dev` for the dev bundle, `Meetings` for everything else.
-    static var defaultStoreFolder: String {
-        guard let id = Bundle.main.bundleIdentifier, id.hasSuffix(".meetings-dev") else {
-            return "Meetings"
-        }
-        return "meetings-dev"
+    static var defaultStoreFolder: String { storeFolder(forBundle: Bundle.main.bundleIdentifier) }
+
+    /// The rule itself, taking the identifier rather than reading it.
+    ///
+    /// Split out so both branches are reachable: a test process has no dev bundle, so a test that
+    /// only reads ``defaultStoreFolder`` exercises the shipping branch and the dev branch — the one
+    /// the isolation exists for — is covered by nothing. Asserting `"com.yoelgal.meetings-dev"
+    /// .hasSuffix(".meetings-dev")` instead tests `String.hasSuffix`, which is not this rule.
+    ///
+    /// The CLI has no bundle identifier at all and takes the shipping store, which is correct: it is
+    /// the same binary whichever bundle is running, and `scripts/dev.sh` points it with
+    /// `MEETINGS_HOME` when it wants the dev store.
+    static func storeFolder(forBundle id: String?) -> String {
+        id?.hasSuffix(".meetings-dev") == true ? "meetings-dev" : "Meetings"
     }
 
     /// `$MEETINGS_DB`, else `<root>/store.db`. The app exports this to the Mode-B agent process so a

@@ -128,15 +128,38 @@ struct RemoteTranscriptionFields: View {
         }
     }
 
-    /// The key never enters the settings table. The row holds the account name; this writes the
-    /// secret to the Keychain under it, picking a name when the user has not.
     private func saveKey() {
         guard !key.isEmpty else { return }
-        if keyRef.isEmpty {
-            keyRef = Self.defaultKeyRef
-            try? store.setSetting(.transcribeRemoteKeyRef, keyRef)
-        }
-        MeetingsKeychain.setSecret(key, account: keyRef)
+        keyRef = Self.save(key: key, under: keyRef, in: store)
         key = ""
+    }
+
+    /// **The key never enters the settings table.** The row holds the Keychain *account name*; this
+    /// writes the secret under it, picking a name when the user has not, and hands the name back so
+    /// the field shows what was chosen.
+    ///
+    /// A function rather than four lines inside the view's `@State`, because "the secret is not in
+    /// the store afterwards" is then a property of the store that a test can read. It was guarded by
+    /// a substring scan of this file for a `setSetting(` call ending `, key)` on one physical line —
+    /// which `setSetting(.transcribeRemoteKeyRef, self.key)`, a wrapped call, or a trimmed copy of
+    /// the same variable all walk straight past. The guard, not the code, was the defect; see
+    /// `RemoteKeyStorageTests`, which runs this and then asks the store.
+    ///
+    /// `keychain` is injectable for exactly one reason: a test that ran the real write would put the
+    /// operator's login Keychain in the blast radius of `swift test`.
+    static func save(
+        key: String,
+        under keyRef: String,
+        in store: MeetingStore,
+        keychain: (String, String) -> Void = { MeetingsKeychain.setSecret($0, account: $1) }
+    ) -> String {
+        guard !key.isEmpty else { return keyRef }
+        var account = keyRef
+        if account.isEmpty {
+            account = defaultKeyRef
+            try? store.setSetting(.transcribeRemoteKeyRef, account)
+        }
+        keychain(key, account)
+        return account
     }
 }

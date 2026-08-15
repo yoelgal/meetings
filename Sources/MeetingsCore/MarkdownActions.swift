@@ -8,8 +8,15 @@ import Foundation
 /// keep in step with the document somebody is reading, which is what the `actions` JSON column was
 /// and why ticking a box in the window could disagree with what `meetings actions set` had written.
 ///
-/// It lives beside ``MarkdownSyntax`` for the same reason that does: what counts as an action is a
-/// pure function over a string, and it is asked by the CLI, the app and the store migration alike.
+/// It lives in `MeetingsCore` because what counts as an action is a pure function over a string, and
+/// it is asked by the CLI, the app and the store migration alike.
+///
+/// This file used to sit beside a `MarkdownSyntax` enum that classified lines, found inline runs and
+/// measured a gutter for the hand-built editor. That editor is gone — `swift-markdown-engine` owns
+/// the document, its styling and its checkbox — and with it every one of those functions. What
+/// survived is ``taskItem(_:)``, which is not a markdown parser: it is this file's own definition of
+/// the one construct the CLI reads back out of a write-up, and it now lives where that definition
+/// belongs.
 ///
 /// **Owner and due are not represented here yet.** ``Action`` still carries them — the JSON shape
 /// the CLI emits has not changed — but nothing writes them into the markdown and nothing reads them
@@ -30,7 +37,7 @@ public enum MarkdownActions {
 
     /// One line's action, or nil if the line is not a task list item.
     public static func action(in line: some StringProtocol) -> Action? {
-        guard let item = MarkdownSyntax.taskItem(line) else { return nil }
+        guard let item = taskItem(line) else { return nil }
         let text = String(Array(line)[item.textStart...]).trimmingCharacters(in: .whitespaces)
         // A box with nothing after it is an item being typed, not something anybody owes.
         guard !text.isEmpty else { return nil }
@@ -66,7 +73,7 @@ public enum MarkdownActions {
     /// Whether any line of the document is a task list item.
     public static func carriesActions(_ markdown: String) -> Bool {
         markdown.split(separator: "\n", omittingEmptySubsequences: false)
-            .contains { MarkdownSyntax.taskItem($0) != nil }
+            .contains { taskItem($0) != nil }
     }
 
     /// The document with its task list rewritten to `actions`, and **nothing else touched**.
@@ -91,7 +98,7 @@ public enum MarkdownActions {
     /// heading — see ``appending(_:to:)``, which is the same operation the store migration runs.
     public static func replace(_ actions: [Action], in markdown: String) -> String {
         let lines = markdown.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
-        let items = lines.indices.filter { MarkdownSyntax.taskItem(lines[$0]) != nil }
+        let items = lines.indices.filter { taskItem(lines[$0]) != nil }
         guard let last = items.last else { return appending(actions, to: markdown) }
         let list = meaningful(actions)
 
@@ -110,7 +117,7 @@ public enum MarkdownActions {
     /// replacing — `  * [ ] x` stays two spaces in and a `*`, because the shape of the list is the
     /// author's and only the box and the sentence belong to `actions set`.
     private static func written(_ action: Action, like line: String) -> String {
-        guard let item = MarkdownSyntax.taskItem(line) else { return rendered(action) }
+        guard let item = taskItem(line) else { return rendered(action) }
         return String(Array(line)[..<item.box.lowerBound]) + "[\(action.done ? "x" : " ")] \(action.text)"
     }
 
@@ -142,5 +149,77 @@ public enum MarkdownActions {
         let block = "## Actions\n\n" + missing.map(rendered(_:)).joined(separator: "\n")
         let existing = markdown.trimmingCharacters(in: .whitespacesAndNewlines)
         return existing.isEmpty ? block : existing + "\n\n" + block
+    }
+
+    // MARK: - What a task item is
+
+    /// One **GFM task list item**: `- [ ] text`, `* [x] text`, `+ [ ] text`, `1. [ ] text`, at any
+    /// indentation, with the `x` in either case.
+    ///
+    /// This is the offsets half of ``action(in:)`` — where the box is and where the sentence starts —
+    /// and it is separate from it because a box with no text is still a box: the app has to be able
+    /// to see the item somebody is half-way through typing, and `action(in:)` deliberately cannot.
+    public struct TaskItem: Equatable, Sendable {
+        /// `[x]` or `[X]` rather than `[ ]`.
+        public let done: Bool
+        /// The three characters of the box, as character offsets into the line. This is what a
+        /// checkbox is drawn over, and `box.lowerBound + 1` is the one character a tick changes.
+        public let box: Range<Int>
+        /// Where the item's own text begins — past the box and the whitespace after it.
+        public let textStart: Int
+
+        public init(done: Bool, box: Range<Int>, textStart: Int) {
+            self.done = done
+            self.box = box
+            self.textStart = textStart
+        }
+    }
+
+    /// **The seam with the editor.** `swift-markdown-engine` decides independently which lines get a
+    /// drawn checkbox, and a line it ticks that this rejects is a box the user can click that
+    /// `meetings actions list` never shows. `MarkdownActionsTests` drives the engine's own parse
+    /// against this function to keep the two in step; where they cannot agree, this comment says
+    /// which side wins.
+    ///
+    /// **The engine wins**, and two rules moved to make that true. This was GFM-strict where the
+    /// engine is not: it demanded a space between the list marker and the box (a tab would do in the
+    /// engine) and whitespace or end-of-line *after* the box (the engine wants neither). So
+    /// `- [x]done` and `-\t[ ] x` were both drawn with a clickable checkbox and both invisible to
+    /// `meetings actions list`. Strictness is the wrong instinct here: the box on screen is the thing
+    /// the user pressed, so the box on screen is the action.
+    ///
+    /// The two parsers now agree on every shape probed, quotes and malformed boxes included. Nothing
+    /// makes them agree by construction, which is why the test drives the engine rather than trusting
+    /// this comment.
+    public static func taskItem(_ line: some StringProtocol) -> TaskItem? {
+        let characters = Array(line)
+        let indent = characters.prefix { $0 == " " || $0 == "\t" }.count
+        let rest = characters[indent...]
+        guard let first = rest.first else { return nil }
+
+        var end: Int
+        if first == "-" || first == "*" || first == "+" {
+            end = indent + 1
+        } else {
+            let digits = rest.prefix(while: \.isNumber).count
+            guard digits > 0, digits <= 3, indent + digits < characters.count,
+                  characters[indent + digits] == "." || characters[indent + digits] == ")"
+            else { return nil }
+            end = indent + digits + 1
+        }
+        // The list marker's own whitespace, then the box.
+        guard end < characters.count, characters[end] == " " || characters[end] == "\t" else { return nil }
+        let box = end + 1
+        guard box + 2 < characters.count, characters[box] == "[", characters[box + 2] == "]"
+        else { return nil }
+        let done: Bool
+        switch characters[box + 1] {
+        case " ": done = false
+        case "x", "X": done = true
+        default: return nil
+        }
+        var text = box + 3
+        while text < characters.count, characters[text] == " " || characters[text] == "\t" { text += 1 }
+        return TaskItem(done: done, box: box..<(box + 3), textStart: text)
     }
 }

@@ -24,9 +24,9 @@ public struct SearchHit: Sendable, Identifiable {
 
 /// Where the keyboard is in a list of hits.
 ///
-/// It lives beside `SearchHit` rather than in the window because `MeetingsApp` is an executable
-/// target with no test target behind it, and "the down arrow at the last row must not run off the
-/// end" is the one part of the ⌘K palette that is logic rather than layout.
+/// It lives beside `SearchHit` rather than in the window because "the down arrow at the last row
+/// must not run off the end" is the one part of the ⌘K palette that is logic rather than layout, and
+/// logic beside the hits is answered the same way whoever is asking.
 public enum SearchSelection {
     /// Clamped, never wrapping. Wrapping from the last row back to the first means holding the down
     /// arrow quietly re-highlights the top hit, and Return then opens a meeting nobody was reading.
