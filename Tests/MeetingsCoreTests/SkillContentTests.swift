@@ -97,4 +97,20 @@ import Testing
             #expect(skill.contains(command), "\(command) is not documented")
         }
     }
+
+    /// `meetings fit` picks the model every future meeting is transcribed with, and it is registered
+    /// in the CLI — a command reference that omits it is a command reference an agent cannot trust
+    /// to be the whole surface. What it costs to run has to be there too, since it downloads models.
+    @Test func documentsTheFitCommandAndWhatItCosts() {
+        #expect(skill.contains("meetings fit"))
+        #expect(skill.contains("--rerun"))
+        #expect(skill.contains("downloads candidate models"))
+    }
+
+    /// `actions set` rewrites task items where they stand. An agent that believes it can send the
+    /// list in any order will overwrite one item with another, so the ordering rule is asserted.
+    @Test func saysActionsSetRewritesItemsInPlaceAndInOrder() {
+        #expect(skill.contains("rewrites the nth `- [ ]` line of the document"))
+        #expect(skill.contains("in the order `meetings actions list` gave them"))
+    }
 }

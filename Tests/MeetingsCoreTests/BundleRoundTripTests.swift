@@ -349,6 +349,80 @@ enum BundleFixture {
         }
     }
 
+    /// A bundle written before the write-up became the record — a populated `actions.json` beside a
+    /// `summary.md` with no task items in it — is what 0.1.2 exported, and it is the only shape the
+    /// v6 migration can never reach: that migration runs once per store at upgrade time and never
+    /// revisits a row imported afterwards. Writing `actions.json` straight into the column left the
+    /// actions where the app, `meetings show` and `actions list` have all stopped looking.
+    @Test func aPreV6BundlesActionsLandInTheWriteUp() throws {
+        let meeting = try store.createMeeting(Meeting(
+            title: "Torch0 sync",
+            state: .complete,
+            startedAt: BundleFixture.start,
+            summary: "# Decisions\n\nShip Torch0 on Friday."  // No task items: 0.1.2 kept them apart.
+        ))
+        let bundle = try MeetingBundle.export(meeting, store: store, to: directory)
+        #expect(!BundleFixture.tree(bundle).contains(MeetingBundle.File.actions),
+                "this build derives actions.json from the write-up, which carries none")
+        try Data(#"[{"text":"Send the numbers","owner":"Sofia","due":"Friday","done":false},"#
+            .appending(#"{"text":"Book the follow-up","owner":null,"due":null,"done":true}]"#).utf8)
+            .write(to: bundle.appendingPathComponent(MeetingBundle.File.actions))
+
+        let elsewhere = try TestStore.makeDirectory()
+        defer { TestStore.remove(elsewhere) }
+        let restoredStore = try TestStore.open(elsewhere)
+        let result = try MeetingBundle.restore(at: bundle, into: restoredStore)
+        let restored = try #require(try restoredStore.meeting(id: result.meeting.id))
+
+        let actions = MarkdownActions.parse(restored.summary ?? "")
+        #expect(actions.map(\.text) == ["Send the numbers", "Book the follow-up"])
+        #expect(actions.map(\.done) == [false, true])
+        #expect(restored.summary?.hasPrefix("# Decisions\n\nShip Torch0 on Friday.") == true,
+                "the write-up that was there is not rewritten, only added to")
+        // The column is still kept, unchanged, for the reason the migration keeps it: it is the only
+        // place `owner` and `due` survive, and nothing else can recover them.
+        #expect(restored.actions?.map(\.owner) == ["Sofia", nil])
+    }
+
+    /// The same bundle with no write-up at all: the actions become one, and a meeting whose write-up
+    /// is its action list is written up — the rule ``Meeting/setSummary(_:)`` states and the v6
+    /// migration restates. A `ready` row carrying a write-up is a state the rest of the app does not
+    /// expect to see.
+    @Test func aPreV6BundleWithNoWriteUpGetsOneAndMovesOn() throws {
+        let meeting = try store.createMeeting(Meeting(
+            title: "Coffee with Sofia", state: .ready, startedAt: BundleFixture.start))
+        let bundle = try MeetingBundle.export(meeting, store: store, to: directory)
+        try Data(#"[{"text":"Send the numbers","owner":null,"due":null,"done":false}]"#.utf8)
+            .write(to: bundle.appendingPathComponent(MeetingBundle.File.actions))
+
+        let elsewhere = try TestStore.makeDirectory()
+        defer { TestStore.remove(elsewhere) }
+        let restoredStore = try TestStore.open(elsewhere)
+        let result = try MeetingBundle.restore(at: bundle, into: restoredStore)
+        let restored = try #require(try restoredStore.meeting(id: result.meeting.id))
+
+        #expect(restored.summary == "## Actions\n\n- [ ] Send the numbers")
+        #expect(restored.state == .complete)
+    }
+
+    /// `actions.json` is the write-up's task items, not the legacy column beside it. The column is
+    /// never rewritten after v6, so exporting it produced a file contradicting the `summary.md` next
+    /// to it the moment somebody edited their write-up in the app.
+    @Test func theExportedActionsAreTheWriteUpsOwn() throws {
+        var meeting = try BundleFixture.loadedMeeting(in: store)
+        // The write-up is edited after the migration, exactly as the app lets the user do; the
+        // column keeps saying what it said in 0.1.2.
+        meeting = try store.updateMeeting(id: meeting.id) {
+            $0.summary = "## Actions\n\n- [x] Send the ptychography numbers\n- [ ] Chase the invoice"
+        }
+        let bundle = try MeetingBundle.export(meeting, store: store, to: directory)
+        let exported = try #require(try MeetingBundle.read(at: bundle).actions)
+        #expect(exported.map(\.text) == ["Send the ptychography numbers", "Chase the invoice"])
+        #expect(exported.map(\.done) == [true, false])
+        #expect(meeting.actions?.map(\.text) == ["Send the ptychography numbers", "Book the follow-up"],
+                "the column is untouched — it just stopped being what the bundle carries")
+    }
+
     /// Absence stays absence: a whole transcript writes no `issues.json`, so every bundle this build
     /// produces for a healthy meeting is byte-identical to the ones the previous build produced.
     @Test func aWholeTranscriptWritesNoIssuesFile() throws {

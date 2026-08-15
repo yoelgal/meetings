@@ -243,6 +243,13 @@ A `cal:` ref is fine here. The write materialises the row.
    leaves every other line of it alone. It replaces the whole list, so include the ones already
    there that still stand — read them from `meetings show <ref> --json` first.
 
+   The nth item you send rewrites the nth `- [ ]` line of the document, where it stands and with its
+   own indentation: a sub-checklist nested under a decision stays nested, and a checkbox the user
+   typed under "Open questions" is still under "Open questions" afterwards. Send fewer items than
+   the document has and the leftover lines go; send more and the extras land after the last one. So
+   send them in the order `meetings actions list` gave them, or you will rewrite one item over
+   another.
+
    `owner` and `due` are still in the JSON shape and are still accepted, but **nothing stores them
    yet**: the markdown has nowhere to put them. They come back null. If who owes an action matters,
    write it into the text — `- [ ] Sofia: confirm the March timeline`.
@@ -338,7 +345,7 @@ meetings prenotes set <ref> [<text>|--file <path>|-]     # replace
 meetings note add <ref> <text> [--at <offset>]           # live notes, anchored to the transcript
 meetings note list <ref>
 meetings summary set <ref> [--file <path>|-]
-meetings actions set <ref> [--file <path>|-]              # rewrites the `- [ ]` lines of the write-up
+meetings actions set <ref> [--file <path>|-]              # rewrites the `- [ ]` lines of the write-up, in place
 meetings actions list [--open] [--folder <name>]          # the task items, across every meeting
 meetings folder list|create|delete <name> [--force]       # --force: delete a folder that holds meetings
 meetings move <ref> --folder <name>
@@ -354,6 +361,7 @@ meetings create --title <t> --date <d> [--duration <n>] [--folder <name>] [--att
                 [--source imported]
 meetings import <bundle> [--folder <name>] [--dry-run]
 meetings backup [--out <path>]
+meetings fit [--rerun] [--dry-run] [--cap <seconds>]      # measure which model this Mac runs well, and select it
 meetings skill install [--dry-run]
 ```
 
@@ -363,6 +371,10 @@ Time formats accepted anywhere an offset is: `12:30`, `1:05:00`, `12m`, `750s`, 
 `--out` on `export` is the **directory** to write into, not the name of the thing written. The path
 that was actually created is what the command prints, so `BUNDLE=$(meetings export <ref> --out /tmp)`
 gives you something `meetings import` can take.
+
+`meetings fit` downloads candidate models and measures them, which takes minutes and changes the
+model every future meeting is transcribed with. Run it when the user asks for it; `meetings fit
+--dry-run` reports what would be tried and downloads nothing.
 
 ## States
 

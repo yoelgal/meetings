@@ -14,12 +14,12 @@ import Foundation
 ///   notes.json         live notes with their anchors
 ///   prenotes.md
 ///   summary.md         only when there is a summary
-///   actions.json       only when the actions column is not NULL
+///   actions.json       the write-up's task items, only when it has any
 ///   issues.json        only when a channel failed; what is missing from the transcript
 ///   audio/             only with --with-audio
 /// ```
 ///
-/// Three shapes are load-bearing for the round trip:
+/// Five shapes are load-bearing for the round trip:
 ///
 /// 1. **A note's anchor travels as an *index* into `transcript.json`, never as a segment id.**
 ///    Segment ids are AUTOINCREMENT and are reassigned on import, so an exported id points at
@@ -35,7 +35,14 @@ import Foundation
 ///    whole one at the exact moment the data moved machines — undoing the fix at the worst possible
 ///    point, since the receiving machine has no other way to find out.
 ///
-/// Optional-but-empty is preserved as absence: a NULL `actions` column writes no `actions.json`
+/// 5. **`actions.json` is the write-up's task items**, derived on export and merged back into the
+///    write-up on import — never the legacy `actions` column, which stopped being the record at
+///    schema v6 and is never rewritten. Exporting the column produced a file that disagreed with the
+///    `summary.md` beside it; importing into the column stranded the actions somewhere nothing reads.
+///    The file stays in the format, and at schema 1, so a build from before the migration still
+///    imports these bundles and still finds the actions where it looks for them.
+///
+/// Optional-but-empty is preserved as absence: a write-up with no task items writes no `actions.json`
 /// and a NULL summary writes no `summary.md`, so a re-export of an imported bundle is byte-identical
 /// rather than turning NULL into `[]` or `""`.
 public enum MeetingBundle {
@@ -261,7 +268,17 @@ public enum MeetingBundle {
         if let summary = meeting.summary {
             try Data(summary.utf8).write(to: directory.appendingPathComponent(File.summary))
         }
-        if let actions = meeting.actions {
+        // Read out of the write-up, not out of the `actions` column beside it. The column stopped
+        // being the record at v6 and is never rewritten again, so exporting it produced an
+        // `actions.json` that contradicted the `summary.md` next to it the moment somebody edited
+        // their write-up — the file said one thing, the document said another, and the reader had no
+        // way to know which was current.
+        //
+        // Derived rather than dropped so the format stays at schema 1: a build that predates the
+        // migration reads this bundle exactly as it always did, and what it puts in its column now
+        // agrees with the summary it puts beside it.
+        let actions = MarkdownActions.parse(meeting.summary ?? "")
+        if !actions.isEmpty {
             try write(actions, to: directory.appendingPathComponent(File.actions))
         }
         // Written only when there is something to say, so the overwhelming majority of bundles are

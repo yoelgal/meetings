@@ -25,12 +25,15 @@ struct ActionsSet: AsyncParsableCommand {
             or as - to read stdin. text is required and done defaults to false.
 
             The actions are stored as GFM task list items in the write-up itself, so this rewrites \
-            the `- [ ]` lines of the summary and leaves every other line of it alone. With no task \
-            list there yet, one is appended under an "## Actions" heading. An empty array removes \
-            the task items and nothing else.
+            the `- [ ]` lines of the summary and leaves every other line of it alone. The nth item \
+            you send rewrites the nth one in the document, where it stands and with its own \
+            indentation, so send them in the order `actions list` gave them; extras land after the \
+            last one and leftovers are deleted. With no task list there yet, one is appended under \
+            an "## Actions" heading. An empty array removes the task items and nothing else.
 
             owner and due are accepted and echoed back in --json, but the markdown has nowhere to \
-            put them yet, so neither is stored. Write the owner into the text if it matters.
+            put them yet, so neither is stored: --json names them in droppedFields when you send \
+            one. Write the owner into the text if it matters.
             """
     )
 
@@ -61,15 +64,23 @@ struct ActionsSet: AsyncParsableCommand {
             let folder = try updated.folderID.flatMap { try context.store.folder(id: $0)?.name }
             let stored = MarkdownActions.parse(updated.summary ?? "")
 
+            // Said once, on the write that would have dropped them, rather than left for the user to
+            // notice missing from `actions list` a week later. Worked out before the `--json` branch
+            // and reported inside it: `--json` is the agent-facing path, and an agent that sent an
+            // owner got back the reparsed markdown with `"owner": null` and nothing to distinguish
+            // "you asked for no owner" from "the owner you sent went nowhere".
+            var dropped: [String] = []
+            if actions.contains(where: { $0.owner != nil }) { dropped.append("owner") }
+            if actions.contains(where: { $0.due != nil }) { dropped.append("due") }
+
             if global.json {
                 var result = WriteResultJSON(updated, folder: folder, materialised: materialised)
                 result.actions = stored
+                result.droppedFields = dropped.isEmpty ? nil : dropped
                 try Out.json(result)
                 return
             }
-            // Said once, on the write that would have dropped them, rather than left for the user to
-            // notice missing from `actions list` a week later.
-            if actions.contains(where: { $0.owner != nil || $0.due != nil }) {
+            if !dropped.isEmpty {
                 Out.note("owner and due are not stored yet — the write-up carries the text only.")
             }
             let open = stored.filter { !$0.done }.count

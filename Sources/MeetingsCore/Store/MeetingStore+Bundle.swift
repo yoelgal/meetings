@@ -194,11 +194,32 @@ extension MeetingStore {
             }
         }
 
+        // The same move ``Schema/actionsIntoTheWriteUp(_:)`` makes, for the same reason: the
+        // write-up is the record, and nothing reads the `actions` column any more. That migration
+        // runs once per store at upgrade time and never revisits a row imported afterwards, so a
+        // bundle written by a build that predates it — a populated `actions.json` beside a
+        // `summary.md` with no task items — landed with its actions in a column the app, `meetings
+        // show` and `actions list` have all stopped looking at. `appending` is idempotent, so a
+        // bundle whose write-up already carries them is left exactly as it was found.
+        //
+        // The column is still written, unchanged, for the reason the migration keeps it: it is the
+        // only place `owner` and `due` survive, and a merge nobody can undo is not a merge worth
+        // making. Nothing reads it, and export no longer carries it.
+        var summary = contents.summary
+        var state = row.state
+        if let actions = contents.actions, !actions.isEmpty {
+            let merged = MarkdownActions.appending(actions, to: summary ?? "")
+            // A meeting whose write-up is its action list is written up — ``Meeting/setSummary(_:)``'s
+            // rule, restated here for the same reason the migration restates it.
+            if summary == nil, !merged.isEmpty, state == .ready { state = .complete }
+            summary = merged.isEmpty ? summary : merged
+        }
+
         let meeting = Meeting(
             id: displaced ? UUID().uuidString : row.id,
             folderID: folderID,
             title: row.title,
-            state: row.state,
+            state: state,
             calendarEventID: row.calendarEventId,
             scheduledStart: row.scheduledStart,
             scheduledEnd: row.scheduledEnd,
@@ -206,7 +227,7 @@ extension MeetingStore {
             endedAt: row.endedAt,
             attendees: row.attendees,
             preNotes: contents.preNotes,
-            summary: contents.summary,
+            summary: summary,
             actions: contents.actions,
             audioPath: nil,
             audioPurgedAt: row.audioPurgedAt,

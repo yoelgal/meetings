@@ -128,6 +128,63 @@ import Testing
         #expect(MarkdownActions.replace([], in: summary) == "# Standup\n\n## Actions\n\n\nThe end.")
     }
 
+    /// The structure the user typed is the user's. `parse` reads task items from anywhere in the
+    /// document, and `replace` used to delete every one of them and re-emit the list at the first
+    /// one's position — so a sub-checklist nested under a decision, and a checkbox typed under
+    /// "Open questions", were both hoisted into the Actions block and flattened to top level. Each
+    /// item is rewritten where it stands instead, wearing its own indentation and marker.
+    @Test func replacingRewritesEachItemWhereItStandsRatherThanHoistingThem() {
+        let summary = """
+            # Standup
+
+            We agreed to ship on Friday.
+
+            - [ ] check the numbers
+              * [x] nested under the decision
+
+            ## Open questions
+
+            - [ ] does the column stay
+            """
+        let rewritten = MarkdownActions.replace(
+            [
+                Action(text: "check the numbers again"),
+                Action(text: "nested, still nested", done: true),
+                Action(text: "does the column stay"),
+            ],
+            in: summary
+        )
+        #expect(rewritten == """
+            # Standup
+
+            We agreed to ship on Friday.
+
+            - [ ] check the numbers again
+              * [x] nested, still nested
+
+            ## Open questions
+
+            - [ ] does the column stay
+            """)
+    }
+
+    /// The round trip `meetings actions set` is documented for: `actions list` reads every task item
+    /// in the document, so writing that same list straight back has to reproduce the document.
+    @Test func writingBackWhatWasReadReproducesTheDocument() {
+        let summary = "# Standup\n\n- [ ] one\n  + [x] two\n\n## Later\n\n1. [ ] three"
+        #expect(MarkdownActions.replace(MarkdownActions.parse(summary), in: summary) == summary)
+    }
+
+    /// More items than the document has: the extras land after the last existing one rather than
+    /// starting a second list somewhere else.
+    @Test func extraItemsLandAfterTheLastExistingOne() {
+        let summary = "## Actions\n\n- [ ] one\n\nThe end."
+        let rewritten = MarkdownActions.replace(
+            [Action(text: "one"), Action(text: "two"), Action(text: "three", done: true)], in: summary
+        )
+        #expect(rewritten == "## Actions\n\n- [ ] one\n- [ ] two\n- [x] three\n\nThe end.")
+    }
+
     @Test func aWriteUpWithNoTaskListGainsOneUnderAHeading() {
         let rewritten = MarkdownActions.replace([Action(text: "ship it", done: true)], in: "# Standup\n\nWe shipped.")
         #expect(rewritten == "# Standup\n\nWe shipped.\n\n## Actions\n\n- [x] ship it")
@@ -170,6 +227,20 @@ import Testing
     @Test func anActionAlreadyInTheDocumentIsNotDuplicated() {
         let summary = "# Standup\n\n- [ ] something the user typed\n- [x] one"
         #expect(MarkdownActions.appending([Action(text: "one")], to: summary) == summary)
+    }
+
+    /// Two commitments that happen to read the same are two commitments. Matching by presence
+    /// rather than by count collapsed a column holding `follow up` twice into one line, and the
+    /// migration runs once over a real store with nothing to surface the loss.
+    @Test func duplicateActionsInTheOldColumnBothSurviveTheMigration() {
+        let actions = [
+            Action(text: "follow up", owner: "Sofia", done: false),
+            Action(text: "follow up", owner: "Will", done: true),
+        ]
+        let once = MarkdownActions.appending(actions, to: "# Standup")
+        #expect(MarkdownActions.parse(once).map(\.text) == ["follow up", "follow up"])
+        // And still idempotent: a re-run finds two already there and adds neither.
+        #expect(MarkdownActions.appending(actions, to: once) == once)
     }
 
     @Test func noActionsMeansNoHeading() {

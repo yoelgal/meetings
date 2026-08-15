@@ -24,7 +24,8 @@ git clone https://github.com/yoelgal/meetings.git && cd meetings && ./install.sh
 
 A local-first meeting recorder and note-taker for macOS. It records your microphone and your Mac's
 audio as two separate tracks, which is what tells you apart from everyone else in the transcript. It
-transcribes them on device. Every note you type is anchored to the moment in the conversation you
+transcribes them on device by default, and can be pointed at a remote endpoint instead if you would
+rather. Every note you type is anchored to the moment in the conversation you
 typed it.
 
 There are no prompts inside the app and no account. Write-ups happen in your own coding agent,
@@ -128,7 +129,7 @@ says so and everything else works normally.
 
 ## What leaves your machine
 
-Four things, and no others. There is no telemetry and no account.
+Five things, and no others. There is no telemetry and no account.
 
 1. **The speech models**, downloaded once from FluidAudio on first transcription. After that the app
    transcribes offline.
@@ -138,8 +139,13 @@ Four things, and no others. There is no telemetry and no account.
    endpoint you set. Off by default.
 4. **Local agent mode**, if you configure it. This runs your own coding agent on your transcript.
    Whether that stays on the machine depends on the agent, and most of them do not.
+5. **Remote transcription**, if you choose it. The audio of every meeting is uploaded to the endpoint
+   you configure. Nothing else about Meetings changes — notes, search and your write-up stay on this
+   Mac — but the recordings themselves leave it. Off unless you pick it; on-device transcription is
+   the other choice, and the first-run wizard asks.
 
-Recordings, transcripts and notes are never uploaded by the app itself.
+Unless you turn one of those last three on, nothing about a meeting leaves this Mac: the app uploads
+no recording, transcript or note of its own accord.
 
 ## Rebuilding re-asks for permissions, and how to stop it
 

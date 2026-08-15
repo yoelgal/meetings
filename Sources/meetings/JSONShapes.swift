@@ -153,6 +153,11 @@ struct WriteResultJSON: Encodable {
     /// the one case where the edit lands and the vocabulary half of it does not. Absent otherwise,
     /// so an agent that never asks for a term never sees the key.
     var vocabularyRefused: String?
+    /// The fields of the request that were accepted and not stored — `["owner", "due"]` from
+    /// `actions set`, whose markdown has nowhere to put either yet. Absent when everything sent was
+    /// written, so an agent that sends neither never sees the key. Without it the response echoed
+    /// back `"owner": null` and read as a successful write of what was sent, minus two fields.
+    var droppedFields: [String]?
 
     init(_ meeting: Meeting, folder: String?, materialised: Bool) {
         self.meeting = MeetingJSON(meeting, folder: folder)
@@ -210,11 +215,15 @@ struct ActionItemJSON: Encodable {
     /// `owner` and `due` are written even when they are nothing, for the same reason ``Action``
     /// writes them: the markdown does not carry either yet, and a key that vanishes is a shape
     /// change to whatever is reading this.
+    ///
+    /// `folder` is the opposite case and is written the way the synthesised encoding wrote it —
+    /// omitted when there is none — because an unfiled meeting has never carried the key and adding
+    /// it here would be a wire-format change nobody asked for.
     func encode(to encoder: any Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(ref, forKey: .ref)
         try container.encode(meeting, forKey: .meeting)
-        try container.encode(folder, forKey: .folder)
+        try container.encodeIfPresent(folder, forKey: .folder)
         try container.encode(text, forKey: .text)
         try container.encode(owner, forKey: .owner)
         try container.encode(due, forKey: .due)

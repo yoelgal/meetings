@@ -73,24 +73,45 @@ public enum MarkdownActions {
     ///
     /// This is what `meetings actions set` does now that the write-up is the record, and the rule it
     /// has to obey is that the rest of the write-up survives: an agent replacing three action items
-    /// must not take the decisions and the open questions with them. So the existing task items are
-    /// removed line by line, the new list goes in where the first of them was, and every other line
-    /// of the document is left exactly as it was found.
+    /// must not take the decisions and the open questions with them.
+    ///
+    /// **Each item is rewritten where it stands.** The nth task item of the document becomes the nth
+    /// action, in place, keeping its own indentation and list marker; a shorter list deletes the
+    /// leftover lines and a longer one adds its extras after the last existing item. Collecting
+    /// every match at the position of the first one looked equivalent and was not — ``parse(_:)``
+    /// reads task items from anywhere in the document, so a nested sub-checklist, or one the author
+    /// typed under "Open questions", was hoisted into the Actions block and flattened to top level
+    /// by ``rendered(_:)``. That is structure the user typed, and `actions set` does not own it.
+    ///
+    /// Rewriting positionally is also what makes the round trip safe: `actions list` reads every
+    /// task item in the document, so writing that same list straight back has to reproduce the
+    /// document rather than rearrange it.
     ///
     /// With no task items in the document already, the list is appended under an `## Actions`
     /// heading — see ``appending(_:to:)``, which is the same operation the store migration runs.
     public static func replace(_ actions: [Action], in markdown: String) -> String {
         let lines = markdown.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
-        guard let first = lines.firstIndex(where: { MarkdownSyntax.taskItem($0) != nil }) else {
-            return appending(actions, to: markdown)
+        let items = lines.indices.filter { MarkdownSyntax.taskItem(lines[$0]) != nil }
+        guard let last = items.last else { return appending(actions, to: markdown) }
+        let list = meaningful(actions)
+
+        // nil means "leave the line alone"; an empty array means "the item that was here is gone".
+        var rewritten: [Int: [String]] = [:]
+        for (position, index) in items.enumerated() {
+            rewritten[index] = position < list.count ? [written(list[position], like: lines[index])] : []
         }
-        let list = meaningful(actions).map(rendered(_:))
-        var rebuilt: [String] = []
-        for (index, existing) in lines.enumerated() {
-            if index == first { rebuilt.append(contentsOf: list) }
-            if MarkdownSyntax.taskItem(existing) == nil { rebuilt.append(existing) }
+        if list.count > items.count {
+            rewritten[last, default: []] += list[items.count...].map { written($0, like: lines[last]) }
         }
-        return rebuilt.joined(separator: "\n")
+        return lines.indices.flatMap { rewritten[$0] ?? [lines[$0]] }.joined(separator: "\n")
+    }
+
+    /// One action written as a task item, wearing the indentation and list marker of the line it is
+    /// replacing — `  * [ ] x` stays two spaces in and a `*`, because the shape of the list is the
+    /// author's and only the box and the sentence belong to `actions set`.
+    private static func written(_ action: Action, like line: String) -> String {
+        guard let item = MarkdownSyntax.taskItem(line) else { return rendered(action) }
+        return String(Array(line)[..<item.box.lowerBound]) + "[\(action.done ? "x" : " ")] \(action.text)"
     }
 
     /// The actions added to the end of the document under an `## Actions` heading.
@@ -105,9 +126,18 @@ public enum MarkdownActions {
     /// meeting entirely, and since nothing reads the old column afterwards, every real action on it
     /// vanished from the app while still sitting in the row. Matching on the text instead means an
     /// already-migrated action is skipped and an un-migrated one is never lost.
+    ///
+    /// Matching is by *count*, not by presence: a meeting whose old column held `- [ ] follow up`
+    /// twice — two real commitments that happened to be typed the same way — gets two lines, and a
+    /// re-run then finds two already there and adds neither. A `Set` of the texts collapsed the pair
+    /// into one line and lost a commitment where nothing would ever surface the loss.
     public static func appending(_ actions: [Action], to markdown: String) -> String {
-        let present = Set(parse(markdown).map(\.text))
-        let missing = meaningful(actions).filter { !present.contains($0.text) }
+        var present = Dictionary(parse(markdown).map { ($0.text, 1) }, uniquingKeysWith: +)
+        let missing = meaningful(actions).filter { action in
+            guard let count = present[action.text], count > 0 else { return true }
+            present[action.text] = count - 1
+            return false
+        }
         guard !missing.isEmpty else { return markdown }
         let block = "## Actions\n\n" + missing.map(rendered(_:)).joined(separator: "\n")
         let existing = markdown.trimmingCharacters(in: .whitespacesAndNewlines)

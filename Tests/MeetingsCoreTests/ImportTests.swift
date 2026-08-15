@@ -140,7 +140,14 @@ import Testing
         #expect(restored.attendees == original.attendees)
         #expect(restored.preNotes == original.preNotes)
         #expect(restored.summary == original.summary)
-        #expect(restored.actions == original.actions)
+        // The write-up is the row's actions, and `actions.json` is now derived from it rather than
+        // from the legacy column — which stopped being the record at v6 and is never rewritten, so
+        // exporting it produced a file that contradicted the `summary.md` beside it. What survives
+        // the trip is every action, with its text and its box; `owner` and `due` do not, because
+        // they only ever existed in that column and nothing has read them since. They stay on the
+        // machine that has them, where they remain recoverable.
+        #expect(restored.actions?.map(\.text) == original.actions?.map(\.text))
+        #expect(restored.actions?.map(\.done) == original.actions?.map(\.done))
         #expect(restored.source == original.source)
 
         let segments = try target.segments(meetingID: restored.id)
