@@ -127,9 +127,21 @@ struct SlashMenu: View {
 /// **Bold and italic read pressed straight from the engine.** `NativeTextView` posts
 /// `selectionBoldDidChange` / `selectionItalicDidChange` after every selection change, which is the
 /// same answer ⌘B uses to decide which way it is going, so the button cannot say "on" while the
-/// shortcut turns it on. The engine publishes no such signal for strikethrough, inline code or a
-/// link, and those buttons are therefore unpressed — re-deriving them here would be a second
-/// markdown parser disagreeing with the one holding the document.
+/// shortcut turns it on.
+///
+/// **Strikethrough and inline code are deliberately not here**, and that is a quality decision
+/// rather than an oversight. The engine computes their selection state but publishes no
+/// notification for it, so their buttons could never light — and a control that looks like a toggle
+/// while sitting permanently unpressed teaches you not to trust the two beside it that are telling
+/// the truth. Re-deriving the state here would mean a second markdown parser disagreeing with the
+/// one holding the document, which is the trade that produced most of this editor's bugs.
+///
+/// Nothing is lost: both are still on the Format menu with ⌘⇧S and ⌘E, both still render, and
+/// typing `~~` or a backtick still works. If the engine grows the notification, they come back —
+/// see the upstream note in `Patches/README.md`.
+///
+/// `link` stays despite also not lighting, because it is an *action* rather than a toggle: it
+/// inserts a link and puts the caret in the target. Nobody expects "insert" to look pressed.
 struct SelectionToolbar: View {
     let isBold: Bool
     let isItalic: Bool
@@ -138,8 +150,6 @@ struct SelectionToolbar: View {
     private static let marks: [(MarkdownEditing.Action, MarkdownEditing.Label, String)] = [
         (.bold, .symbol("bold"), "Bold"),
         (.italic, .symbol("italic"), "Italic"),
-        (.strikethrough, .symbol("strikethrough"), "Strikethrough"),
-        (.inlineCode, .symbol("chevron.left.forwardslash.chevron.right"), "Code"),
         (.link, .symbol("link"), "Link"),
     ]
 
