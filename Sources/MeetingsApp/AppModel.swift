@@ -115,7 +115,7 @@ final class AppModel {
     var searchQuery = "" {
         didSet {
             guard searchQuery != oldValue else { return }
-            runSearch()
+            scheduleSearch()
         }
     }
 
@@ -528,8 +528,35 @@ final class AppModel {
         highlightedResult = SearchSelection.moved(0, by: index, count: searchResults.count)
     }
 
-    /// ponytail: straight through to SQLite on every keystroke, no debounce. FTS5 over a personal
-    /// store answers in well under a frame; add a debounce when a real store makes it stutter.
+    /// The search that has not run yet. A keystroke cancels the one before it, so a burst of typing
+    /// costs one read of the store rather than one per character.
+    private var searchTask: Task<Void, Never>?
+
+    /// Runs the search *after* the keystroke that asked for it, never inside it.
+    ///
+    /// `runSearch` used to be called straight from `searchQuery`'s `didSet` — and that setter is
+    /// what SwiftUI's `TextField` writes through, so an FTS read, a `snippet()` for every hit and
+    /// the re-render of every row all happened inside AppKit's text-input event, with the field
+    /// mid-edit. Type quickly and the field is re-set from the binding between the two characters:
+    /// **the palette searched `ro` while the person at the keyboard typed `or`**, and against a
+    /// store holding "Testing Meetings app with Or" and "Problem Solving (Intern/Graduate)
+    /// interview with Revolut" that is not a near miss — `ro` matches P«ro»blem and nothing else,
+    /// so ⌘K answered with the one meeting `meetings search or` does not return, and missed the one
+    /// it does. Same function, same store, a query the user never typed.
+    ///
+    /// Hopping to the next main-actor turn lets the field commit the character first, and
+    /// ``runSearch`` reads `searchQuery` when it runs rather than closing over the value it had a
+    /// keystroke ago — so what is on screen is always the answer to what is in the field.
+    private func scheduleSearch() {
+        searchTask?.cancel()
+        searchTask = Task { @MainActor [weak self] in
+            guard !Task.isCancelled, let self else { return }
+            runSearch()
+        }
+    }
+
+    /// ponytail: straight through to SQLite, one read per settled keystroke, no debounce. FTS5 over
+    /// a personal store answers in well under a frame; add a debounce when a real store stutters.
     ///
     /// **The whole store, never the selected folder.** This passed `scope.folderID` through, so a
     /// sidebar sitting on a folder turned ⌘K into a search of that folder alone — while

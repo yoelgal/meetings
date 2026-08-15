@@ -259,6 +259,58 @@ import Testing
         #expect(try store.search(query: "recorder OR app").isEmpty, "OR is a word here, not an operator")
     }
 
+    /// The two-meeting store ⌘K and `meetings search` gave different answers about, at the one
+    /// function they share.
+    ///
+    /// The window returned the interview for `or` and the terminal returned the recording, which
+    /// reads as one of them being wrong about the store — and neither was. `or` has exactly one
+    /// answer here and it is the meeting whose name contains it. `ro` also has exactly one, and it
+    /// is the other meeting: the palette was running the query with its two characters swapped,
+    /// because it searched from inside the keystroke that typed them. Both answers are pinned,
+    /// because a change that made the two surfaces agree by making one of them wrong would look
+    /// from the outside exactly like a fix.
+    @Test func theStoreAnswersOneQueryOneWay() throws {
+        let recorded = try store.createMeeting(Meeting(
+            title: "Testing Meetings app with Or",
+            state: .complete,
+            startedAt: TestStore.referenceDate,
+            preNotes: "Ask \"Or\" about the 1:1 agenda"
+        ))
+        let folder = try store.createFolder(Folder(name: "Revolut Interviews"))
+        let scheduled = try store.createMeeting(Meeting(
+            folderID: folder.id,
+            title: "🎓 Problem Solving (Intern/Graduate) interview with Revolut",
+            state: .scheduled,
+            scheduledStart: TestStore.referenceDate.addingTimeInterval(86_400 * 11)
+        ))
+
+        #expect(try store.search(query: "or").map(\.meeting.id) == [recorded.id])
+        #expect(try store.search(query: "or").map(\.kind) == [.title],
+                "a title hit stands in for the pre-note in the same meeting that also says Or")
+        #expect(try store.search(query: "ro").map(\.meeting.id) == [scheduled.id],
+                "`ro` matches P«ro»blem and nothing in the other name — the answer the window gave")
+        // Why one swapped keystroke was enough to look like a different store: `o` matches both,
+        // and the scheduled one sorts first, so the interview was already the row under the cursor.
+        #expect(try store.search(query: "o").map(\.meeting.id) == [scheduled.id, recorded.id])
+
+        // FTS5's operator words, in both cases. Every one is a term here rather than syntax — which
+        // is why `or` was never the reason the two surfaces disagreed, and has to stay that way.
+        for spelling in ["or", "OR", "Or"] {
+            #expect(try store.search(query: spelling).map(\.meeting.id) == [recorded.id],
+                    "\(spelling) is a word, not a boolean operator")
+        }
+        for absent in ["and", "AND", "not", "NOT", "near", "NEAR", "NEAR(or app, 3)"] {
+            #expect(try store.search(query: absent).isEmpty,
+                    "\(absent) is a word nothing here contains, not an expression to evaluate")
+        }
+
+        // The characters that end an FTS5 expression rather than searching for one. Quoted through
+        // as text, they find the pre-note that actually contains them.
+        #expect(try store.search(query: "\"Or\"").map(\.meeting.id) == [recorded.id])
+        #expect(try store.search(query: "1:1").map(\.kind) == [.prenotes])
+        #expect(try store.search(query: "1:1").map(\.meeting.id) == [recorded.id])
+    }
+
     /// The index holds no zero-length documents, for any kind. Beyond being meaningless, an empty
     /// document drags down bm25's average document length and skews the ranking of every other
     /// query in the store.

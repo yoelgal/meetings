@@ -368,6 +368,11 @@ import Testing
     /// row searched everything and the fifth quietly did not. `openHighlightedResult` already
     /// widens the scope for a hit that has no row in the current list, so reaching outside what you
     /// are looking at is what the palette was built to do.
+    ///
+    /// This reads one line at a time and so only catches the folder written on the same line as the
+    /// call; ``thePaletteAsksTheStoreExactlyWhatTheCLIAsksIt`` reads the whole call expression and
+    /// catches the same argument wrapped onto its own line, along with every other argument the CLI
+    /// is never handed. This one stays because it names *which* argument shipped and why.
     @Test func theSearchPaletteSearchesTheWholeStoreRatherThanTheSelectedFolder() throws {
         let model = try Self.source("AppModel.swift")
         let scoped = model.components(separatedBy: "\n").enumerated()
@@ -377,6 +382,105 @@ import Testing
             The palette's search is scoped to the sidebar's folder: \(scoped.joined(separator: ", ")). \
             ⌘K is the way to reach a meeting you are not already looking at, and its "No matches" \
             speaks for the whole store — pass no folder, the way `meetings search` takes none.
+            """)
+    }
+
+    /// The arguments of a call, from just after its `(` to the matching `)`, whitespace flattened.
+    /// A call written across three lines and the same call written on one have to read identically
+    /// here, or a guard on the arguments is a guard on the formatting.
+    static func callArguments(_ text: String, from start: String.Index) -> String {
+        var depth = 1
+        var index = start
+        while index < text.endIndex {
+            if text[index] == "(" { depth += 1 }
+            if text[index] == ")" {
+                depth -= 1
+                if depth == 0 { break }
+            }
+            index = text.index(after: index)
+        }
+        return text[start..<index].split(whereSeparator: \.isWhitespace).joined(separator: " ")
+    }
+
+    /// The window and the CLI answer one query with one function, and the window shapes nothing.
+    ///
+    /// Twice now ⌘K and `meetings search` have disagreed about the same store, and both times the
+    /// store was right and the window was asking it something else: first `folderID: scope.folderID`
+    /// silently narrowed the search to the sidebar's folder, then the palette searched `ro` because
+    /// it ran the read inside the keystroke that typed `or`. A divergence found by eye — one meeting
+    /// in the window, a different meeting in the terminal — is expensive to trace and reads as data
+    /// loss while it lasts, so the shape that makes it possible is what this pins.
+    ///
+    /// One call site, and its arguments are exactly the text in the field. No folder, no limit, no
+    /// state, no trimming, no `*` appended, no second entry point, and no SQL of the app's own: any
+    /// of those is a query the CLI cannot be handed, and therefore an answer the CLI cannot
+    /// reproduce. Presentation is free to differ — the palette labels a `.title` hit "Meeting name"
+    /// where the CLI prints `title` — because that happens on the *results*, after this call.
+    @Test func thePaletteAsksTheStoreExactlyWhatTheCLIAsksIt() throws {
+        let cli = try Self.source("SearchCommand.swift", in: "Sources/meetings")
+        #expect(cli.contains("store.search(query: query"),
+                "the CLI's search entry point moved — this guard is comparing against nothing")
+
+        var callSites: [(file: String, arguments: String)] = []
+        for file in try Self.swiftFiles() {
+            let text = file.lines.joined(separator: "\n")
+            var from = text.startIndex
+            while let call = text.range(of: ".search(", range: from..<text.endIndex) {
+                callSites.append((file.name, Self.callArguments(text, from: call.upperBound)))
+                from = call.upperBound
+            }
+        }
+
+        #expect(callSites.count == 1, """
+            The window has \(callSites.count) search call sites: \
+            \(callSites.map(\.file).joined(separator: ", ")). ⌘K and `meetings search` have to be \
+            the same question asked twice, which needs there to be one place the window asks it.
+            """)
+        #expect(callSites.first?.arguments == "query: searchQuery", """
+            The palette shapes its own query: `.search(\(callSites.first?.arguments ?? ""))`. \
+            Everything but the text in the field — a folder, a limit, a state, a trimmed or \
+            decorated string — is something `meetings search` is never handed, so the window and \
+            the CLI stop being able to give the same answer about the same store.
+            """)
+
+        // The other way to diverge is to stop calling it at all. `MeetingStore.search` owns the
+        // tokenising, the FTS5 escaping (`or`, `NEAR`, a stray quote or colon) and the title scan;
+        // a second implementation in the window would have to get all of it right twice.
+        for file in try Self.swiftFiles() {
+            for (offset, line) in file.lines.enumerated() {
+                for own in ["meetings_fts", "MATCH ?", "instr(lower(", "bm25(", "ftsQuery(", "Match.score("] {
+                    #expect(!line.contains(own), """
+                        \(file.name):\(offset + 1) searches on its own terms (\(own)). Search is \
+                        `MeetingStore.search`, the one the CLI calls; anything else is a second \
+                        set of semantics for the same box.
+                        """)
+                }
+            }
+        }
+    }
+
+    /// The palette's read runs *after* the keystroke, not inside it.
+    ///
+    /// `searchQuery`'s `didSet` is the setter SwiftUI's `TextField` writes through, so calling
+    /// `runSearch()` from it put an FTS read, a `snippet()` per hit and a re-render of the list
+    /// inside AppKit's text-input event with the field mid-edit — and the field was re-set from the
+    /// binding between two characters. Typing `or` searched `ro`, which in a store holding "Testing
+    /// Meetings app with Or" and "Problem Solving (Intern/Graduate) interview with Revolut" returns
+    /// the interview and not the meeting whose name you typed. The store was answering correctly
+    /// the whole time; it was being asked a query nobody typed.
+    ///
+    /// There is no test target for `MeetingsApp` and no way to press a key at one, so what is
+    /// checked is the shape: the setter schedules, and `runSearch` reads the field when it runs.
+    @Test func theSearchRunsAfterTheKeystrokeRatherThanInsideIt() throws {
+        let model = try Self.source("AppModel.swift")
+        let didSet = try #require(model.range(of: "var searchQuery = \"\" {"))
+        // The property's own body: everything up to the blank line that ends it.
+        let end = model.range(of: "\n\n", range: didSet.upperBound..<model.endIndex)?.lowerBound
+        let body = String(model[didSet.upperBound..<(end ?? model.endIndex)])
+        #expect(body.contains("scheduleSearch()") && !body.contains("runSearch()"), """
+            The palette searches from inside the text field's own setter. The read, the snippet and \
+            the re-render then all land in the middle of AppKit's text input, and the query the \
+            store is handed stops being the text the user typed.
             """)
     }
 
