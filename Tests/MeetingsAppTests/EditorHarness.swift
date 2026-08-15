@@ -48,6 +48,10 @@ final class EditorHarness {
     /// The document as the bindings hold it — what autosave would write.
     var text: String { store.text }
 
+    /// The anchors as the editor published them — what the slash menu and the toolbar hang off.
+    var publishedCaretRect: CGRect? { store.caretRect }
+    var publishedSelectionRect: CGRect? { store.selectionRect }
+
     @MainActor private final class Store {
         var text = ""
         var selection: Range<Int> = 0..<0

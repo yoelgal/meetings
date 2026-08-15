@@ -461,8 +461,20 @@ extension NSTextView {
               let end = content.location(start, offsetBy: range.length),
               let textRange = NSTextRange(location: start, end: end)
         else { return nil }
-        // Layout is lazy, and a segment nobody has laid out yet has no frame to report.
-        layout.ensureLayout(for: textRange)
+        // **The whole document, not just this range.** Layout is lazy *and* TextKit 2 estimates
+        // what it has not laid out yet, so a segment's frame is measured from the top of the
+        // document through whatever is above it — real line heights where the text has been laid
+        // out, and an estimate everywhere else. Ensuring only `textRange` therefore answers
+        // "where is this" against a document that is partly a guess, and the guess is always short:
+        // an estimate is one line where the real text wraps to two.
+        //
+        // Measured on a 2378 pt document, typing `/he` at the end and asking for the caret the way
+        // ``MarkdownTextView/Coordinator/publishRects()`` does: 2303.18 with `textRange`, 2352.77
+        // with the document range — **49.6 pt too high**, and the error grows with how much of the
+        // document is still an estimate. That is the slash menu and the selection toolbar drawing
+        // above where they belong, and it is why the height was right while the anchors were not:
+        // ``markdownDocumentHeight(atWidth:)`` has always laid the whole document out first.
+        layout.ensureLayout(for: layout.documentRange)
 
         var union: CGRect?
         layout.enumerateTextSegments(

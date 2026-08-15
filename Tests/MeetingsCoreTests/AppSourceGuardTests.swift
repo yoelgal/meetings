@@ -802,6 +802,17 @@ import Testing
         #expect(pane.contains("MarkdownEditing.floating("),
                 "and that placement is MeetingsCore's, where the clamp and the flip are tested")
 
+        // **And the measure it is clamped inside is the editor's, measured.** It was
+        // `SharedFieldEditor.column`, handed in, on the reasoning that the frame above is set from
+        // the same number — but `.frame(maxWidth:)` is a cap, and this editor has three mounts. A
+        // 700 pt detail pane lays it out at 520 pt, a 380 pt notes panel at 296 pt and a 300 pt one
+        // at 216 pt. The slash menu is 300 pt wide, so against a hardcoded 520 it could sit at
+        // x = 220 in a 296 pt editor and run out through the panel's clip.
+        #expect(pane.contains("@State private var width"),
+                "the clamp's measure is the editor's own, not a constant borrowed from one mount")
+        #expect(pane.contains("onChange(of: proxy.size.width)"),
+                "and it follows the editor when the pane or the panel is resized")
+
         // An anchor is only as good as its freshness. Published from the selection delegate alone,
         // it went stale on any layout change — a resized pane, a re-wrapped document, or a
         // selection made before the text had been laid out at all, which leaves it nil forever.

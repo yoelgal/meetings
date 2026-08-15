@@ -439,10 +439,20 @@ struct SharedFieldEditor: View {
 /// keep in step, and it is the thing that makes a caret land a character off.
 struct LiveMarkdownEditor: View {
     @Binding var text: String
-    /// The measure the editor is framed to, so a floating surface can be kept inside it. Handed in
-    /// rather than measured, because it is the same constant the frame above is set from — see
-    /// ``MarkdownEditing/floating(over:size:in:gap:)`` for what happens without it.
-    var width: CGFloat = SharedFieldEditor.column
+    /// The measure a floating surface is kept inside — **read off the laid-out editor, not assumed
+    /// from the constant the detail pane happens to frame it to.**
+    ///
+    /// It used to be `SharedFieldEditor.column`, handed in, on the reasoning that the frame above is
+    /// set from the same number. It is not, in either of the other two mounts: `.frame(maxWidth:)`
+    /// is a cap, so a pane narrower than the column gives the editor the pane. Measured through the
+    /// real container: a 700 pt detail pane lays the editor out at **520 pt**, a 380 pt notes panel
+    /// at **296 pt**, and a 300 pt one at **216 pt** — while the clamp was told 520 every time. The
+    /// slash menu measures 300 × 299, so in the panel it was free to sit at x = 220 and run 224 pt
+    /// past the editor's right edge, where the panel clips it.
+    ///
+    /// Starts at the column so the first frame has a sane measure, and is corrected the moment the
+    /// editor has a width.
+    @State private var width = SharedFieldEditor.column
 
     /// The selection as character offsets, published by the text view. Everything on this screen
     /// that has to know where the caret is — the slash menu, the toolbar's pressed buttons — reads
@@ -465,6 +475,16 @@ struct LiveMarkdownEditor: View {
             selectionRect: $selectionRect,
             handle: handle,
             intercept: intercept
+        )
+        // The editor's own width, which is what the surfaces above are clamped inside. A background
+        // rather than a `GeometryReader` around the editor: a reader would take the proposal and
+        // hand the text view an infinite one, which is the opposite of what `sizeThatFits` needs.
+        .background(
+            GeometryReader { proxy in
+                Color.clear
+                    .onAppear { width = proxy.size.width }
+                    .onChange(of: proxy.size.width) { _, measure in width = measure }
+            }
         )
         // Both float in the editor's own coordinate space, over the rect the text view measured.
         // Neither is a popover: a popover takes key window, and a menu you cannot keep typing into
