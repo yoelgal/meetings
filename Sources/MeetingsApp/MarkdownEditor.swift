@@ -176,10 +176,10 @@ struct MarkdownEditorProbeView: NSViewRepresentable {
     /// The width matters for the same reason it always did — the notes panel lays this editor out
     /// at about 330 pt where the detail pane gives it 520.
     ///
-    /// ponytail: read on every selection, text and frame change, which is every moment either
-    /// surface *appears*. A page scrolled while the menu is already open leaves it stale until the
-    /// next keystroke; observing the scroll would need a clip view SwiftUI's `ScrollView` does not
-    /// always have.
+    /// Read on every selection, text and frame change — and on every scroll, because SwiftUI's
+    /// `ScrollView` **is** `NSScrollView`-backed here and its clip view says so on
+    /// `boundsDidChange`. Measured on macOS 26: the page under the write-up is a
+    /// `SwiftUI.HostingScrollView` and the probe's `enclosingScrollView` finds it.
     private(set) var visible: CGRect = CGRect(x: 0, y: 0, width: SharedFieldEditor.column, height: 400)
     /// Which row of the slash menu Return would take.
     private(set) var highlighted = 0
@@ -191,6 +191,8 @@ struct MarkdownEditorProbeView: NSViewRepresentable {
     /// the mount test can drive the real thing instead of a stand-in.
     @ObservationIgnored private(set) weak var textView: NSTextView?
     @ObservationIgnored private weak var probe: MarkdownEditorProbe?
+    /// The clip view of the page this editor is on, once there is one to watch scrolling on.
+    @ObservationIgnored private weak var scrolling: NSClipView?
     @ObservationIgnored private var observers: [NSObjectProtocol] = []
     @ObservationIgnored private var keyMonitor: Any?
     /// Escape closes the menu without moving the caret, which would otherwise re-open it on the very
@@ -384,12 +386,8 @@ struct MarkdownEditorProbeView: NSViewRepresentable {
     /// keystroke, so an unconditional write here is a SwiftUI invalidation per character typed.
     private func refresh() {
         guard let tv = textView, let probe else { return }
-        // `visibleRect` is the slice showing through every clip view above this one, in the probe's
-        // own coordinates; intersecting with `bounds` drops the part of the window that is beside
-        // the editor rather than over it. A hierarchy that has not been laid out yet reports an
-        // empty rect, and an empty viewport would clamp both surfaces to a point.
-        let slice = probe.visibleRect.intersection(probe.bounds)
-        let onScreen = slice.isEmpty ? probe.bounds : slice
+        followScrolling(of: probe)
+        let onScreen = Self.viewport(of: probe)
         if visible != onScreen { visible = onScreen }
         let selected = tv.selectedRange()
         if selection != selected { selection = selected }
@@ -397,6 +395,43 @@ struct MarkdownEditorProbeView: NSViewRepresentable {
         if anchor != rect { anchor = rect }
         let found = query(in: tv, selection: selected)
         if openQuery != found { openQuery = found }
+    }
+
+    /// The slice of the editor that is on screen, in the probe's own coordinates — the space the
+    /// anchor is in.
+    ///
+    /// **The clip view of the page is the authority.** SwiftUI's `ScrollView` is `NSScrollView`-
+    /// backed on macOS, and `contentView.bounds` *is* the visible slice in document coordinates; it
+    /// is also the rect the scroll notification carries, so what is placed and what is observed
+    /// cannot disagree. `probe.visibleRect.intersection(probe.bounds)` is the fallback for an editor
+    /// with no scroll view above it at all — the mount test has none — and it is a fallback rather
+    /// than the source because it answers "clipped by every ancestor", a longer question than the
+    /// one being asked.
+    ///
+    /// Intersecting with `bounds` drops the part of the window beside the editor rather than over
+    /// it. A hierarchy not laid out yet reports an empty rect, and an empty viewport would put both
+    /// surfaces on a point.
+    private static func viewport(of probe: MarkdownEditorProbe) -> CGRect {
+        let seen = probe.enclosingScrollView.map { probe.convert($0.contentView.bounds, from: $0.contentView) }
+            ?? probe.visibleRect.intersection(probe.bounds)
+        let slice = seen.intersection(probe.bounds)
+        return slice.isEmpty ? probe.bounds : slice
+    }
+
+    /// Recompute when the page scrolls. The clip view only exists once SwiftUI has put the probe
+    /// inside it, which is later than `attach`, so this is asked on every refresh and registers
+    /// once — a scrolled page with a menu already open used to keep the viewport it was opened at.
+    private func followScrolling(of probe: MarkdownEditorProbe) {
+        guard let clip = probe.enclosingScrollView?.contentView, clip !== scrolling else { return }
+        scrolling = clip
+        clip.postsBoundsChangedNotifications = true
+        observers.append(
+            NotificationCenter.default.addObserver(
+                forName: NSView.boundsDidChangeNotification, object: clip, queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.refresh() }
+            }
+        )
     }
 
     /// The rect a floating surface hangs off, **measured against the layout that is on screen** and

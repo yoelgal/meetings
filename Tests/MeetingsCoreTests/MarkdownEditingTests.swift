@@ -193,8 +193,6 @@ import Testing
 
     /// A caret has no width, and a surface that refused to place itself over one would be a menu
     /// that never opened — which is the same class of failure as a toolbar that never appears.
-    /// A viewport shorter than the surface is the floating notes panel with the menu open in it:
-    /// it lands at the top of what is visible rather than off either edge.
     @Test func aZeroSizedAnchorStillGetsAPlacement() {
         let placement = MarkdownEditing.floating(
             over: CGRect(x: 120, y: 200, width: 0, height: 18), size: Self.menu,
@@ -203,11 +201,120 @@ import Testing
         #expect(placement.below)
         #expect(placement.y == 224)
         #expect(placement.x == 0)
+    }
 
-        let inAShortPanel = MarkdownEditing.floating(
-            over: CGRect(x: 120, y: 60, width: 0, height: 18), size: Self.menu,
-            in: CGRect(x: 0, y: 0, width: 330, height: 200), prefer: .below
+    // MARK: - Placed against the caret, never against an edge
+
+    /// **The defect the write-up reported a third time.** The menu drew at the top of the pane,
+    /// about five hundred points above the `/` that opened it, over unrelated text.
+    ///
+    /// The arithmetic that did it: the placement was clamped into `visible`, and a clamp can only
+    /// fire when the result is outside the viewport being clamped into — which is to say when that
+    /// viewport disagrees with where the caret is. A viewport reading can be stale (the page scrolled
+    /// since it was taken) or short (only part of the editor showing); the caret cannot. So a
+    /// viewport that does not contain the caret must cost a side, not five hundred points.
+    @Test func aViewportThatDisagreesWithTheCaretNeverThrowsTheMenuAcrossThePage() {
+        // A caret 1075 pt down the document, and a viewport reading that ends 200 pt above it.
+        let caret = CGRect(x: 120, y: 1075, width: 0, height: 18)
+        let stale = CGRect(x: 0, y: 600, width: 520, height: 260)
+
+        let menu = MarkdownEditing.floating(over: caret, size: Self.menu, in: stale, prefer: .below)
+        #expect(menu.below == false, "no room under the caret in what it was told is visible")
+        #expect(menu.y == 770, """
+            The menu has to touch the caret: its own height and the gap above it, at y = 770. \
+            Clamped into that viewport instead it landed at y = 600 — 475 pt above the caret and \
+            at the top of the pane, which is the bug as reported.
+            """)
+        // The same viewport, the same caret, the toolbar: smaller, so it hid this for longer.
+        let toolbar = MarkdownEditing.floating(over: caret, size: Self.toolbar, in: stale)
+        #expect(toolbar.y == 1039, "30 pt and a gap above the line, not 600")
+    }
+
+    /// Whatever the viewport says, the surface touches the caret — one gap above it or one gap
+    /// below it, and never anywhere else.
+    ///
+    /// The invariant behind the bug above, checked over every arrangement of the three that occur:
+    /// a document short enough not to scroll, a scrolled page, and a viewport that has fallen out of
+    /// step with the caret entirely.
+    @Test func everyPlacementTouchesTheCaret() {
+        for viewportY in stride(from: 0.0, through: 1200.0, by: 400.0) {
+            for viewportHeight in [200.0, 500.0, 900.0] {
+                for caretY in stride(from: 0.0, through: 1500.0, by: 250.0) {
+                    let caret = CGRect(x: 120, y: caretY, width: 0, height: 18)
+                    let viewport = CGRect(x: 0, y: viewportY, width: 520, height: viewportHeight)
+                    for (size, side) in [(Self.menu, MarkdownEditing.Side.below),
+                                         (Self.toolbar, MarkdownEditing.Side.above)] {
+                        let placed = MarkdownEditing.floating(
+                            over: caret, size: size, in: viewport, prefer: side
+                        )
+                        let touching = placed.below
+                            ? caret.maxY + 6
+                            : caret.minY - size.height - 6
+                        #expect(placed.y == touching, """
+                            At caret \(caretY) in viewport \(viewport) the surface landed at \
+                            \(placed.y), \(abs(placed.y - touching)) pt away from the caret it \
+                            belongs to.
+                            """)
+                    }
+                }
+            }
+        }
+    }
+
+    /// The four cases the pane and the panel actually produce.
+    @Test func theSideFollowsTheRoomInTheViewportRatherThanInTheDocument() {
+        // 1. Near the top of a scrolled document: the menu goes under the caret, where it prefers.
+        let scrolled = CGRect(x: 0, y: 1200, width: 520, height: 900)
+        let nearTheTop = MarkdownEditing.floating(
+            over: CGRect(x: 120, y: 1240, width: 0, height: 18), size: Self.menu,
+            in: scrolled, prefer: .below
         )
-        #expect(inAShortPanel.y == 0, "neither side fits, so it starts at the top of what is visible")
+        #expect(nearTheTop.below)
+        #expect(nearTheTop.y == 1264)
+        #expect(nearTheTop.y + Self.menu.height <= scrolled.maxY, "and inside the viewport")
+
+        // 2. Near the bottom of that viewport: it flips above rather than running off the end.
+        let nearTheBottom = MarkdownEditing.floating(
+            over: CGRect(x: 120, y: 1900, width: 0, height: 18), size: Self.menu,
+            in: scrolled, prefer: .below
+        )
+        #expect(nearTheBottom.below == false)
+        #expect(nearTheBottom.y == 1595)
+        #expect(nearTheBottom.y >= scrolled.minY, "and still inside it")
+
+        // 3. A document short enough not to scroll — the case that always worked. The menu is 299
+        // and the pane 600, so a caret on the first line still opens downward.
+        let short = MarkdownEditing.floating(
+            over: CGRect(x: 120, y: 6, width: 0, height: 18), size: Self.menu,
+            in: Self.detailPane, prefer: .below
+        )
+        #expect(short.below)
+        #expect(short.y == 30)
+
+        // 4. The floating notes panel: 470 pt tall, its editor laid out at about 296 pt wide and
+        // seeing about 400 pt of page. The 299 pt menu only just fits either side of a caret there.
+        let panel = CGRect(x: 0, y: 0, width: 296, height: 400)
+        let high = MarkdownEditing.floating(
+            over: CGRect(x: 120, y: 60, width: 0, height: 18), size: Self.menu, in: panel,
+            prefer: .below
+        )
+        #expect(high.below, "316 pt of room below the caret against 54 above it")
+        #expect(high.y == 84)
+        let low = MarkdownEditing.floating(
+            over: CGRect(x: 120, y: 330, width: 0, height: 18), size: Self.menu, in: panel,
+            prefer: .below
+        )
+        #expect(low.below == false, "324 pt above the caret against 46 below it")
+        #expect(low.y == 25)
+        // A caret in the middle of that panel has room for it on neither side. It goes on the side
+        // with more room, still touching the caret, and the panel's scroll view clips the overflow
+        // — so the rows nearest the caret are the ones showing. Pinned to an edge instead, the menu
+        // sits over the line that summoned it.
+        let middle = MarkdownEditing.floating(
+            over: CGRect(x: 120, y: 200, width: 0, height: 18), size: Self.menu, in: panel,
+            prefer: .below
+        )
+        #expect(middle.below == false, "194 pt above the caret against 176 below it")
+        #expect(middle.y == -105)
     }
 }

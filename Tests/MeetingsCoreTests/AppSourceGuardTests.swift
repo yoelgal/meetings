@@ -770,12 +770,23 @@ import Testing
         #expect(editor.contains("MarkdownEditing.floating("),
                 "and that placement is MeetingsCore's, where the clamp and the flip are tested")
 
-        // The bound is the editor's **visible slice**, measured. Its frame is one to two thousand
-        // points of which a few hundred are on screen, and a surface clamped to the frame is a
-        // surface placed somewhere the user is not looking.
+        // Which side of the caret a surface goes on is answered against the editor's **visible
+        // slice**, and that slice comes off the page's clip view: its bounds are the visible rect in
+        // document coordinates, which is the space the anchor is in, and it is the same rect the
+        // scroll notification carries. The editor's frame is one to two thousand points of which a
+        // few hundred are on screen, and a side chosen against the frame is a menu opening upward
+        // into a screen the user is not looking at.
+        #expect(editor.contains("probe.enclosingScrollView.map { probe.convert($0.contentView.bounds"), """
+            The viewport has to be the page's clip view. Anything derived from the editor's frame \
+            is right only on a document short enough not to scroll.
+            """)
         #expect(editor.contains("probe.visibleRect.intersection(probe.bounds)"), """
-            The clamp needs the part of the editor that is actually showing. The frame is right \
-            only on a document short enough not to scroll.
+            …with `visibleRect` still behind it for an editor that has no scroll view above it at \
+            all — the mount test has none, and a nil viewport would place nothing.
+            """)
+        #expect(editor.contains("NSView.boundsDidChangeNotification"), """
+            And it has to follow the scroll. A viewport read once and kept is a viewport that \
+            disagrees with the screen the moment the page moves under an open menu.
             """)
 
         // An anchor is only as good as its freshness: published from the selection alone it goes

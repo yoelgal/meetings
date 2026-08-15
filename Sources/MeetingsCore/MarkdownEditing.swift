@@ -20,7 +20,7 @@ public enum MarkdownEditing {
     public struct Placement: Equatable, Sendable {
         public let x: CGFloat
         public let y: CGFloat
-        /// True when there was no room above the anchor and it went underneath instead.
+        /// True when it went underneath the anchor rather than over it.
         public let below: Bool
 
         public init(x: CGFloat, y: CGFloat, below: Bool) {
@@ -37,20 +37,32 @@ public enum MarkdownEditing {
     /// — a list that appears three hundred points above the caret reads as somebody else's menu.
     public enum Side: Sendable { case above, below }
 
-    /// Centred over `anchor` and **inside the part of the editor that is actually on screen**.
+    /// Touching `anchor` — always — on whichever side of it the visible viewport has room for.
     ///
-    /// `visible` is the editor's visible slice in the editor's own coordinates — `NSView.visibleRect`
-    /// clipped to the probe's bounds. It is not the editor's frame, and that distinction is the
-    /// defect this function was rewritten for. Both surfaces are placed in *document* coordinates
-    /// inside an editor that is one to two thousand points tall inside a page that scrolls, so
-    /// "is there room above" answered against the top of the document is almost always yes: the
-    /// 300 × 299 slash menu was therefore drawn 305 pt above the caret, which on a scrolled page is
-    /// off the top of the visible area entirely. The toolbar had the same flaw one line's worth of
-    /// height at a time.
+    /// `visible` is the editor's visible slice in the editor's own coordinates: the clip view of the
+    /// page that scrolls, in the space the anchor is already in. It decides **which side** the
+    /// surface goes on. It does not decide *where*: the surface is drawn against the caret, one
+    /// `gap` from it, and nothing moves it further away.
+    ///
+    /// **That is the defect this was rewritten for, twice.** The first version asked "is there room
+    /// above" against the top of the *document*, which on a page that scrolls is nearly always yes,
+    /// so the 300 × 299 menu was drawn 305 pt above the caret and off the top of the screen. The
+    /// second version bounded it by clamping the result into `visible` — and a clamp can only ever
+    /// fire when the placement is outside the viewport, which is to say when the viewport being
+    /// clamped into disagrees with where the caret is. It fired: the menu was reported pinned to the
+    /// top of the pane, about five hundred points above the `/` that opened it, over unrelated text.
+    /// A viewport reading can go stale or come back short; a caret cannot. So the caret is what the
+    /// surface is placed against, and the viewport only chooses a side.
+    ///
+    /// When neither side has room — the floating notes panel, which is shorter than the menu — the
+    /// side with *more* room wins and the surface overflows the far edge, where the scroll view
+    /// clips it. Overflowing means the rows nearest the caret are the ones you can see. Pinning to
+    /// an edge instead means a menu somewhere else on the screen, covering the line it belongs to.
     ///
     /// The horizontal clamp has always been here and stays: the toolbar is about 280 pt wide and a
     /// selection starting at the left edge of the text — where a drag usually starts — centres to
-    /// roughly −95, outside the column and past the edge of a pane that clips.
+    /// roughly −95, outside the column and past the edge of a pane that clips. It is a clamp against
+    /// a width, not against a scroll offset, so it has none of the above's failure mode.
     ///
     /// A pure function over four rectangles so it can be tested, which is the whole reason it is
     /// here rather than inline in an `alignmentGuide` closure where nothing could reach it. A
@@ -61,15 +73,22 @@ public enum MarkdownEditing {
         prefer: Side = .above, gap: CGFloat = 6
     ) -> Placement {
         let x = clamp(anchor.midX - size.width / 2, visible.minX, visible.maxX - size.width)
-        let above = anchor.minY - size.height - gap
-        let below = anchor.maxY + gap
-        let fitsAbove = above >= visible.minY
-        let fitsBelow = below + size.height <= visible.maxY
-        // The preferred side wins whenever it fits, and also when neither does — a surface taller
-        // than the viewport has to land somewhere, and the clamp below keeps it on screen.
-        let goBelow = prefer == .below ? (fitsBelow || !fitsAbove) : (!fitsAbove && fitsBelow)
-        let y = clamp(goBelow ? below : above, visible.minY, visible.maxY - size.height)
-        return Placement(x: x, y: y, below: goBelow)
+        // Room measured from the caret to the edges of the *viewport* — the question the last two
+        // versions of this answered against the document.
+        let roomAbove = anchor.minY - gap - visible.minY
+        let roomBelow = visible.maxY - anchor.maxY - gap
+        let goBelow: Bool
+        switch (roomBelow >= size.height, roomAbove >= size.height) {
+        case (true, true): goBelow = prefer == .below
+        case (true, false): goBelow = true
+        case (false, true): goBelow = false
+        case (false, false): goBelow = roomBelow >= roomAbove
+        }
+        return Placement(
+            x: x,
+            y: goBelow ? anchor.maxY + gap : anchor.minY - size.height - gap,
+            below: goBelow
+        )
     }
 
     /// `max(hi, lo)` on the upper bound as well, because a viewport smaller than the surface has no
