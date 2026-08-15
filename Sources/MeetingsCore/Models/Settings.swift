@@ -99,4 +99,45 @@ public struct SettingKey: RawRepresentable, Hashable, Sendable {
     ]
 
     public var defaultValue: String? { Self.defaults[self] }
+
+    /// The two rows that decide where this Mac's own content goes: meeting audio
+    /// (``transcribeRemoteBaseURL``) and the transcript a write-up is generated from
+    /// (``aiCloudBaseURL``).
+    public static let egressURLs: Set<SettingKey> = [.aiCloudBaseURL, .transcribeRemoteBaseURL]
+
+    /// Why `value` must not be stored on `key`, or nil when it may be. **`https`, or a loopback
+    /// host.** Every other key takes anything.
+    ///
+    /// `http` used to be accepted, which made one unprompted write enough to send every future
+    /// meeting's audio somewhere in the clear — and `SKILL.md` hands an agent the `meetings config`
+    /// surface while telling it to read transcripts, which are attacker-influenced content: anyone
+    /// on the call, or an imported bundle, can write the sentence that asks for the redirect.
+    /// Refusing cleartext does not stop a redirect, but it stops a silent one being readable by
+    /// anything between here and the endpoint.
+    ///
+    /// Loopback keeps its `http`: a self-hosted whisper.cpp or Ollama on `127.0.0.1` is exactly the
+    /// configuration this app is *for*, it never leaves the machine, and it has no certificate to
+    /// present.
+    ///
+    /// **Here rather than in the CLI, because both front ends write these rows.** It lived in
+    /// `meetings config set`, so the Settings window went on accepting on every keystroke what the
+    /// command line refused — a rule one of two doors enforces is a detour, not a rule.
+    ///
+    /// ponytail: a scheme check, not an egress policy, and it is a *write* gate — a value already in
+    /// the table is still read and used, by design, because an app that refused to run over a row it
+    /// once accepted would strand somebody mid-meeting. Settings says so where the value is shown.
+    public static func egressRefusal(_ value: String, for key: SettingKey) -> String? {
+        guard egressURLs.contains(key) else { return nil }
+        let loopback: Set<String> = ["localhost", "127.0.0.1", "::1", "[::1]"]
+        if let url = URL(string: value), let scheme = url.scheme?.lowercased(),
+           scheme == "https" || (scheme == "http" && loopback.contains(url.host()?.lowercased() ?? "")) {
+            return nil
+        }
+        return """
+            \(key.rawValue) is an https base URL. This is where \
+            \(key == .transcribeRemoteBaseURL ? "the audio of every meeting" : "your transcripts") \
+            gets sent, and http sends it in the clear. Only a loopback endpoint you are running \
+            yourself (http://localhost:… or http://127.0.0.1:…) may use http.
+            """
+    }
 }

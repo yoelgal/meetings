@@ -14,6 +14,11 @@ import Testing
 /// come back, that a modifier is absent, that a rule has no second implementation somewhere in the
 /// library. A guard that copies out a whole expression from the source it is checking is neither: it
 /// fails on a line wrap and passes on a changed meaning spelled the same way.
+///
+/// The exception is a guard whose subject **is** a composition — that this argument reaches that
+/// function. Split into two `contains` checks it stops saying anything: `a(b(x))` and `a(y); b(x)`
+/// pass it identically, which is how the last round of narrowing loosened two of them. Those name
+/// the expression, over ``squashed(_:)``, so a line wrap does not break what a rename should.
 @Suite struct AppSourceGuardTests {
     /// The repository, found from this file rather than from the working directory, so the tests
     /// pass under `swift test` from anywhere.
@@ -136,6 +141,18 @@ import Testing
         return try files.map {
             ($0, try String(contentsOf: root.appendingPathComponent($0), encoding: .utf8))
         }
+    }
+
+    /// The source with every run of whitespace collapsed to a single space.
+    ///
+    /// For the handful of guards whose subject is that two calls **compose** — that this argument is
+    /// passed to that function, not merely that both names appear somewhere in the file. Splitting
+    /// such a guard into two `contains` checks is the loosening it was meant to avoid: `a(b(x))` and
+    /// `a(y); b(x)` pass it identically. Squashed, the composition can be named as one string
+    /// without also pinning where the line happens to wrap, which was the only real objection to
+    /// quoting the expression.
+    static func squashed(_ text: String) -> String {
+        text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
     }
 
     static func source(_ name: String, in directory: String = "Sources/MeetingsApp") throws -> String {
@@ -956,11 +973,14 @@ import Testing
             The notes panel is hidden from screen sharing, which is a privacy feature. A menu \
             opened inside it that a Zoom share could see would be a hole in it.
             """)
-        // The conversion chain: probe coordinates → window coordinates → screen. Each link is named
-        // rather than the whole expression copied out, because a line wrap or a rename would break a
-        // verbatim copy while an equivalent chain spelled differently is the same code. There is no
-        // value assertion behind this one: it needs a real window, and this package opens none.
-        #expect(panel.contains("convertToScreen(") && panel.contains("probe.convert(probe.bounds"), """
+        // The conversion chain: probe coordinates → window coordinates → screen. The *composition*
+        // is the subject — that what goes to the screen is the probe's own rect — so it is named as
+        // one expression rather than as two tokens that would pass just as happily on
+        // `convertToScreen(somethingElse)` with `probe.convert(probe.bounds, to: nil)` computed
+        // three lines away and thrown out. Whitespace-squashed, so a line wrap does not break it.
+        // There is no value assertion behind this one: it needs a real window, and this package
+        // opens none.
+        #expect(Self.squashed(panel).contains("window.convertToScreen(probe.convert(probe.bounds, to: nil))"), """
             The panel is framed in screen coordinates, so the anchor has to be converted out of the \
             probe's space through the window. Going straight from probe coordinates to a frame puts \
             the surface the same distance the wrong side of the caret.
@@ -970,11 +990,13 @@ import Testing
         // slice**, and that slice is the window's content area converted into the probe's space.
         // Three derivations from SwiftUI's scroll view were tried and all three lied: with the page
         // scrolled 1661 pt, `HostingScrollView` reported an offset of −53.
-        #expect(editor.contains("contentLayoutRect"), """
-            The viewport has to be the window's own content area. Everything derived from \
-            SwiftUI's scroll view described a page that was not on screen. Named rather than \
-            copied out as a whole expression: what matters is which rectangle is read, and no test \
-            can assert it as a value because reading it needs a window.
+        #expect(Self.squashed(editor).contains("probe.convert($0.contentLayoutRect, from: nil)"), """
+            The viewport has to be the window's own content area, converted into the probe's space. \
+            Everything derived from SwiftUI's scroll view described a page that was not on screen. \
+            The conversion is part of it — a `contentLayoutRect` read and left in window \
+            coordinates places every surface off by the editor's offset down the page — so the \
+            composition is named as one expression, whitespace-squashed against a line wrap. No \
+            test can assert it as a value: reading it needs a window.
             """)
         #expect(editor.contains("?? probe.visibleRect"), """
             …with `visibleRect` still behind it for an editor with no window at all — the mount \
@@ -1057,16 +1079,29 @@ import Testing
         // bridges and checks the two sets of names are disjoint, which is the property; the string
         // that used to be pinned here was one spelling of one way to get it.
         //
-        // What that value assertion *cannot* say is that the id is not random, because a random id
-        // would pass it — and pass it every time it was run, while still being a collision nobody
-        // can reproduce when it happens. The id is the object's own address, so two live bridges
-        // cannot share one by construction rather than by 2⁻⁶⁴. An absence is the only form this
-        // can take.
-        #expect(!editor.contains("Int.random") && !editor.contains(".random("), """
-            The editor's bus id is random again. Uniqueness by luck is uniqueness that fails once, \
-            in somebody else's session, as ⌘B emboldening the wrong document — the object's address \
-            cannot collide while both bridges are alive, and it says so instead of arguing odds.
-            """)
+        // What that value assertion *cannot* say is **how** the id is unique, and two wrong answers
+        // pass every value assertion there is. A random id passes, and passes every run, while
+        // still being a collision nobody can reproduce when it happens. An `ObjectIdentifier` id
+        // passes too, and is worse than it looks: an address is unique among *live* objects only,
+        // allocators recycle them, and the bridge that takes a dead one's address takes its bus
+        // names and its `MarkdownFormatting` identity with it. The id is a counter — unique across
+        // time — and `MarkdownEditorBridgeTests.anEditorNeverInheritsTheBusNamesOfOneThatIsGone`
+        // holds that as a value. What is left here is the absence of the two shortcuts back.
+        //
+        // **Read across the whole of `Sources/MeetingsApp`,** not one filename: a rule pinned to a
+        // file is pinned to that file, which is exactly what let a second markdown parser sit
+        // untouched next to the guard that banned it.
+        for file in try Self.swiftFiles() {
+            let text = file.lines.joined(separator: "\n")
+            for shortcut in ["Int.random", ".random(", "ObjectIdentifier("] {
+                #expect(!text.contains(shortcut), """
+                    \(file.name) derives an identity from \(shortcut). An editor's bus id has to be \
+                    unique across time, because the engine subscribes with `object: nil` and a \
+                    reused name is ⌘B applied to the wrong document. Random is uniqueness by luck; \
+                    an address is uniqueness only until the object is freed. A counter is neither.
+                    """)
+            }
+        }
 
         // The formatting shortcuts are menu items, because the main menu is the one thing that
         // outranks a focused NSTextView for a key equivalent.
@@ -1096,13 +1131,63 @@ import Testing
     /// They already do: an `NSHostingView` lays out off-screen, and the activation policy is
     /// `.prohibited`. This is what keeps it true.
     ///
-    /// An absence, deliberately — "nothing appeared on screen" cannot be asserted from inside the
-    /// process that would have shown it.
+    /// **The half that actually holds is the production one**, and it is asserted first: the app
+    /// builds its one real `NSPanel` only for a probe that is *in* a window, and the view tree these
+    /// suites lay out has none. A test could not open the surfaces if it tried. The token list under
+    /// it bans the ways a test could go around that and open something of its own.
+    ///
+    /// An absence, deliberately, for the second half — "nothing appeared on screen" cannot be
+    /// asserted from inside the process that would have shown it.
     ///
     /// Scoped to `MeetingsAppTests`, which is the only target that links AppKit and builds views.
     /// `MeetingsCoreTests` opens no view at all, and this file *quotes* the very calls being banned
     /// in order to ban them.
     @Test func noTestOfTheAppEverOpensAWindow() throws {
+        // 1. The invariant in the shipped code. `syncSurface` is the single place state becomes a
+        //    window, and the construction of the panel sits behind a guard that requires a window to
+        //    already exist. Read as the slice of that function *before* the construction, so a gate
+        //    moved below it — or deleted — fails here rather than reading as present somewhere in
+        //    the file.
+        let editor = try Self.source("MarkdownEditor.swift")
+        let built = editor.components(separatedBy: "EditorSurfacePanel()").count - 1
+        #expect(built == 1, "the surfaces are built somewhere other than syncSurface, or not at all")
+        if let entry = editor.range(of: "private func syncSurface()"),
+           let site = editor.range(of: "EditorSurfacePanel()"), entry.upperBound < site.lowerBound {
+            let beforeItIsBuilt = Self.squashed(String(editor[entry.upperBound..<site.lowerBound]))
+            // `else` and no `||`: the window test has to be the thing that decides, not one
+            // disjunct beside a fallback onto whatever window happens to be around.
+            #expect(beforeItIsBuilt.contains("probe.window != nil else") && !beforeItIsBuilt.contains("||"), """
+                `syncSurface` builds an EditorSurfacePanel — a real NSPanel — without first \
+                requiring the probe to be in a window. That gate is what makes running these suites \
+                on the operator's machine safe: the mount tests lay out an NSHostingView with no \
+                window, so the surfaces are unreachable. Without it they are one selection away.
+                """)
+        } else {
+            Issue.record("syncSurface no longer builds the surfaces — this guard is checking nothing")
+        }
+        // …and no other view in the app builds one behind its back.
+        for file in try Self.swiftFiles() where file.name != "MarkdownEditor.swift" {
+            #expect(!file.lines.joined(separator: "\n").contains("EditorSurfacePanel()"), """
+                \(file.name) constructs the surface panel itself, outside the one gate that asks \
+                whether there is a window to hang it on.
+                """)
+        }
+        // The same question one level down: the NSPanel subclass is made in `make`, and `show` is
+        // the only caller, behind the same window.
+        let panelSource = Self.squashed(try Self.source("EditorSurfacePanel.swift"))
+        if let show = panelSource.range(of: "func show("),
+           let make = panelSource.range(of: "make(for: bridge)"), show.upperBound < make.lowerBound {
+            // `else` included: `probe.window ?? NSApp.mainWindow` is a fallback onto somebody else's
+            // window, and it satisfies every check that stops at the property.
+            #expect(panelSource[show.upperBound..<make.lowerBound].contains("guard let window = probe.window else"), """
+                `show` reaches `make` without a window. A windowless probe would then make an \
+                NSPanel and try to parent it to nothing.
+                """)
+        } else {
+            Issue.record("EditorSurfacePanel no longer makes its panel inside show — re-read this")
+        }
+
+        // 2. And nothing in the tests opens a window of its own.
         let tests = Self.appSources.deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("Tests/MeetingsAppTests")
         let files = try FileManager.default.contentsOfDirectory(atPath: tests.path)
@@ -1114,7 +1199,20 @@ import Testing
             let text = try String(contentsOf: tests.appendingPathComponent(file), encoding: .utf8)
             for opens in ["NSWindow(", "makeKeyAndOrderFront", "orderFront(", "orderFrontRegardless",
                           "NSApplication.shared.run", "NSApp.run", "activate(ignoringOtherApps",
-                          "addChildWindow", "runModal", "NSPanel("] {
+                          // The modern no-argument spelling of the same thing — banning only the
+                          // deprecated one left the replacement wide open.
+                          "NSApp.activate()", "NSApplication.shared.activate()",
+                          "addChildWindow", "runModal", "NSPanel(",
+                          // A hosting *view* lays out off-screen and is how these suites work. A
+                          // hosting controller or a hosting window carries a window with it.
+                          "NSHostingController", "NSHostingWindow",
+                          // Each of these is a window the moment it is run, and two of them are
+                          // modal — a test that opened one would hang the suite in front of the
+                          // operator until he dismissed it.
+                          "NSAlert", "NSOpenPanel", "NSSavePanel",
+                          // `.prohibited` is required below. `.regular` puts the process in the Dock
+                          // and lets it come to the front.
+                          "setActivationPolicy(.regular)"] {
                 #expect(!text.contains(opens), """
                     \(file) calls \(opens). A test that opens a window takes over the screen of \
                     whoever is running it, and this suite is run by an operator mid-session — an \

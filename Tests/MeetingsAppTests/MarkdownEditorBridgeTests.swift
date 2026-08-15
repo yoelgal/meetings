@@ -43,6 +43,38 @@ import Testing
             """)
     }
 
+    /// And it gets its own names **after** another editor has been and gone.
+    ///
+    /// Two simultaneously live bridges are the easy half, and the test above proves it under any
+    /// scheme — including the object's own address, which is what this used to be. An address is
+    /// unique only among live objects: the allocator hands the freed block straight back, so the
+    /// next bridge inherits its predecessor's notification names and its `MarkdownFormatting`
+    /// identity. The engine subscribes with `object: nil`, so a stale observer left by an editor
+    /// that has not finished tearing down would then receive the new editor's ⌘B — decided by the
+    /// order of mounts and unmounts rather than by luck.
+    ///
+    /// Fifty rounds, each releasing its bridge before the next is made, is exactly the shape that
+    /// recycles an address. A counter is unique across time and passes it; the address scheme
+    /// fails on the second round.
+    @MainActor @Test func anEditorNeverInheritsTheBusNamesOfOneThatIsGone() {
+        var ids: [Int] = []
+        var names: Set<Notification.Name> = []
+        for round in 1...50 {
+            let bridge = MarkdownEditorBridge()
+            ids.append(bridge.id)
+            guard let name = bridge.configuration.services.bus.applyBoldRequest else {
+                Issue.record("the bus has no name to post ⌘B on")
+                return
+            }
+            #expect(names.insert(name).inserted, """
+                Round \(round) reused a bus name an earlier editor had already used. Uniqueness \
+                among live bridges is not the property the bus needs — the id has to be unique \
+                across time, or a released editor's names come back on the next one.
+                """)
+        }
+        #expect(Set(ids).count == ids.count, "an id was handed out twice")
+    }
+
     /// The editor grows to its document instead of scrolling inside the page that carries it.
     ///
     /// `.scrolls` is the library's default, and taking it would put a second scrolling surface under

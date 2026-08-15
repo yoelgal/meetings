@@ -105,12 +105,23 @@ struct MarkdownEditorProbeView: NSViewRepresentable {
 /// The names are **unique to this instance**, because the engine subscribes with `object: nil`: with
 /// one shared name, ⌘B in the floating notes panel would also embolden the write-up behind it.
 @MainActor @Observable final class MarkdownEditorBridge {
-    /// Unique per mounted editor. Also the identity the Format menu's focused value is keyed on.
+    /// Unique per mounted editor, and **never reused**. Also the identity the Format menu's focused
+    /// value is keyed on.
     ///
-    /// The object's own address, not a random number: two live bridges cannot share one, which is
-    /// what the bus names need, and it says so rather than arguing from 2⁻⁶⁴. Read fresh each time
-    /// because a bridge that is gone has no bus and no menu entry to collide with.
-    var id: Int { Int(bitPattern: ObjectIdentifier(self)) }
+    /// A counter, not the object's address and not a random number. An address is unique only among
+    /// *live* objects: allocators recycle them, so a bridge created after this one is deallocated
+    /// can be handed the same address, and with it this bridge's notification names and its
+    /// ``MarkdownFormatting`` identity. The engine subscribes with `object: nil`, so that is a real
+    /// request delivered to the wrong editor — and one an ordering of mounts and unmounts decides,
+    /// not luck. Unique across time is the property the bus needs; a counter is exactly that.
+    let id = MarkdownEditorBridge.nextId()
+
+    /// The counter behind ``id``. `@MainActor` by the class, so the increment needs no lock.
+    private static var lastId = 0
+    private static func nextId() -> Int {
+        lastId += 1
+        return lastId
+    }
 
     private(set) var selection = NSRange(location: 0, length: 0)
     private(set) var isBold = false
