@@ -63,6 +63,11 @@ struct LiveMarkdownEditor: View {
 
     // MARK: - The slash menu
 
+    /// **No anchor, no menu.** The `let anchor` is a gate, not a convenience: an unmeasurable caret
+    /// used to be worth falling back to the origin for, and the origin is the worst answer there is
+    /// — a menu 1000 pt from the caret reads as a placement bug and costs a day to chase, where a
+    /// menu that does not open is a bug you can find in a minute. ``MarkdownEditorBridge/anchorRect``
+    /// returns nil rather than a guess for the same reason.
     @ViewBuilder private var menuOverlay: some View {
         if let query = bridge.openQuery, let anchor = bridge.anchor {
             SlashMenu(matches: query.matches, highlighted: bridge.highlightedRow) { command in
@@ -408,14 +413,33 @@ struct MarkdownEditorProbeView: NSViewRepresentable {
     /// than the source because it answers "clipped by every ancestor", a longer question than the
     /// one being asked.
     ///
-    /// Intersecting with `bounds` drops the part of the window beside the editor rather than over
-    /// it. A hierarchy not laid out yet reports an empty rect, and an empty viewport would put both
+    /// **Clipped to the editor across, not down.** The width is intersected with the editor's own
+    /// bounds, because the horizontal clamp exists to keep a surface inside the column rather than
+    /// out in the window beside it. The *height* is the clip view's, untouched — and that is the
+    /// defect this line used to carry.
+    ///
+    /// Intersecting the height with `probe.bounds` made `visible.maxY` the bottom of the **editor**,
+    /// so "is there room below the caret" was asked of the document rather than of the screen. At
+    /// the end of a document there is by definition nothing below the last line, so the answer was
+    /// always no — for every caret at the end of every write-up, which is where a menu is opened
+    /// most. With the page scrolled so the tail of the summary sits near the top of the viewport,
+    /// room *above* is small too, both sides fail, and the menu is drawn 305 pt above the caret and
+    /// off the top of the page: "the shortcuts menu appears right at the top of the summary".
+    ///
+    /// Nothing below the last line is a fact about the editor, not about the screen. These surfaces
+    /// float over the page and are clipped by *its* scroll view, so a menu hanging under the final
+    /// line is drawn over whatever the page has below the write-up, which is exactly where it
+    /// belongs.
+    ///
+    /// A hierarchy not laid out yet reports an empty rect, and an empty viewport would put both
     /// surfaces on a point.
     private static func viewport(of probe: MarkdownEditorProbe) -> CGRect {
         let seen = probe.enclosingScrollView.map { probe.convert($0.contentView.bounds, from: $0.contentView) }
             ?? probe.visibleRect.intersection(probe.bounds)
-        let slice = seen.intersection(probe.bounds)
-        return slice.isEmpty ? probe.bounds : slice
+        let minX = max(seen.minX, probe.bounds.minX)
+        let maxX = min(seen.maxX, probe.bounds.maxX)
+        guard seen.height > 0, maxX > minX else { return probe.bounds }
+        return CGRect(x: minX, y: seen.minY, width: maxX - minX, height: seen.height)
     }
 
     /// Recompute when the page scrolls. The clip view only exists once SwiftUI has put the probe
@@ -464,6 +488,8 @@ struct MarkdownEditorProbeView: NSViewRepresentable {
             measured = measured.isNull ? segment : measured.union(segment)
             return true
         }
+        // Nil, never a rect nobody measured. Every caller is gated on this being non-nil and hides
+        // its surface when it is not — see ``LiveMarkdownEditor/menuOverlay``.
         guard !measured.isNull, measured.height > 0, measured.origin.y.isFinite else { return nil }
         // Segments are in the text container's space; the origin is the inset the engine was
         // configured with.

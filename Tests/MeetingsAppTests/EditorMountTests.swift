@@ -182,6 +182,199 @@ import MeetingsCore
         withExtendedLifetime(host) {}
     }
 
+    // MARK: - The end of the document
+
+    /// The anchor resolves for a caret **at the end of the document**, including on a trailing empty
+    /// line — the region TextKit 2 gets wrong often enough that the engine carries two workarounds
+    /// for it (`FB15131180`, `FB22524198`).
+    ///
+    /// Measured, and it resolves: 1 segment, on the caret's own line, at every one of these. The
+    /// anchor was the suspect for "the menu opens at the top of the summary" and it is not the
+    /// cause — this test is here so the next person does not have to measure it again.
+    @Test func theAnchorResolvesForEveryCaretAtTheEndOfTheDocument() async throws {
+        let body = (0..<40).map { "Paragraph \($0) with enough prose that the column wraps it once." }
+            .joined(separator: "\n\n")
+        // The four positions: the last character, the end with no trailing newline, an empty final
+        // line, an empty line mid-document, and a document that is one empty line.
+        let cases: [(String, String, (NSString) -> Int)] = [
+            ("the last character", body, { $0.length - 1 }),
+            ("the end, no trailing newline", body, { $0.length }),
+            ("after a trailing newline", body + "\n", { $0.length }),
+            ("an empty line mid-document", "alpha\n\nbeta\n", { _ in 6 }),
+            ("a document that is one empty line", "", { _ in 0 }),
+        ]
+        for (what, text, caret) in cases {
+            let (bridge, _, tv, host) = try await mounted(text)
+            try await Task.sleep(for: .milliseconds(80))
+            let at = caret(tv.string as NSString)
+            tv.setSelectedRange(NSRange(location: at, length: 0))
+            try await Task.sleep(for: .milliseconds(120))
+
+            let anchor = try #require(bridge.anchor, """
+                No anchor with the caret at \(what). Both floating surfaces are gated on it, so the \
+                slash menu would not open at all.
+                """)
+            #expect(anchor.height > 0, "a caret has no width, but it has a line height — \(what)")
+            #expect(anchor.minY.isFinite && anchor.minX.isFinite)
+            // On the caret's own line, not at the editor's origin: the extra line fragment of a
+            // document that has any text in it is never at y = 0.
+            if !text.isEmpty {
+                #expect(anchor.minY > 0, """
+                    The anchor for \(what) came back at the editor's origin (\(anchor)). That is \
+                    what a failed measurement looks like, and it puts the menu at the top of the \
+                    summary.
+                    """)
+            }
+            withExtendedLifetime(host) {}
+        }
+    }
+
+    /// **The reported defect.** A caret on the last line of the write-up, with the page scrolled so
+    /// the tail of it sits near the top of the viewport, opens its menu *on screen*.
+    ///
+    /// `visible` used to be the clip view intersected with the editor's own bounds, which made
+    /// `visible.maxY` the bottom of the **document**. At the end of a document there is nothing
+    /// below the last line, so "room below the caret" was always zero — and with the page scrolled
+    /// down there is little room above either, so the menu was drawn 305 pt above the caret and off
+    /// the top of the page. What is left on screen is a sliver at the top of the summary, which is
+    /// exactly how it was reported.
+    ///
+    /// Nothing below the last line is a fact about the editor, not about the screen: these surfaces
+    /// are clipped by the *page's* scroll view, and a menu under the final line is drawn over
+    /// whatever the page has below the write-up.
+    @Test func theMenuOpensOnScreenWithTheCaretOnTheLastLine() async throws {
+        let (bridge, probe, page, tv, host) = try await onAPage()
+        tv.setSelectedRange(NSRange(location: (tv.string as NSString).length, length: 0))
+        try await Task.sleep(for: .milliseconds(250))
+        // Scrolled so the last line sits 40 pt below the top of the page: the write-up is all but
+        // scrolled past, and the line being typed on is the last of it still showing.
+        let line = try #require(bridge.anchor)
+        scroll(page, probe, putting: line.minY, belowTheTopBy: 40)
+        try await Task.sleep(for: .milliseconds(250))
+
+        tv.insertText("/", replacementRange: tv.selectedRange())
+        tv.setSelectedRange(NSRange(location: (tv.string as NSString).length, length: 0))
+        try await Task.sleep(for: .milliseconds(250))
+
+        #expect(bridge.openQuery != nil, "the slash has to have opened a menu at all")
+        let anchor = try #require(bridge.anchor)
+        let onScreen = probe.convert(page.contentView.bounds, from: page.contentView)
+        // 300 × 299 is the slash menu — see `SlashMenu`, which is `.frame(width: 300)`.
+        let placed = MarkdownEditing.floating(
+            over: anchor, size: CGSize(width: 300, height: 299), in: bridge.visible, prefer: .below
+        )
+        #expect(placed.y >= onScreen.minY, """
+            The menu is placed at \(placed.y) with the page showing \(onScreen.minY)…\
+            \(onScreen.maxY). It is \(onScreen.minY - placed.y) pt off the top of the page — a \
+            sliver of menu at the top of the summary, over the line you are not typing on.
+            """)
+        #expect(placed.y + 299 <= onScreen.maxY, "and it fits under the caret rather than overflowing")
+        #expect(placed.below, "there is a screenful of page below the write-up; that is where it goes")
+        withExtendedLifetime(host) {}
+    }
+
+    /// The selection toolbar shares the fault, because it reads the same `visible`.
+    ///
+    /// It is 36 pt rather than 299, so it survives a viewport the menu cannot — but with the tail of
+    /// the write-up in a band shorter than the toolbar itself, "room below" being zero pushed it off
+    /// the top of the page in the same way.
+    @Test func theToolbarOpensOnScreenOverASelectionEndingAtTheLastCharacter() async throws {
+        // No trailing newline: the last line of text *is* the last line of the document, which is
+        // what "a selection ending at the last character" means.
+        let (bridge, probe, page, tv, host) = try await onAPage(trailingBlankLine: false)
+        let end = (tv.string as NSString).length
+        tv.setSelectedRange(NSRange(location: end - 6, length: 6))
+        try await Task.sleep(for: .milliseconds(250))
+        // Scrolled so the selected line sits 20 pt below the top of the page — a band of write-up
+        // shorter than the toolbar, which is the geometry that used to push it off the top. Driven
+        // off the measured anchor rather than a guess at the line height.
+        let line = try #require(bridge.anchor)
+        scroll(page, probe, putting: line.minY, belowTheTopBy: 20)
+        try await Task.sleep(for: .milliseconds(250))
+
+        #expect(bridge.selection.length == 6, "the toolbar is gated on a real selection")
+        let anchor = try #require(bridge.anchor)
+        let onScreen = probe.convert(page.contentView.bounds, from: page.contentView)
+        let placed = MarkdownEditing.floating(
+            over: anchor, size: CGSize(width: 280, height: 36), in: bridge.visible, prefer: .above
+        )
+        #expect(placed.y >= onScreen.minY, """
+            The toolbar is placed at \(placed.y) with the page showing \(onScreen.minY)…\
+            \(onScreen.maxY) — off the top of the page, over text the selection is not on.
+            """)
+        #expect(placed.y + 36 <= onScreen.maxY)
+        withExtendedLifetime(host) {}
+    }
+
+    // MARK: - A page that scrolls
+
+    /// The editor as the app mounts it: inside a `ScrollView`, with a screenful of page below it —
+    /// the transcript sections, on the real screen. Without something under the write-up there is no
+    /// difference between "the bottom of the document" and "the bottom of the screen", which is the
+    /// whole distinction the two tests above turn on.
+    private struct ScrollingPage: View {
+        let bridge: MarkdownEditorBridge
+        let document: Document
+
+        var body: some View {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+                    Text("Meeting title").frame(height: 60)
+                    LiveMarkdownEditor(text: document.binding, documentId: "page-test", bridge: bridge)
+                        .frame(maxWidth: 520)
+                    Text("Transcript").frame(height: 600)
+                }
+                .padding(20)
+            }
+        }
+    }
+
+    private func onAPage(trailingBlankLine: Bool = true) async throws
+        -> (MarkdownEditorBridge, MarkdownEditorProbe, NSScrollView, NSTextView, NSView) {
+        NSApplication.shared.setActivationPolicy(.prohibited)
+        let bridge = MarkdownEditorBridge()
+        let text = (0..<50).map { "Paragraph \($0) with enough prose that the column wraps it once." }
+            .joined(separator: "\n\n") + (trailingBlankLine ? "\n\n" : "")
+        let host = NSHostingView(rootView: ScrollingPage(bridge: bridge, document: Document(text)))
+        host.frame = NSRect(x: 0, y: 0, width: 620, height: 700)
+        host.layoutSubtreeIfNeeded()
+        for _ in 0..<50 where !bridge.isAttached {
+            try await Task.sleep(for: .milliseconds(20))
+            host.layoutSubtreeIfNeeded()
+        }
+        let tv = try #require(bridge.textView, "the probe never found the engine's NSTextView")
+        try await Task.sleep(for: .milliseconds(300))
+        host.layoutSubtreeIfNeeded()
+
+        var probe: MarkdownEditorProbe?
+        var page: NSScrollView?
+        walk(host) { view in
+            if let found = view as? MarkdownEditorProbe { probe = found }
+            // The page's scroll view, not the engine's: the engine's holds the text view.
+            if page == nil, let found = view as? NSScrollView, !(found.documentView is NSTextView) {
+                page = found
+            }
+        }
+        return (bridge, try #require(probe), try #require(page), tv, host)
+    }
+
+    private func walk(_ view: NSView, _ into: (NSView) -> Void) {
+        into(view)
+        for sub in view.subviews { walk(sub, into) }
+    }
+
+    /// Scrolls the page down until `y` — a position in the editor's own coordinates, measured off
+    /// the anchor rather than guessed from a line height — sits `gap` points below the top of the
+    /// viewport. "Scrolled down to the bottom", with the line being typed on the last band of
+    /// write-up still on screen.
+    private func scroll(
+        _ page: NSScrollView, _ probe: MarkdownEditorProbe, putting y: CGFloat, belowTheTopBy gap: CGFloat
+    ) {
+        let top = page.contentView.convert(probe.bounds, from: probe).origin.y
+        page.contentView.scroll(to: NSPoint(x: 0, y: top + y - gap))
+        page.reflectScrolledClipView(page.contentView)
+    }
+
     /// `~~struck~~` is drawn struck through.
     ///
     /// The engine parses pure markdown and ships strikethrough as an **opt-in extension**; with the
