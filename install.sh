@@ -107,6 +107,11 @@ say "Building (first run fetches packages, so it takes a few minutes)"
 bash scripts/build-app.sh
 
 # ---------------------------------------------------------------- install the app
+# The old bundle is moved aside rather than deleted, and only removed once its replacement is in
+# place. `rm -rf` first meant a Ctrl-C, a full disk or a refused sudo in the seconds that followed
+# left the Mac with no Meetings.app at all and a `meetings` symlink pointing into nothing — from an
+# upgrade the user was told was safe to re-run. A rename is atomic and the undo is another rename.
+OLD_BUNDLE=""
 if [ -d "$APPS/Meetings.app" ]; then
     say "Replacing $APPS/Meetings.app"
     # A running copy holds its bundle open, and mv over a live app leaves it half-replaced. It also
@@ -141,13 +146,29 @@ if [ -d "$APPS/Meetings.app" ]; then
     already migrated."
         fi
     fi
-    rm -rf "$APPS/Meetings.app"
+    OLD_BUNDLE="$APPS/Meetings.app.replaced-$$"
+    mv "$APPS/Meetings.app" "$OLD_BUNDLE" 2>/dev/null || {
+        say "$APPS needs an administrator; you will be asked for your password"
+        sudo mv "$APPS/Meetings.app" "$OLD_BUNDLE"
+    }
+    # Anything that goes wrong from here to the install leaves the old app one rename from working,
+    # so put it back rather than leaving the user with neither. EXIT only: with no handler on INT,
+    # Ctrl-C terminates the script the normal way and this runs on the way out.
+    trap 'if [ -d "$OLD_BUNDLE" ] && [ ! -d "$APPS/Meetings.app" ]; then
+              mv "$OLD_BUNDLE" "$APPS/Meetings.app" 2>/dev/null \
+                  || sudo mv "$OLD_BUNDLE" "$APPS/Meetings.app" 2>/dev/null || true
+          fi' EXIT
 fi
 say "Installing to $APPS"
 mv dist/Meetings.app "$APPS/" 2>/dev/null || {
     say "$APPS needs an administrator; you will be asked for your password"
     sudo mv dist/Meetings.app "$APPS/"
 }
+# Committed. The old one goes now, and the restore trap with it.
+trap - EXIT
+if [ -n "$OLD_BUNDLE" ]; then
+    rm -rf "$OLD_BUNDLE" 2>/dev/null || sudo rm -rf "$OLD_BUNDLE"
+fi
 
 # ---------------------------------------------------------------- install the CLI
 CLI="$APPS/Meetings.app/Contents/Helpers/meetings"

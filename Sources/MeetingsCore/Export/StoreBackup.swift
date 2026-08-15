@@ -58,20 +58,22 @@ public enum StoreBackup {
         return destination
     }
 
-    /// The launch-time sweep ("runs on launch"). Never throws: a machine with a full disk
-    /// should still open its meetings. Returns the snapshot, or nil with the reason logged nowhere
-    /// noisier than the return value.
-    @discardableResult
-    public static func runOnLaunch(store: MeetingStore) -> URL? {
-        do {
-            return try run(store: store)
-        } catch {
-            // Not fatal, but not silent either: "the disk was full so I stopped taking snapshots"
-            // is exactly the sentence you want to have seen, six weeks before you need one.
-            FileHandle.standardError.write(Data(
-                "Meetings: could not snapshot the store: \(error.localizedDescription)\n".utf8))
-            return nil
-        }
+    /// The one sentence a snapshot that did not happen gets.
+    ///
+    /// Not fatal, but not silent either: "the disk was full so I stopped taking snapshots" is
+    /// exactly the sentence you want to have seen, six weeks before you need one. The store is
+    /// named because the only caller runs before an irreversible rewrite of *that* file, and the
+    /// message is the only record that the copy the recovery advice promises was never taken.
+    ///
+    /// There is deliberately no launch-time sweep behind this. One lived here, claimed in its own
+    /// doc comment to run on launch, and had no call site — and wiring it up would have meant a
+    /// whole-store `VACUUM` on every launch, with a seven-kept prune that rotates every real
+    /// snapshot off the disk in seven launches of a quiet afternoon. The automatic snapshot is the
+    /// one ``MeetingsDatabase`` takes before a migration rewrites data; `meetings backup` is the
+    /// one a person asks for.
+    static func report(_ error: Error, store: String) {
+        FileHandle.standardError.write(Data(
+            "Meetings: could not snapshot the store at \(store): \(error.localizedDescription)\n".utf8))
     }
 
     /// Deletes all but the newest `keeping` snapshots and returns what is left, newest first.
@@ -98,18 +100,44 @@ public enum StoreBackup {
 
     /// Snapshots in `directory`, newest first.
     ///
-    /// Empty files are not snapshots. A VACUUM killed part-way — the process, or the disk running
-    /// out underneath it — leaves one, and it would otherwise sort to the front and be offered as
-    /// the newest thing to restore from.
-    // ponytail: size is the whole check. Proving a snapshot is intact means opening it, and the
-    // only caller that would act on the answer is a message telling a human which file to copy.
+    /// A VACUUM killed part-way — SIGKILL, a power cut, the disk running out underneath it — leaves
+    /// a file that is *not* a store, and it sorts to the front of a listing ordered by name. That
+    /// makes it the file ``StoreOpenError/recovery(path:snapshot:)`` tells a locked-out user to copy
+    /// over their damaged store, and the file the next prune keeps in place of a real one.
+    ///
+    /// Size was the whole check, and it only catches the zero-byte case: a torn file is usually
+    /// several megabytes of plausible-looking pages. So each candidate is opened.
     public static func list(in directory: URL = Paths.backupsRoot) throws -> [URL] {
         let files = (try? FileManager.default.contentsOfDirectory(
             at: directory, includingPropertiesForKeys: [.fileSizeKey], options: [.skipsHiddenFiles])) ?? []
         return files
             .filter { $0.lastPathComponent.hasPrefix("store-") && $0.pathExtension == "db" }
             .filter { ((try? $0.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) > 0 }
+            .filter(isRestorable)
             .sorted { $0.lastPathComponent > $1.lastPathComponent }
+    }
+
+    /// Whether `url` is a store somebody could actually restore from.
+    ///
+    /// Read-only, one row, one table this schema always has: enough to force SQLite through the
+    /// header, the schema and a real page of data, and cheap enough to do for eight files on a path
+    /// that runs when a backup is written or when a store has already failed to open. A foreign
+    /// database that happens to be named `store-*.db` fails it too, which is the same right answer.
+    ///
+    // ponytail: a file that fails this is left where it is rather than deleted. `run` already
+    // removes a destination whose VACUUM threw, so reaching here means the process died mid-write;
+    // deleting files out of the backups directory on a *read* is a bigger promise than not
+    // offering them.
+    private static func isRestorable(_ url: URL) -> Bool {
+        var config = Configuration()
+        config.readonly = true
+        do {
+            _ = try DatabaseQueue(path: url.path, configuration: config)
+                .read { try Int.fetchOne($0, sql: "SELECT count(*) FROM meetings") }
+            return true
+        } catch {
+            return false
+        }
     }
 
     static func filename(_ date: Date) -> String {

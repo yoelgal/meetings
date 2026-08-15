@@ -40,8 +40,25 @@ public enum Schema {
         //
         // Re-running it under a new identifier is the whole fix, and it is safe because
         // ``MarkdownActions/appending(_:to:)`` is idempotent per action: a store the good `v6` handled
-        // finds every action already in its write-up and is left byte-identical, and a store either
-        // bad `v6` mishandled gets exactly the lines it is missing.
+        // finds every action already in its write-up and is left untouched, and a store either bad
+        // `v6` mishandled gets exactly the lines it is missing.
+        //
+        // **With one exception, stated rather than fixed.** "Untouched" holds only for a write-up
+        // nobody edited in between. The `actions` column is never cleared — see
+        // ``actionsIntoTheWriteUp(_:)`` for why — so an action a user *deleted* from a write-up
+        // after a good `v6` is still in the column, and `v7` puts it back.
+        //
+        // It is not fixable from inside the store. Distinguishing "the good `v6` handled this and
+        // the user then deleted a line" from "a bad `v6` left this line out" needs to know which of
+        // three implementations ran under the identifier `v6`, and GRDB recorded only the string.
+        // Skipping any row that already carries an `## Actions` section would abandon precisely the
+        // stores `v7` exists for: the set-membership `v6` wrote a section with lines collapsed out
+        // of it, and it looks exactly like a section a user pruned by hand.
+        //
+        // No shipping user is exposed: v0.1.2 records `v1`…`v5`, so `v6` and `v7` run in the same
+        // open and the append happens once, with no window in between to edit. It reaches only a
+        // store already migrated by a build that recorded `v6` — which on this branch is a
+        // developer's own store.
         migrator.registerMigration("v7") { db in
             try actionsIntoTheWriteUp(db)
         }

@@ -92,6 +92,24 @@ sqlite3 "$OLD_HOME/store.db" "SELECT actions FROM meetings WHERE id = '0112-week
     || fail "the legacy actions column lost the owner it is the only copy of"
 sqlite3 "$OLD_HOME/store.db" "SELECT identifier FROM grdb_migrations" | grep -qx 'v6' \
     || fail "the store was read without v6 being recorded — the migration did not run"
+# v7 is the repair for the three implementations that shipped under the identifier v6. Recording it
+# is what stops a future build re-running the backfill, so an upgrade that quietly skipped it would
+# look identical here and diverge on the next one.
+sqlite3 "$OLD_HOME/store.db" "SELECT identifier FROM grdb_migrations" | grep -qx 'v7' \
+    || fail "v7 was not recorded — the corrected actions pass did not run"
+# And the copy taken before all of that. It is the only undo an irreversible rewrite of somebody's
+# prose has, and it is what StoreOpenError tells a locked-out user to restore from, so "the upgrade
+# worked" is not the whole of what this step is for. `-s`: a zero-byte file is a failed VACUUM.
+SNAPSHOT="$(ls -1 "$OLD_HOME"/backups/store-*.db 2>/dev/null | tail -1 || true)"
+[ -n "$SNAPSHOT" ] && [ -s "$SNAPSHOT" ] \
+    || fail "the migration rewrote the store without leaving a snapshot in $OLD_HOME/backups"
+# A restorable store, not a marker file: it opens, and its write-up is the one from *before* the
+# rewrite. A copy taken after v6 would pass every check above and be worth nothing as an undo.
+sqlite3 "$SNAPSHOT" "SELECT count(*) FROM meetings" >/dev/null \
+    || fail "the snapshot is not a readable store: $SNAPSHOT"
+if sqlite3 "$SNAPSHOT" "SELECT summary FROM meetings WHERE id = '0112-weekly'" | grep -q 'Send the numbers'
+then fail "the snapshot already carries the migrated actions — it was taken after the rewrite"
+fi
 
 # One read path past `actions list`, because markdown export is one-way: a write-up it drops actions
 # from is a backup that silently is not one.

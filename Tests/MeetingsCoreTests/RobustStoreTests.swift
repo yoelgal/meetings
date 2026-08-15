@@ -221,6 +221,43 @@ import Testing
         #expect(try reopened.allMeetings().map(\.title) == ["Still opens"])
     }
 
+    /// Best-effort is not the same as silent, and it was: two bare `try?` and no log. A full disk, a
+    /// `backups/` somebody chmod'ed, or a `VACUUM INTO` that lost the busy timeout rewrote the store
+    /// with no copy *and no record* — which is exactly the state that makes ``StoreOpenError``'s
+    /// "restore the newest automatic snapshot" false for the person reading it. "The disk was full
+    /// so I stopped taking snapshots" is the sentence you want to have seen.
+    ///
+    /// A subprocess because the claim is about what reaches stderr, and stderr in this process
+    /// belongs to the test runner.
+    @Test func aSnapshotThatCannotBeWrittenSaysSoOnTheWayPast() throws {
+        do {
+            let store = try openStore()
+            try store.createMeeting(TestStore.meeting(title: "Still opens"))
+            try store.dbPool.close()
+        }
+        try Data("not a directory\n".utf8).write(
+            to: directory.appendingPathComponent("backups", isDirectory: true))
+        try forceMigrationOnNextOpen()
+
+        let cli = Bundle.module.bundleURL.deletingLastPathComponent().appendingPathComponent("meetings")
+        try #require(FileManager.default.fileExists(atPath: cli.path))
+        let process = Process()
+        let err = Pipe()
+        process.executableURL = cli
+        process.arguments = ["list"]
+        process.environment = ["MEETINGS_HOME": directory.path, "PATH": "/usr/bin:/bin"]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = err
+        process.standardInput = FileHandle.nullDevice
+        try process.run()
+        let message = String(decoding: err.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        process.waitUntilExit()
+
+        #expect(message.contains("could not snapshot the store"))
+        #expect(message.contains(storeURL.path), "which store went unprotected is the whole of the report")
+        #expect(process.terminationStatus == 0, "and the upgrade still happened — a lost snapshot is not a lockout")
+    }
+
     // MARK: - A store from the future
 
     /// GRDB's migrator only ever looks for migrations that are *missing*, so an older build opens a
@@ -303,17 +340,34 @@ import Testing
 
     // MARK: - Snapshots
 
-    /// A VACUUM that runs out of disk leaves the file it had started. Zero bytes sorts to the front
-    /// of a directory listing that is ordered by name, so it becomes the snapshot the damaged-store
-    /// message offers — and the next prune drops a real one to keep it.
-    @Test func anEmptySnapshotIsNotOfferedAsABackup() throws {
+    /// A VACUUM that does not finish leaves the file it had started, and that file sorts to the
+    /// front of a listing ordered by name — so it becomes the snapshot the damaged-store message
+    /// tells the user to copy over their store, and the one the next prune keeps a real snapshot out
+    /// to make room for.
+    ///
+    /// Two shapes, one rule. Out of disk leaves zero bytes, which a size check caught. SIGKILL or a
+    /// power cut leaves megabytes of plausible pages, which it did not: proving a snapshot is a
+    /// snapshot means opening it.
+    @Test func aSnapshotThatIsNotAStoreIsNotOfferedAsABackup() throws {
         let backups = directory.appendingPathComponent("backups", isDirectory: true)
-        try FileManager.default.createDirectory(at: backups, withIntermediateDirectories: true)
-        let real = backups.appendingPathComponent("store-2026-08-01-090000.db")
-        try Data(repeating: 0x41, count: 4096).write(to: real)
+        let real: URL
+        do {
+            let store = try openStore()
+            try store.createMeeting(TestStore.meeting(title: "A snapshot worth restoring"))
+            real = try StoreBackup.run(
+                store: store, to: backups.appendingPathComponent("store-2026-08-01-090000.db"))
+            try store.dbPool.close()
+        }
+        // Newer than the real one by name, and neither of them a store.
         try Data().write(to: backups.appendingPathComponent("store-2026-08-02-090000.db"))
+        try Data(repeating: 0x41, count: 64 * 1024)
+            .write(to: backups.appendingPathComponent("store-2026-08-03-090000.db"))
 
         #expect(try StoreBackup.list(in: backups).map(\.lastPathComponent) == [real.lastPathComponent])
+        // Which is the whole point of the check: this is the sentence the user acts on.
+        try corrupt(with: Data("this is not a database, it is a poem\n".utf8))
+        let error = #expect(throws: StoreOpenError.self) { _ = try openStore() }
+        #expect(try #require(error?.errorDescription).contains(real.lastPathComponent))
     }
 }
 

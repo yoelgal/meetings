@@ -9,6 +9,16 @@ public enum MeetingsDatabase {
     /// enough that a genuinely stuck writer surfaces as an error rather than a hang.
     public static let busyTimeout: TimeInterval = 5
 
+    /// How long ``serialisedAcrossProcesses(for:_:)`` waits for the other process to finish opening.
+    ///
+    /// Not ``busyTimeout``, and not the same kind of number. That one bounds a short transaction;
+    /// this one bounds *another process's whole open* — a `VACUUM INTO` of the entire store followed
+    /// by a migration that rewrites every write-up, which is work proportional to the store rather
+    /// than to one statement. Two minutes is generous for that on a large store on a slow or
+    /// contended disk, and short enough that a genuinely wedged process produces a sentence rather
+    /// than a launch that never finishes.
+    public static let lockWait: TimeInterval = 120
+
     /// Opens (creating if absent) the store at `url`, creating the directory tree on the way and
     /// applying every migration before returning. A caller never sees an unmigrated database.
     ///
@@ -90,14 +100,27 @@ public enum MeetingsDatabase {
     /// **Best-effort, and that is deliberate**: a full disk, a read-only volume or a backups directory
     /// somebody chmod'ed must not stop the store from opening. Skipped when nothing is applied yet —
     /// that is a database being created, and there is nothing in it to copy.
+    ///
+    /// Best-effort is not the same as silent, and it used to be: two bare `try?` and no log meant a
+    /// full disk, a chmod'ed `backups/` or a `VACUUM INTO` that lost the busy timeout rewrote the
+    /// store with no copy and no record, which is precisely the state that made
+    /// ``StoreOpenError``'s "restore the newest automatic snapshot" a lie for the user it was
+    /// written for. The upgrade still proceeds — a snapshot that cannot be taken must not lock
+    /// somebody out of their meetings — but it says so.
     private static func snapshot(_ pool: DatabasePool, beside url: URL) {
         let directory = url.deletingLastPathComponent().appendingPathComponent("backups", isDirectory: true)
-        try? StoreBackup.run(
-            store: MeetingStore(dbPool: pool),
-            to: directory.appendingPathComponent(StoreBackup.filename(Date()))
-        )
-        // `run` prunes only the directory it chose for itself, and this one was named.
-        try? StoreBackup.prune(in: directory)
+        // Pruned *before* the copy, keeping one fewer so the new one lands inside the seven. `run`
+        // prunes only the directory it chose for itself and this one was named, so the prune was
+        // ours to place — and after the copy it can never free the space the copy needed.
+        _ = try? StoreBackup.prune(in: directory, keeping: StoreBackup.keep - 1)
+        do {
+            try StoreBackup.run(
+                store: MeetingStore(dbPool: pool),
+                to: directory.appendingPathComponent(StoreBackup.filename(Date()))
+            )
+        } catch {
+            StoreBackup.report(error, store: url.path)
+        }
     }
 
     private static func isForeignKeyViolation(_ error: Error) -> Bool {
@@ -165,9 +188,23 @@ public enum MeetingsDatabase {
     /// coming into existence. The kernel drops the lock when the fd closes, including on a crash, so
     /// a killed process cannot wedge every future launch.
     ///
-    /// Bounded, and deliberately best-effort at the end of it: after `busyTimeout` of waiting the
-    /// work runs anyway. A store that cannot be locked (a read-only directory, a filesystem with no
-    /// `flock`) must still open — the lock removes a race, it is not a permission to run.
+    /// A store that cannot be locked at all must still open — the lock removes a race, it is not a
+    /// permission to run. There are exactly two such stores and both are recognised rather than
+    /// guessed at: one whose directory will not take a lock file (`descriptor < 0` — a read-only
+    /// volume), and one on a filesystem with no advisory locking (`ENOTSUP`, some network mounts).
+    ///
+    /// Everything else is a *live process holding the lock*, and giving up on that one was the bug.
+    /// The old wait broke after ``busyTimeout`` and ran the body anyway, which reinstates the exact
+    /// race the docstring above describes: GRDB reads `grdb_migrations` once, before the
+    /// per-migration transactions, so the process that gives up plans its migrations from a read
+    /// the winner has since invalidated and dies on `UNIQUE constraint failed:
+    /// grdb_migrations.identifier`. Five seconds was never enough anyway — the critical section now
+    /// contains a whole-store `VACUUM INTO`.
+    ///
+    /// The kernel drops a crashed holder's lock, so waiting can only ever be waiting on a process
+    /// that is still working. The bound left here is ``lockWait``, long enough for that work on a
+    /// large store on a slow disk, and it *fails* rather than proceeding wrongly: an unbounded wait
+    /// would turn a genuinely wedged process into a launch that hangs with nothing on screen.
     private static func serialisedAcrossProcesses<T>(for url: URL, _ body: () throws -> T) throws -> T {
         let descriptor = Darwin.open(url.path + ".lock", O_CREAT | O_RDWR | O_CLOEXEC, 0o644)
         guard descriptor >= 0 else { return try body() }
@@ -175,9 +212,14 @@ public enum MeetingsDatabase {
             flock(descriptor, LOCK_UN)
             close(descriptor)
         }
-        let deadline = Date().addingTimeInterval(busyTimeout)
+        let deadline = Date().addingTimeInterval(lockWait)
         while flock(descriptor, LOCK_EX | LOCK_NB) != 0 {
-            guard Date() < deadline else { break }
+            let failure = errno
+            // No advisory locking here, so there is nothing to wait for and never will be.
+            if failure == ENOTSUP || failure == EOPNOTSUPP || failure == EINVAL { break }
+            guard Date() < deadline else {
+                throw StoreOpenError.stillLocked(path: url.path, seconds: Int(lockWait))
+            }
             usleep(20_000)
         }
         return try body()

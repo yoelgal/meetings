@@ -26,6 +26,8 @@ public enum StoreOpenError: Error, LocalizedError {
     case damaged(path: String, detail: String, snapshot: URL?)
     /// Written by a build that knows migrations this one does not.
     case fromNewerBuild(path: String, unknown: [String], snapshot: URL?)
+    /// Another process has held the open lock for the whole of ``MeetingsDatabase/lockWait``.
+    case stillLocked(path: String, seconds: Int)
 
     public var errorDescription: String? {
         switch self {
@@ -62,6 +64,15 @@ public enum StoreOpenError: Error, LocalizedError {
                 (it has migration\(unknown.count == 1 ? "" : "s") \(unknown.sorted().joined(separator: ", ")), \
                 which this build does not know). It has not been opened or changed. Install the \
                 newer version again — \(fallback).
+                """
+
+        case .stillLocked(let path, let seconds):
+            return """
+                Another Meetings process has been opening the store at \(path) for more than \
+                \(seconds) seconds and still holds it. Nothing has been changed here. It is most \
+                likely upgrading a large store — copying it and then migrating it — so give it \
+                time and open this one again. If nothing else is running, quit every Meetings \
+                window and `meetings` command and try again.
                 """
         }
     }
@@ -127,7 +138,11 @@ public enum StoreOpenError: Error, LocalizedError {
         switch db.resultCode {
         case .SQLITE_FULL:
             return diskFull(path: url.path)
-        case .SQLITE_NOTADB, .SQLITE_CORRUPT:
+        // A constraint that is not a foreign key — a UNIQUE or a NOT NULL rejected during a
+        // migration, say — had no case here at all, so GRDB's own rendering went to the launch
+        // screen with the offending row inside it. `db.message` is SQLite's sentence
+        // ("UNIQUE constraint failed: meetings.id") and carries table and column names only.
+        case .SQLITE_NOTADB, .SQLITE_CORRUPT, .SQLITE_CONSTRAINT:
             return damaged(path: url.path, detail: db.message ?? "\(db.resultCode)", snapshot: newestSnapshot(besides: url))
         case .SQLITE_CANTOPEN:
             var isDirectory: ObjCBool = false

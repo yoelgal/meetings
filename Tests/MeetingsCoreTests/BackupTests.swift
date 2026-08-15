@@ -46,13 +46,22 @@ import Testing
         #expect(try reopened.meeting(id: meeting.id) != nil)
     }
 
-    @Test func sevenAreKeptAndTheOldestGo() throws {
+    /// Ten days of real snapshots, oldest first. Real, rather than a file with the right name and
+    /// some bytes in it: ``StoreBackup/list(in:)`` opens each candidate now, because a `VACUUM INTO`
+    /// killed part-way leaves a plausible-sized file that is not a store and must not be offered as
+    /// the thing to restore from.
+    func seedSnapshots(_ days: ClosedRange<Int>) throws {
         try FileManager.default.createDirectory(at: backups, withIntermediateDirectories: true)
-        // Ten days of snapshots, oldest first.
-        for day in 1...10 {
+        let seed = try StoreBackup.run(store: store, to: directory.appendingPathComponent("seed.db"))
+        defer { try? FileManager.default.removeItem(at: seed) }
+        for day in days {
             let name = String(format: "store-2026-08-%02d-090000.db", day)
-            try Data("snapshot \(day)".utf8).write(to: backups.appendingPathComponent(name))
+            try FileManager.default.copyItem(at: seed, to: backups.appendingPathComponent(name))
         }
+    }
+
+    @Test func sevenAreKeptAndTheOldestGo() throws {
+        try seedSnapshots(1...10)
         // Something else in the directory that is not a snapshot must survive the prune.
         try Data("not mine".utf8).write(to: backups.appendingPathComponent("README.txt"))
 
@@ -64,30 +73,31 @@ import Testing
         #expect(FileManager.default.fileExists(atPath: backups.appendingPathComponent("README.txt").path))
     }
 
-    /// A dated snapshot on top of a full directory, then the prune: eight in, seven out, and the
-    /// new one is the one that survives. Together these are what "runs on launch" amounts to.
+    /// A dated snapshot onto a directory that is already full, the way the pre-migration copy takes
+    /// one: **prune first, then write.**
     ///
     /// `run(to:)` with an explicit path deliberately does not prune — a directory the user named is
-    /// theirs — so the launch sweep is the pair, and this asserts the pair.
-    @Test func aDatedSnapshotOnTopOfAFullDirectoryPrunesToSeven() throws {
-        try FileManager.default.createDirectory(at: backups, withIntermediateDirectories: true)
-        for day in 1...7 {
-            let name = String(format: "store-2026-08-%02d-090000.db", day)
-            try Data("snapshot \(day)".utf8).write(to: backups.appendingPathComponent(name))
-        }
+    /// theirs — so the pair is the caller's to place, and the order is not cosmetic. Pruning
+    /// afterwards leaves all seven old snapshots on the disk for the whole of the copy, so it can
+    /// never free the space the copy needs, which is the failure it exists for: a nearly full volume.
+    /// Keeping one fewer is what leaves room for the new one inside the seven.
+    @Test func aDatedSnapshotOnTopOfAFullDirectoryPrunesBeforeItWrites() throws {
+        try seedSnapshots(1...7)
         try BundleFixture.loadedMeeting(in: store)
+
+        let kept = try StoreBackup.prune(in: backups, keeping: StoreBackup.keep - 1)
+        #expect(kept.count == StoreBackup.keep - 1, "room made before a byte of the copy is written")
+        #expect(!FileManager.default.fileExists(atPath: backups.appendingPathComponent("store-2026-08-01-090000.db").path))
 
         // Comfortably later than the seven already there, whatever timezone this machine is in.
         let now = Date(timeIntervalSince1970: 1_800_000_000)
         let snapshot = try StoreBackup.run(
             store: store, to: backups.appendingPathComponent(StoreBackup.filename(now)), now: now)
         #expect(snapshot.lastPathComponent.hasPrefix("store-2027-"))
-        #expect(try StoreBackup.list(in: backups).count == 8, "written, not yet pruned")
 
-        let kept = try StoreBackup.prune(in: backups)
-        #expect(kept.count == StoreBackup.keep)
-        #expect(kept.first?.lastPathComponent == snapshot.lastPathComponent, "the new one is the newest")
-        #expect(!FileManager.default.fileExists(atPath: backups.appendingPathComponent("store-2026-08-01-090000.db").path))
+        let after = try StoreBackup.list(in: backups)
+        #expect(after.count == StoreBackup.keep)
+        #expect(after.first?.lastPathComponent == snapshot.lastPathComponent, "the new one is the newest")
     }
 
     @Test func aSecondSnapshotToTheSamePathReplacesIt() throws {

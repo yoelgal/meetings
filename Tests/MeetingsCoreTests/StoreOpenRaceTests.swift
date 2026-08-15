@@ -49,6 +49,39 @@ import Testing
         #expect(failures.isEmpty, "\(failures.count)/40 processes failed:\n\(failures.joined(separator: "\n"))")
     }
 
+    /// **Waiting is the whole mechanism, and it used to stop waiting.**
+    ///
+    /// The wait broke after ``MeetingsDatabase/busyTimeout`` and then ran the open anyway, which
+    /// puts back exactly the race above: GRDB reads the applied identifiers *once*, outside the
+    /// per-migration transactions, so a process that gives up plans its migrations from a read the
+    /// winner has since invalidated and dies on `UNIQUE constraint failed:
+    /// grdb_migrations.identifier`. Five seconds was never the right length either — the critical
+    /// section now contains a `VACUUM INTO` of the whole store.
+    ///
+    /// The lock is held from this process, which is fair: the kernel does not care who holds it, and
+    /// what is being asserted is that the other side waits instead of proceeding.
+    @Test func aSecondProcessWaitsForTheLockRatherThanGivingUpAndRacing() throws {
+        try #require(FileManager.default.fileExists(atPath: Self.cli.path))
+        let home = try TestStore.makeDirectory()
+        defer { TestStore.remove(home) }
+
+        let descriptor = Darwin.open(home.appendingPathComponent("store.db.lock").path,
+                                     O_CREAT | O_RDWR, 0o644)
+        try #require(descriptor >= 0)
+        try #require(flock(descriptor, LOCK_EX | LOCK_NB) == 0)
+
+        let (process, pipe) = try launch(home: home)
+        // Comfortably past the point the old wait gave up at.
+        Thread.sleep(forTimeInterval: MeetingsDatabase.busyTimeout + 1.5)
+        #expect(process.isRunning, "it gave up on the lock and opened the store alongside the holder")
+
+        flock(descriptor, LOCK_UN)
+        close(descriptor)
+        let output = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        process.waitUntilExit()
+        #expect(process.terminationStatus == 0, "and it opened cleanly once the lock was free:\n\(output)")
+    }
+
     private func launch(home: URL) throws -> (Process, Pipe) {
         let process = Process()
         let pipe = Pipe()

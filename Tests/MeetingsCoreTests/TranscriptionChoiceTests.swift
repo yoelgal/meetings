@@ -1,3 +1,4 @@
+import FluidAudio
 import Foundation
 import Testing
 
@@ -57,6 +58,42 @@ import Testing
     }
 
     // MARK: - The gates
+
+    /// **A half-downloaded model is not a downloaded model.**
+    ///
+    /// Three of the four entries the readiness check requires are `.mlmodelc` *directories*, and
+    /// FluidAudio's `ModelHub` writes their constituent files straight into the final path — so the
+    /// first file to land made the directory exist and the check said yes. `FitRunner.bounded`
+    /// cancels downloads mid-flight, so this is a shape that gets created. What followed was
+    /// onboarding completing over ~600 MB that was not there, and the first press of record either
+    /// failing or re-fetching it right then.
+    ///
+    /// `coremldata.bin` is FluidAudio's own completeness marker — `ModelCache
+    /// .validateCompiledModelLayout` refuses to load a compiled model without it.
+    @Test func aModelDirectoryWithNoCoreMLDataInItIsNotDownloaded() throws {
+        let directory = self.directory.appendingPathComponent("models", isDirectory: true)
+        let entries = ["streaming_encoder.mlmodelc", "decoder.mlmodelc", "joint_decision.mlmodelc"]
+        for entry in entries {
+            try FileManager.default.createDirectory(
+                at: directory.appendingPathComponent(entry), withIntermediateDirectories: true)
+        }
+        try Data("{}".utf8).write(to: directory.appendingPathComponent("vocab.json"))
+        // Every required entry exists, which is all the old check asked. `weights/` is what an
+        // interrupted download of one of them actually leaves behind.
+        try FileManager.default.createDirectory(
+            at: directory.appendingPathComponent("decoder.mlmodelc/weights", isDirectory: true),
+            withIntermediateDirectories: true)
+
+        #expect(!FluidAudioStreamingTranscriber.modelsAreCached(.parakeetEou320ms, in: directory),
+                "a cancelled download leaves the directories behind and none of them loadable")
+
+        for entry in entries {
+            try Data(repeating: 0, count: 16)
+                .write(to: directory.appendingPathComponent(entry).appendingPathComponent("coremldata.bin"))
+        }
+        #expect(FluidAudioStreamingTranscriber.modelsAreCached(.parakeetEou320ms, in: directory),
+                "and a complete one still reads as ready — the check must not simply always fail")
+    }
 
     /// The gate that would have blocked the cloud user forever. `modelsReady` used to be a check
     /// for files on disk, and on the remote path there are none by design.

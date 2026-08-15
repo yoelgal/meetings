@@ -97,7 +97,12 @@ public actor FluidAudioStreamingTranscriber: StreamingTranscriber {
     public static var modelDirectory: URL { modelDirectory(for: .parakeetEou320ms) }
 
     public static func modelsAreCached(_ variant: StreamingModelVariant = .parakeetEou320ms) -> Bool {
-        let directory = modelDirectory(for: variant)
+        modelsAreCached(variant, in: modelDirectory(for: variant))
+    }
+
+    /// The directory is a parameter so the "downloaded but incomplete" shape can be built and
+    /// checked without writing into the real Application Support cache.
+    static func modelsAreCached(_ variant: StreamingModelVariant, in directory: URL) -> Bool {
         // Each family is checked with the same file list its own loader checks. Nemotron's
         // `requiredModels` includes the fused decoder+joint, which only some tiers ship, so asking
         // for all of it would report a complete 560 ms download as missing; its loader looks at the
@@ -115,8 +120,23 @@ public actor FluidAudioStreamingTranscriber: StreamingTranscriber {
             // visibly rather than transcribe nothing quietly.
             return false
         }
+        // Existence of the *entry* is not completeness. Three of the four required entries are
+        // `.mlmodelc` **directories**, and FluidAudio's `ModelHub` downloads their constituent
+        // files straight into the final path — so the first file to land makes the directory exist
+        // and this returns true for a download that is a fraction done. `FitRunner.bounded` cancels
+        // downloads mid-flight, so it is reachable rather than theoretical, and what follows is
+        // onboarding completing, `modelsReady()` saying yes, and the first `start(channel:)` either
+        // failing or re-fetching ~600 MB at the moment somebody pressed record.
+        //
+        // `coremldata.bin` is the marker, and it is FluidAudio's own: `ModelCache
+        // .validateCompiledModelLayout` — the check its loader runs before opening a compiled model
+        // — requires exactly that file inside exactly that directory.
         return required.allSatisfy {
-            FileManager.default.fileExists(atPath: directory.appendingPathComponent($0).path)
+            let entry = directory.appendingPathComponent($0)
+            let marker = entry.pathExtension == "mlmodelc"
+                ? entry.appendingPathComponent("coremldata.bin")
+                : entry
+            return FileManager.default.fileExists(atPath: marker.path)
         }
     }
 
