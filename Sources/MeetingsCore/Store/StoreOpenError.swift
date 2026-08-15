@@ -25,7 +25,7 @@ public enum StoreOpenError: Error, LocalizedError {
     /// Not a database, a torn one, or a page that no longer decodes.
     case damaged(path: String, detail: String, snapshot: URL?)
     /// Written by a build that knows migrations this one does not.
-    case fromNewerBuild(path: String, unknown: [String])
+    case fromNewerBuild(path: String, unknown: [String], snapshot: URL?)
 
     public var errorDescription: String? {
         switch self {
@@ -49,13 +49,19 @@ public enum StoreOpenError: Error, LocalizedError {
         case .damaged(let path, let detail, let snapshot):
             return "The meeting store at \(path) is damaged (\(detail)). \(Self.recovery(path: path, snapshot: snapshot))"
 
-        case .fromNewerBuild(let path, let unknown):
+        case .fromNewerBuild(let path, let unknown, let snapshot):
+            // Named, or said to be absent. "Restore an older snapshot from the backups directory"
+            // was advice with nothing behind it for anyone whose store had never been snapshotted,
+            // which — before the migration path started taking one — was everybody who had not run
+            // `meetings backup` by hand.
+            let fallback = snapshot.map {
+                "or restore \($0.lastPathComponent) from the backups directory beside the store"
+            } ?? "there is no automatic snapshot beside the store to fall back to"
             return """
                 The store at \(path) was written by a newer version of Meetings \
                 (it has migration\(unknown.count == 1 ? "" : "s") \(unknown.sorted().joined(separator: ", ")), \
                 which this build does not know). It has not been opened or changed. Install the \
-                newer version again, or restore an older snapshot from the backups directory beside \
-                the store.
+                newer version again — \(fallback).
                 """
         }
     }

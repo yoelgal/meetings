@@ -99,6 +99,40 @@ import Testing
         #expect(MarkdownActions.action(in: "-\t[ ] pick the venue")?.text == "pick the venue")
     }
 
+    /// **The seam probe, one construct wider.** Every case above is a single line, and a fence is not
+    /// a line — which is exactly how a `- [ ] follow up with Sam` inside a pasted snippet came to be
+    /// an action. The engine renders it as code and draws no box, so `meetings actions list` reported
+    /// a commitment with nothing on screen to tick, and it counted towards the migration's
+    /// already-present tally, so a real column action of the same text was never moved.
+    ///
+    /// Compared as counts rather than per line, because that is the only thing a multi-line document
+    /// lets both sides answer: how many boxes does the engine draw, and how many actions does the CLI
+    /// report.
+    @Test func theEngineAndTheCLIAgreeThatACheckboxInsideAFenceIsNotOne() {
+        let documents = [
+            "- [ ] real\n\n```\n- [ ] fenced\n```",
+            "```markdown\n- [ ] fenced\n- [x] also fenced\n```\n\n- [ ] real",
+            // The four boundaries, each measured rather than assumed, and each one the engine drawing
+            // a box where CommonMark would have said code. A tilde fence is not a fence here; an
+            // indented one is not either; an unclosed one fences nothing rather than swallowing the
+            // rest of the document; and any fence line closes an open one whatever its length.
+            "~~~\n- [ ] tildes are not a fence\n~~~",
+            "  ```\n  - [ ] an indented fence is not a fence\n  ```",
+            "```\n- [ ] never closed, so never code\n",
+            "````\n- [ ] fenced\n```\n- [ ] the shorter run closed it\n````\n\n- [ ] and this one reopened it",
+        ]
+        for document in documents {
+            let drawn = MarkdownHTMLRenderer.html(from: document)
+                .components(separatedBy: "<input type=\"checkbox\"").count - 1
+            let read = MarkdownActions.parse(document).count
+            #expect(drawn == read, """
+                \(document.debugDescription): the engine draws \(drawn) checkbox(es) and \
+                MarkdownActions reads \(read) action(s). A box only one side can see is a commitment \
+                the user cannot tick, or a line the CLI never shows.
+                """)
+        }
+    }
+
     /// The shape that looks most like an accident of the loosening: a list item whose *link label* is
     /// `x`. It reads as a done action with the link as its text, and that is the engine's call, not a
     /// guess — the renderer emits a ticked, clickable checkbox for this exact line. Pinned in both
@@ -343,6 +377,107 @@ import Testing
     @Test func anEmptyWriteUpBecomesJustTheActions() {
         #expect(MarkdownActions.appending([Action(text: "ship it")], to: "")
             == "## Actions\n\n- [ ] ship it")
+    }
+
+    // MARK: - Where the block goes
+
+    /// **A write-up with an `## Actions` heading does not get a second one.**
+    ///
+    /// 0.1.2's own shipped `SKILL.md` handed agents the summary template `## What we decided /
+    /// ## Actions / ## Open questions / ## Not covered` *and* told them to call `meetings actions
+    /// set` — so the documented old workflow produces exactly this store: the commitments written as
+    /// prose under a heading, the same commitments in the column. The items belong under the heading
+    /// the author already has.
+    @Test func theItemsLandUnderTheActionsHeadingTheDocumentAlreadyHas() {
+        let summary = """
+            ## What we decided
+
+            Ship on Friday.
+
+            ## Actions
+
+            - Sofia sends the numbers
+
+            ## Open questions
+
+            Does the column stay?
+            """
+        #expect(MarkdownActions.appending([Action(text: "Send the numbers")], to: summary) == """
+            ## What we decided
+
+            Ship on Friday.
+
+            ## Actions
+
+            - Sofia sends the numbers
+            - [ ] Send the numbers
+
+            ## Open questions
+
+            Does the column stay?
+            """)
+    }
+
+    /// The heading is the author's, so it is matched as they wrote it: any level, any case. The
+    /// section it opens runs to the next heading of that level or higher, and the items go at the end
+    /// of it — after what is already there, before the gap.
+    @Test func theActionsHeadingIsMatchedAtAnyLevelAndTheSectionEndsAtTheNextOne() {
+        #expect(MarkdownActions.appending([Action(text: "two")], to: "# ACTIONS\n\n- [ ] one\n\n# Later")
+            == "# ACTIONS\n\n- [ ] one\n- [ ] two\n\n# Later")
+        // A deeper heading is inside the section, not the end of it.
+        #expect(MarkdownActions.appending([Action(text: "b")], to: "## Actions\n\n### Mine\n\n- [ ] a\n\n## Next")
+            == "## Actions\n\n### Mine\n\n- [ ] a\n- [ ] b\n\n## Next")
+        // A heading with nothing under it yet gets the blank line a new one would have had.
+        #expect(MarkdownActions.appending([Action(text: "a")], to: "# Standup\n\n## Actions")
+            == "# Standup\n\n## Actions\n\n- [ ] a")
+    }
+
+    /// A heading inside a fenced code block is a heading in a snippet, not this document's section.
+    @Test func anActionsHeadingInsideAFenceIsNotTheSectionToAppendTo() {
+        let summary = "# Standup\n\n```\n## Actions\n```"
+        #expect(MarkdownActions.appending([Action(text: "a")], to: summary)
+            == "# Standup\n\n```\n## Actions\n```\n\n## Actions\n\n- [ ] a")
+    }
+
+    /// **The author's whitespace is not the migration's to edit.** This trimmed the whole document
+    /// before appending, inside a pass that runs once over a real store with no undo — so leading
+    /// blank lines went, and so did the two trailing spaces that are markdown's hard line break.
+    @Test func appendingDoesNotRewriteTheAuthorsWhitespace() {
+        #expect(MarkdownActions.appending([Action(text: "a")], to: "\n\n# Standup")
+            == "\n\n# Standup\n\n## Actions\n\n- [ ] a")
+        // Exactly one blank line before the new heading, however many the document already ended on.
+        #expect(MarkdownActions.appending([Action(text: "a")], to: "# Standup\n")
+            == "# Standup\n\n## Actions\n\n- [ ] a")
+        #expect(MarkdownActions.appending([Action(text: "a")], to: "# Standup\n\n\n")
+            == "# Standup\n\n\n## Actions\n\n- [ ] a")
+        // A hard line break is two spaces at the end of a line, and it survives.
+        #expect(MarkdownActions.appending([Action(text: "a")], to: "Ship on Friday.  ")
+            == "Ship on Friday.  \n\n## Actions\n\n- [ ] a")
+    }
+
+    // MARK: - Fenced code
+
+    /// A checkbox in a pasted snippet is not something anybody owes, and reading it as one broke two
+    /// things: `actions list` showed a commitment the app draws no box for, and it counted towards
+    /// ``MarkdownActions/appending(_:to:)``'s already-present tally, so a real column action of the
+    /// same text was silently never migrated.
+    @Test func aCheckboxInsideAFenceIsNotAnAction() {
+        let summary = "- [ ] real\n\n```\n- [ ] follow up with Sam\n```"
+        #expect(MarkdownActions.parse(summary).map(\.text) == ["real"])
+        #expect(MarkdownActions.carriesActions("```\n- [ ] fenced\n```") == false)
+        // The tally: the fenced line no longer stands in for the column's own action.
+        let merged = MarkdownActions.appending([Action(text: "follow up with Sam")], to: summary)
+        #expect(MarkdownActions.parse(merged).map(\.text) == ["real", "follow up with Sam"])
+    }
+
+    /// `replace` counts positions the way `parse` reports them, so it has to skip a fenced box too —
+    /// otherwise the agent's nth item lands on the user's n+1th line, and the round trip rewrites a
+    /// line inside somebody's code sample.
+    @Test func replacingLeavesAFencedCheckboxWhereItStands() {
+        let summary = "```\n- [ ] in a snippet\n```\n\n- [ ] mine"
+        #expect(MarkdownActions.replace([Action(text: "mine, revised")], in: summary)
+            == "```\n- [ ] in a snippet\n```\n\n- [ ] mine, revised")
+        #expect(MarkdownActions.replace(MarkdownActions.parse(summary), in: summary) == summary)
     }
 
     // MARK: - The migration's own guarantee

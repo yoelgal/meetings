@@ -86,7 +86,14 @@ public enum MarkdownExport {
             // Out of the write-up, which is where actions live now — the column may still hold an
             // older list the migration copied out of it, and exporting that would contradict the
             // summary.md sitting beside this file.
-            actions: MarkdownActions.parse(meeting.summary ?? ""),
+            //
+            // `owner` and `due` still come off the column, through the same rule the bundle uses:
+            // the markdown cannot express either, so on a migrated store the column is their only
+            // copy, and deriving the whole action from the write-up made this export the one that
+            // destroyed them. That is worth naming here — this is the export a person reaches for
+            // when they are taking their meetings off the machine.
+            actions: MeetingBundle.withLegacyOwnerAndDue(
+                MarkdownActions.parse(meeting.summary ?? ""), from: meeting.actions),
             source: meeting.source.rawValue,
             importedFrom: meeting.importedFrom
         )

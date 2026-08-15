@@ -28,6 +28,23 @@ public enum Schema {
         migrator.registerMigration("v6") { db in
             try actionsIntoTheWriteUp(db)
         }
+        // The same body as `v6`, deliberately, and that is the repair.
+        //
+        // One identifier carried three different rules across this release. `v6` first skipped any
+        // document that already had a task item anywhere in it — stranding every real action of that
+        // meeting in a column nothing reads. It then matched on set membership, which collapsed two
+        // commitments that happened to read the same into one line. Only the third rule counts
+        // matches, which is the one below. GRDB records the identifier and nothing else, so a store
+        // migrated by either of the first two builds will never run the corrected code: `v6` is
+        // applied, so `v6` is skipped, forever, and the actions sit in a column no surface reads.
+        //
+        // Re-running it under a new identifier is the whole fix, and it is safe because
+        // ``MarkdownActions/appending(_:to:)`` is idempotent per action: a store the good `v6` handled
+        // finds every action already in its write-up and is left byte-identical, and a store either
+        // bad `v6` mishandled gets exactly the lines it is missing.
+        migrator.registerMigration("v7") { db in
+            try actionsIntoTheWriteUp(db)
+        }
         return migrator
     }
 

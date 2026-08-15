@@ -42,6 +42,17 @@ import Foundation
 ///    The file stays in the format, and at schema 1, so a build from before the migration still
 ///    imports these bundles and still finds the actions where it looks for them.
 ///
+///    **An old build shows them twice, and that is accepted rather than hidden.** It reads
+///    `actions.json` into its column *and* the `summary.md` beside it, which now carries the same
+///    commitments as task list items — so every action appears once in the write-up and once in
+///    0.1.2's Actions checklist. Its own `MarkdownExport.summaryMarkdown` re-appends the column
+///    underneath the write-up, so a markdown re-export on that build prints each of them three
+///    times. Stripping the task items out of the `summary.md` written for old readers is the
+///    alternative, and it is worse: `summary.md` is what *this* build imports the write-up from, so
+///    a bundle stripped for a reader from last year is a bundle that loses every action on the way
+///    back into the build that wrote it. Duplication on an old screen is visible and harmless;
+///    silent loss on a restore is neither.
+///
 ///    **`owner` and `due` still come off the column**, matched onto the derived list by text. The
 ///    markdown has nowhere to put either, and the column is their only copy — deriving the whole
 ///    action from the write-up made export the one operation that destroyed them, on the machine-loss
@@ -320,7 +331,12 @@ public enum MeetingBundle {
     /// which is correct: there never was one. An action deleted from the write-up is gone from the
     /// bundle whatever the column still says — the write-up is the record for *whether* an action
     /// exists, and only for the two fields it cannot express does the column get a say.
-    private static func withLegacyOwnerAndDue(_ actions: [Action], from legacy: [Action]?) -> [Action] {
+    ///
+    /// **Not private**, because the bundle is not the only export that leaves the machine.
+    /// ``MarkdownExport`` derives `meta.json`'s actions from the write-up the same way and dropped
+    /// `owner` and `due` for the same reason — on a migrated store, where the column is their only
+    /// copy, and on the export somebody reaches for when they are leaving. One rule, one place.
+    static func withLegacyOwnerAndDue(_ actions: [Action], from legacy: [Action]?) -> [Action] {
         guard let legacy else { return actions }
         var byText: [String: [Action]] = [:]
         for action in legacy where action.owner != nil || action.due != nil {

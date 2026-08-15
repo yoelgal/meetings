@@ -174,6 +174,53 @@ import Testing
         #expect(try #require(error?.errorDescription).contains("no automatic snapshots"))
     }
 
+    // MARK: - The copy taken before an upgrade
+
+    /// **A migration that rewrites user prose takes a copy of it first.**
+    ///
+    /// A migration here is not only a schema change: `v6` overwrote every `summary` in the store —
+    /// somebody's write-up, edited in place, irreversibly — and nothing had snapshotted it.
+    /// ``StoreBackup/run(store:to:keeping:now:)`` was reachable only from `meetings backup`, a command
+    /// run by hand, so "restore an older snapshot from the backups directory beside the store" was
+    /// advice with an empty directory behind it for everyone who had never heard of it.
+    @Test func anUpgradeSnapshotsTheStoreBeforeRewritingIt() throws {
+        let backups = directory.appendingPathComponent("backups", isDirectory: true)
+        do {
+            let store = try openStore()
+            try store.createMeeting(TestStore.meeting(title: "Written before the upgrade"))
+            try store.dbPool.close()
+        }
+        #expect(try StoreBackup.list(in: backups).isEmpty,
+                "a store being created has nothing worth copying, and an open with nothing pending copies nothing")
+
+        try forceMigrationOnNextOpen()
+        let reopened = try openStore()
+
+        let snapshots = try StoreBackup.list(in: backups)
+        #expect(snapshots.count == 1, "the upgrade left the snapshot the error message names")
+        // A real store, not a marker: it opens, and it holds what was there before the pass ran.
+        let restored = MeetingStore(dbPool: try DatabasePool(path: try #require(snapshots.first).path))
+        #expect(try restored.allMeetings().map(\.title) == ["Written before the upgrade"])
+        #expect(try reopened.allMeetings().count == 1, "and the store itself came through the migration")
+    }
+
+    /// Best-effort, and the migration is not: a backups directory that cannot be written to costs the
+    /// snapshot, not the upgrade. Somebody whose disk is full still gets their meetings.
+    @Test func aSnapshotThatCannotBeWrittenDoesNotStopTheUpgrade() throws {
+        let backups = directory.appendingPathComponent("backups", isDirectory: true)
+        do {
+            let store = try openStore()
+            try store.createMeeting(TestStore.meeting(title: "Still opens"))
+            try store.dbPool.close()
+        }
+        // A file where the backups directory goes: nothing can be created inside it.
+        try Data("not a directory\n".utf8).write(to: backups)
+        try forceMigrationOnNextOpen()
+
+        let reopened = try openStore()
+        #expect(try reopened.allMeetings().map(\.title) == ["Still opens"])
+    }
+
     // MARK: - A store from the future
 
     /// GRDB's migrator only ever looks for migrations that are *missing*, so an older build opens a
@@ -193,6 +240,9 @@ import Testing
         let message = try #require(error?.errorDescription)
         #expect(message.contains("newer version"))
         #expect(message.contains("v99"))
+        // And it says which snapshot, or that there is none — rather than pointing at a backups
+        // directory that may well be empty. Nothing has been migrated here, so nothing snapshotted it.
+        #expect(message.contains("no automatic snapshot beside the store"))
 
         // Untouched: same migrations, same rows, and it still opens for the build that wrote it.
         var applied: Set<String> = []

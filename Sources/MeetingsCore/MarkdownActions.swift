@@ -31,8 +31,10 @@ public enum MarkdownActions {
     /// Anywhere in the document, not only under a heading called Actions: the heading is prose, and
     /// a checkbox somebody typed in the middle of a paragraph of decisions is still something they
     /// owe. `meetings actions list --open` is the whole reason this is a list rather than a render.
+    ///
+    /// **Anywhere except inside a fenced code block** — see ``scanned(_:)``.
     public static func parse(_ markdown: String) -> [Action] {
-        markdown.split(separator: "\n", omittingEmptySubsequences: false).compactMap(action(in:))
+        scanned(markdown).compactMap { $0.fenced ? nil : action(in: $0.text) }
     }
 
     /// One line's action, or nil if the line is not a task list item.
@@ -72,8 +74,7 @@ public enum MarkdownActions {
 
     /// Whether any line of the document is a task list item.
     public static func carriesActions(_ markdown: String) -> Bool {
-        markdown.split(separator: "\n", omittingEmptySubsequences: false)
-            .contains { taskItem($0) != nil }
+        scanned(markdown).contains { !$0.fenced && taskItem($0.text) != nil }
     }
 
     /// The document with its task list rewritten to `actions`, and **nothing else touched**.
@@ -101,11 +102,17 @@ public enum MarkdownActions {
     /// action in the document, so writing that same list straight back reproduces the document —
     /// byte for byte, including the author's own spacing — rather than rearranging it.
     ///
-    /// With no actions in the document already, the list is appended under an `## Actions`
-    /// heading — see ``appending(_:to:)``, which is the same operation the store migration runs.
+    /// With no actions in the document already, the list is appended to the document's `## Actions`
+    /// section, or under a new heading when it has none — see ``appending(_:to:)``, which is the
+    /// same operation the store migration runs.
+    ///
+    /// A checkbox inside a fenced code block is neither counted nor rewritten, exactly as
+    /// ``parse(_:)`` does not report one: the two have to agree on positions or the agent's nth item
+    /// lands on the user's n+1th line.
     public static func replace(_ actions: [Action], in markdown: String) -> String {
-        let lines = markdown.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
-        let items = lines.indices.filter { action(in: lines[$0]) != nil }
+        let scanned = scanned(markdown)
+        let lines = scanned.map(\.text)
+        let items = lines.indices.filter { !scanned[$0].fenced && action(in: lines[$0]) != nil }
         guard let last = items.last else { return appending(actions, to: markdown) }
         let list = meaningful(actions)
 
@@ -141,7 +148,8 @@ public enum MarkdownActions {
             + String(characters[item.box.upperBound..<item.textStart]) + action.text
     }
 
-    /// The actions added to the end of the document under an `## Actions` heading.
+    /// The actions added to the document's `## Actions` section, or under a new heading at the end
+    /// of it when the document has no such section.
     ///
     /// **Idempotent**, and that is the point: it is what the store migration runs over every meeting
     /// that has actions in the old column, and running it twice must not leave two copies.
@@ -158,6 +166,20 @@ public enum MarkdownActions {
     /// twice — two real commitments that happened to be typed the same way — gets two lines, and a
     /// re-run then finds two already there and adds neither. A `Set` of the texts collapsed the pair
     /// into one line and lost a commitment where nothing would ever surface the loss.
+    ///
+    /// **A document that already has an `## Actions` heading gets its items under that one**, at the
+    /// end of the section, rather than a second heading of the same name at the bottom of the file.
+    /// 0.1.2's own `SKILL.md` handed agents the template `## What we decided / ## Actions / ## Open
+    /// questions / ## Not covered` *and* told them to call `meetings actions set`, so the documented
+    /// old workflow produces exactly the store this runs over: prose bullets under one heading and
+    /// the same commitments in the column. Appending unconditionally gave those write-ups two
+    /// sections called Actions, permanently, in a pass with no second chance at it.
+    ///
+    /// **The author's whitespace is not edited.** This used to trim the whole document before
+    /// appending to it, which silently rewrote leading and trailing whitespace on every write-up the
+    /// migration touched — including the two trailing spaces that are markdown's hard line break.
+    /// Only the separator between the write-up and a newly added heading is computed, and only from
+    /// how many newlines the document already ends with.
     public static func appending(_ actions: [Action], to markdown: String) -> String {
         var present = Dictionary(parse(markdown).map { ($0.text, 1) }, uniquingKeysWith: +)
         let missing = meaningful(actions).filter { action in
@@ -166,9 +188,108 @@ public enum MarkdownActions {
             return false
         }
         guard !missing.isEmpty else { return markdown }
-        let block = "## Actions\n\n" + missing.map(rendered(_:)).joined(separator: "\n")
-        let existing = markdown.trimmingCharacters(in: .whitespacesAndNewlines)
-        return existing.isEmpty ? block : existing + "\n\n" + block
+        let items = missing.map(rendered(_:))
+
+        let scanned = scanned(markdown)
+        if let heading = scanned.indices.last(where: {
+            !scanned[$0].fenced && headingLevel(scanned[$0].text, named: "Actions") != nil
+        }) {
+            var lines = scanned.map(\.text)
+            let point = endOfSection(opening: heading, in: scanned)
+            // An `## Actions` with nothing under it yet gets the blank line this writes for a heading
+            // of its own, so the two shapes read the same.
+            lines.insert(contentsOf: point == heading + 1 ? [""] + items : items, at: point)
+            return lines.joined(separator: "\n")
+        }
+
+        let block = "## Actions\n\n" + items.joined(separator: "\n")
+        guard !markdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return block }
+        let trailing = markdown.reversed().prefix { $0 == "\n" }.count
+        return markdown + String(repeating: "\n", count: max(0, 2 - trailing)) + block
+    }
+
+    /// The line the section opened at `heading` ends on: past everything written under it, before the
+    /// blank lines separating it from the next heading of the same level or higher.
+    private static func endOfSection(opening heading: Int, in scanned: [(text: String, fenced: Bool)]) -> Int {
+        let level = headingLevel(scanned[heading].text) ?? 2
+        var end = scanned.count
+        for index in (heading + 1)..<scanned.count
+        where !scanned[index].fenced && (headingLevel(scanned[index].text).map { $0 <= level } ?? false) {
+            end = index
+            break
+        }
+        var point = end
+        while point > heading + 1, scanned[point - 1].text.trimmingCharacters(in: .whitespaces).isEmpty {
+            point -= 1
+        }
+        return point
+    }
+
+    // MARK: - The little of the document's shape this has to know
+
+    /// The document's lines, each carrying whether it sits inside a fenced code block.
+    ///
+    /// **A checkbox inside a fence is not an action**, and reading one as an action broke two things
+    /// at once. The engine renders that line as code and draws no box, so `meetings actions list`
+    /// reported a commitment the app has nowhere to tick — the exact seam divergence the write-up-is-
+    /// the-record design exists to remove. And it counted towards ``appending(_:to:)``'s already-
+    /// present tally, so a real column action reading `follow up with Sam` was matched by a
+    /// `- [ ] follow up with Sam` sitting in a pasted snippet and was never migrated at all.
+    ///
+    /// **Block quotes need no rule of their own.** A quoted line begins with `>` before any list
+    /// marker, and ``taskItem(_:)`` reads `>` as neither a bullet nor a number, so `> - [ ] x` is
+    /// already not an action — and the engine draws no box on it either. That agreement is pinned in
+    /// the seam probe rather than asserted here.
+    ///
+    /// This is the only markdown structure this file knows beyond the task item itself, and it is
+    /// here for the same reason ``taskItem(_:)`` is: it is what the CLI has to read out of somebody's
+    /// write-up, and the engine's answer is the one it is held to.
+    ///
+    /// **A fence is what the engine calls a fence, which is narrower than CommonMark**, and the
+    /// boundary was measured rather than assumed — `MarkdownActionsTests` renders each of these and
+    /// counts the boxes it draws:
+    ///
+    /// - Backticks only. `~~~` is not a fence to the engine, so a checkbox between two of them is a
+    ///   real, clickable box and therefore a real action.
+    /// - Three or more, at column zero. A leading space is not a fence; neither is a four-space
+    ///   indented block, which the engine does not read as code either.
+    /// - Any fence line closes an open one, whatever its length and whatever follows it, so
+    ///   ` ```swift ` closes and a shorter run closes a longer one.
+    /// - **An opening fence never closed fences nothing at all.** The engine renders the rest of the
+    ///   document as ordinary markdown, boxes and all, rather than swallowing it to the end.
+    ///
+    /// Following the engine into all four rather than being stricter is the same call the rest of
+    /// this file already made: the box on screen is the thing the user pressed, so the box on screen
+    /// is the action.
+    static func scanned(_ markdown: String) -> [(text: String, fenced: Bool)] {
+        let lines = markdown.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        var fenced = [Bool](repeating: false, count: lines.count)
+        var open: Int?
+        for index in lines.indices where lines[index].prefix(while: { $0 == "`" }).count >= 3 {
+            guard let start = open else {
+                open = index
+                continue
+            }
+            for inside in start...index { fenced[inside] = true }
+            open = nil
+        }
+        // `open` non-nil here is an unclosed fence, and it is left as prose deliberately — see above.
+        return lines.indices.map { (text: lines[$0], fenced: fenced[$0]) }
+    }
+
+    /// An ATX heading's level, or nil for a line that is not one. With `named:`, only a heading whose
+    /// own text is that word — `## Actions`, at whatever level and in whatever case the author wrote.
+    private static func headingLevel(_ text: String, named: String? = nil) -> Int? {
+        let characters = Array(text)
+        let indent = characters.prefix { $0 == " " }.count
+        guard indent <= 3 else { return nil }
+        let level = characters[indent...].prefix { $0 == "#" }.count
+        guard (1...6).contains(level) else { return nil }
+        let after = characters[(indent + level)...]
+        guard after.first.map({ $0 == " " || $0 == "\t" }) ?? true else { return nil }
+        guard let named else { return level }
+        let title = String(after).trimmingCharacters(in: CharacterSet(charactersIn: " \t#"))
+        return title.caseInsensitiveCompare(named) == .orderedSame ? level : nil
     }
 
     // MARK: - What a task item is
@@ -214,9 +335,15 @@ public enum MarkdownActions {
     /// done action with the text `(https://example.com/report)`. That is the rule working: the user
     /// can tick that box, and a box the user can tick is an action.
     ///
-    /// The two parsers now agree on every shape probed, quotes and malformed boxes included. Nothing
+    /// The two parsers agree on every shape probed, quotes and malformed boxes included. Nothing
     /// makes them agree by construction, which is why the test drives the engine rather than trusting
     /// this comment.
+    ///
+    /// **A line is not the whole probe.** This function reads one line and cannot see a fenced code
+    /// block, which is a construct the engine most certainly does see — a `- [ ] follow up with Sam`
+    /// inside a pasted snippet was an action to the CLI and no box at all on screen. That is
+    /// ``scanned(_:)``'s job, and the boundary between the engine's idea of a fence and CommonMark's
+    /// is recorded there, measured the same way.
     public static func taskItem(_ line: some StringProtocol) -> TaskItem? {
         let characters = Array(line)
         let indent = characters.prefix { $0 == " " || $0 == "\t" }.count

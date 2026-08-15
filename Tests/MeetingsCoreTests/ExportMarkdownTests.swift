@@ -54,6 +54,27 @@ import Testing
         #expect((decoded["exportFormat"] as? String)?.contains("one-way") == true)
     }
 
+    /// `owner` and `due` leave the machine with the meeting.
+    ///
+    /// The markdown cannot express either, so on a migrated store the legacy column is their only
+    /// copy — and `meta.json`'s actions are derived from the write-up, which meant this export
+    /// destroyed them. The bundle path was fixed and this one was not, on the export somebody
+    /// reaches for when they are leaving the machine. One rule now:
+    /// ``MeetingBundle/withLegacyOwnerAndDue(_:from:)``.
+    @Test func metaCarriesTheOwnerAndDueTheWriteUpCannotHold() throws {
+        let meeting = try BundleFixture.loadedMeeting(in: store)
+        let out = try MarkdownExport.export(meeting, store: store, to: root)
+
+        let data = try #require(FileManager.default.contents(atPath: out.appendingPathComponent("meta.json").path))
+        let decoded = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let actions = try #require(decoded["actions"] as? [[String: Any]])
+        // Derived from the write-up: which actions exist and what they say is the document's call.
+        #expect(actions.map { $0["text"] as? String }
+            == ["Send the ptychography numbers", "Book the follow-up"])
+        #expect(actions[0]["owner"] as? String == "Sofia")
+        #expect(actions[0]["due"] as? String == "end of week")
+    }
+
     /// A meeting with notes and no transcript is legal, and an empty `transcript.md` would be a
     /// claim that it was recorded and nobody spoke.
     @Test func aMeetingWithNoTranscriptGetsNoTranscriptFile() throws {

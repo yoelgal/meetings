@@ -60,14 +60,44 @@ public enum MeetingsDatabase {
     /// notices the downgrade.
     private static func migrated(_ url: URL) throws -> DatabasePool {
         let pool = try DatabasePool(path: url.path, configuration: configuration())
-        let unknown = try pool.read { db in
-            try Schema.migrator.appliedIdentifiers(db).subtracting(Schema.migrator.migrations)
-        }
+        let applied = try pool.read { try Schema.migrator.appliedIdentifiers($0) }
+        let unknown = applied.subtracting(Schema.migrator.migrations)
         guard unknown.isEmpty else {
-            throw StoreOpenError.fromNewerBuild(path: url.path, unknown: Array(unknown))
+            throw StoreOpenError.fromNewerBuild(
+                path: url.path, unknown: Array(unknown), snapshot: StoreOpenError.newestSnapshot(besides: url))
+        }
+        if !Set(Schema.migrator.migrations).subtracting(applied).isEmpty, !applied.isEmpty {
+            snapshot(pool, beside: url)
         }
         try Schema.migrator.migrate(pool)
         return pool
+    }
+
+    /// A copy of the store as it is *now*, taken because the next line rewrites it and there is no
+    /// undo.
+    ///
+    /// A migration is not a schema change here. `v6` overwrote every `summary` in the store —
+    /// somebody's prose, edited in place — and nothing had taken a copy first: ``StoreBackup/run``
+    /// was reachable only from `meetings backup`, which is a command run by hand, so a user who had
+    /// never heard of it had an empty backups directory. That is the same directory
+    /// ``StoreOpenError`` tells a locked-out user to restore from, which made the advice on the
+    /// launch screen false for exactly the people reading it.
+    ///
+    /// It lands under the store's own `backups/`, with the same `store-<date>.db` name every other
+    /// snapshot has, so it *is* "the newest automatic snapshot" that message names, and the seven-kept
+    /// prune applies to it rather than one file accumulating per release forever.
+    ///
+    /// **Best-effort, and that is deliberate**: a full disk, a read-only volume or a backups directory
+    /// somebody chmod'ed must not stop the store from opening. Skipped when nothing is applied yet —
+    /// that is a database being created, and there is nothing in it to copy.
+    private static func snapshot(_ pool: DatabasePool, beside url: URL) {
+        let directory = url.deletingLastPathComponent().appendingPathComponent("backups", isDirectory: true)
+        try? StoreBackup.run(
+            store: MeetingStore(dbPool: pool),
+            to: directory.appendingPathComponent(StoreBackup.filename(Date()))
+        )
+        // `run` prunes only the directory it chose for itself, and this one was named.
+        try? StoreBackup.prune(in: directory)
     }
 
     private static func isForeignKeyViolation(_ error: Error) -> Bool {
