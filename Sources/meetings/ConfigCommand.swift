@@ -185,35 +185,13 @@ enum ConfigKeys {
         }
     }
 
-    /// The two rows that decide where this Mac's own content goes: meeting audio
-    /// (`transcribe.remote.baseURL`) and the transcript a write-up is generated from
-    /// (`ai.cloud.baseURL`). **`https`, or a loopback host.**
+    /// The two rows that decide where this Mac's own content goes take `https` or a loopback host.
     ///
-    /// `http` used to be accepted, which made one unprompted CLI write enough to send every future
-    /// meeting's audio somewhere in the clear — and `SKILL.md` hands an agent this exact command
-    /// surface while telling it to read transcripts, which are attacker-influenced content: anyone
-    /// on the call, or an imported bundle, can write the sentence that asks for the redirect.
-    /// Refusing cleartext does not stop a redirect, but it stops a silent one being readable by
-    /// anything between here and the endpoint.
-    ///
-    /// Loopback keeps its `http`: a self-hosted whisper.cpp or Ollama on `127.0.0.1` is exactly the
-    /// configuration this app is *for*, it never leaves the machine, and it has no certificate to
-    /// present.
-    ///
-    /// ponytail: a scheme check, not an egress policy. Making these two keys app-only — settable
-    /// from Settings and not from argv — is the real fix and a bigger change than this.
+    /// The rule itself is ``SettingKey/egressRefusal(_:for:)``, in MeetingsCore, because the
+    /// Settings window writes these rows too and used to accept on every keystroke exactly what
+    /// this refuses.
     private static func egressURL(_ value: String, key: SettingKey) throws -> String {
-        let loopback: Set<String> = ["localhost", "127.0.0.1", "::1", "[::1]"]
-        guard let url = URL(string: value), let scheme = url.scheme?.lowercased(),
-              scheme == "https" || (scheme == "http" && loopback.contains(url.host()?.lowercased() ?? ""))
-        else {
-            throw CLIError.usage("""
-                \(key.rawValue) is an https base URL. This is where \
-                \(key == .transcribeRemoteBaseURL ? "the audio of every meeting" : "your transcripts") \
-                gets sent, and http sends it in the clear. Only a loopback endpoint you are running \
-                yourself (http://localhost:… or http://127.0.0.1:…) may use http.
-                """)
-        }
+        if let refusal = SettingKey.egressRefusal(value, for: key) { throw CLIError.usage(refusal) }
         return value
     }
 

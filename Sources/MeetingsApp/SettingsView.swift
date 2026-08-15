@@ -72,9 +72,36 @@ struct SettingBinding {
             get: { cache.wrappedValue },
             set: { new in
                 cache.wrappedValue = new
+                // The window must not take what `meetings config set` refuses. The two egress rows
+                // decide where this Mac's audio and transcripts are uploaded, and a cleartext
+                // endpoint typed here used to be stored on the keystroke — the same hole the CLI
+                // closed, with a text field in front of it. Clearing the row stays allowed: no
+                // endpoint is not an insecure endpoint.
+                guard new.isEmpty || SettingKey.egressRefusal(new, for: key) == nil else { return }
                 try? store.setSetting(key, new.isEmpty ? nil : new)
             }
         )
+    }
+}
+
+/// Says under an egress field when what is in it will not be stored — and, on open, when what is
+/// **already** stored is a cleartext endpoint.
+///
+/// The second case is the one that matters: a row written before the refusal existed keeps
+/// uploading in the clear, and nothing anywhere said so. It is a warning rather than a refusal on
+/// purpose — the app going silent about a value it has been using for months, mid-meeting, would be
+/// worse than the value.
+struct EgressWarning: View {
+    let key: SettingKey
+    let value: String
+
+    var body: some View {
+        if !value.isEmpty, let refusal = SettingKey.egressRefusal(value, for: key) {
+            Label(refusal, systemImage: "exclamationmark.triangle.fill")
+                .font(.caption)
+                .foregroundStyle(Color(nsColor: .systemOrange))
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 }
 
@@ -481,6 +508,7 @@ struct CloudProviderFields: View {
                 model = loadSetting(store, .aiCloudModel)
                 keyRef = loadSetting(store, .aiCloudKeyRef)
             }
+        EgressWarning(key: .aiCloudBaseURL, value: baseURL)
         TextField("Model", text: SettingBinding(store: store, key: .aiCloudModel).binding($model))
         // Behind a disclosure, because it is a label the app can pick and almost nobody needs to.
         // It is the account attribute of the Keychain item, so there is no correct value to type

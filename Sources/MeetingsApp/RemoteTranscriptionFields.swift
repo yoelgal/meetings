@@ -40,6 +40,7 @@ struct RemoteTranscriptionFields: View {
 
         TextField("Base URL", text: SettingBinding(store: store, key: .transcribeRemoteBaseURL).binding($baseURL))
             .onAppear(perform: load)
+        EgressWarning(key: .transcribeRemoteBaseURL, value: baseURL)
         TextField("Model", text: SettingBinding(store: store, key: .transcribeRemoteModel).binding($model))
         // Same disclosure and the same reason as the write-up provider's: the account is a label
         // with no correct value, and it does not belong between two fields that have one.
