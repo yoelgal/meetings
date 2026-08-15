@@ -4,9 +4,9 @@ import SwiftUI
 /// The menu `/` opens over the write-up: the discoverable path to the same constructs the shorthand
 /// already types. Grouped, because nine flat rows is a list you read rather than a menu you aim at.
 ///
-/// Every command it offers goes through ``MarkdownEditing/applyBlock(_:in:over:)``, the same
-/// transform any other formatting surface would use — the menu is a way of choosing, not a second
-/// definition of what Heading 2 means.
+/// Every command it offers is a ``MarkdownEditing/Action`` posted on the engine's own
+/// `MarkdownEditorBus` — the menu is a way of choosing, not a second definition of what Heading 2
+/// means.
 struct SlashMenu: View {
     let matches: [MarkdownEditing.SlashCommand]
     let highlighted: Int
@@ -91,36 +91,47 @@ struct SlashMenu: View {
     }
 }
 
-/// The bar that appears over a selection: the five inline marks, then the constructs a line can be
+/// The bar that appears over a selection: the four inline marks, then the constructs a line can be
 /// turned into.
 ///
 /// It is a second way to reach what ⌘B and the slash menu already do, for the hand that is on the
-/// mouse — so it calls exactly the same ``MarkdownEditing`` functions and defines nothing of its
-/// own. A button reads pressed straight from `isActive`, which is the same question `toggle` asks
-/// to decide which way it is going, so the button cannot say "on" while the shortcut turns it on.
+/// mouse — so it posts exactly the same bus actions and defines nothing of its own.
+///
+/// **Bold and italic read pressed straight from the engine.** `NativeTextView` posts
+/// `selectionBoldDidChange` / `selectionItalicDidChange` after every selection change, which is the
+/// same answer ⌘B uses to decide which way it is going, so the button cannot say "on" while the
+/// shortcut turns it on. The engine publishes no such signal for strikethrough, inline code or a
+/// link, and those buttons are therefore unpressed — re-deriving them here would be a second
+/// markdown parser disagreeing with the one holding the document.
 struct SelectionToolbar: View {
-    let text: String
-    let selection: Range<Int>
-    let toggle: (MarkdownEditing.InlineMark) -> Void
-    let turnInto: (MarkdownEditing.SlashCommand) -> Void
+    let isBold: Bool
+    let isItalic: Bool
+    let run: (MarkdownEditing.Action) -> Void
 
-    private static let marks: [(MarkdownEditing.InlineMark, String, String)] = [
+    private static let marks: [(MarkdownEditing.Action, String, String)] = [
         (.bold, "bold", "Bold"),
         (.italic, "italic", "Italic"),
         (.strikethrough, "strikethrough", "Strikethrough"),
-        (.code, "chevron.left.forwardslash.chevron.right", "Code"),
+        (.inlineCode, "chevron.left.forwardslash.chevron.right", "Code"),
         (.link, "link", "Link"),
     ]
 
+    private func pressed(_ action: MarkdownEditing.Action) -> Bool {
+        switch action {
+        case .bold: isBold
+        case .italic: isItalic
+        default: false
+        }
+    }
+
     var body: some View {
         HStack(spacing: 2) {
-            ForEach(Self.marks, id: \.0) { mark, symbol, name in
-                let on = MarkdownEditing.isActive(mark, in: text, selection: selection)
-                button(symbol, name, on: on) { toggle(mark) }
+            ForEach(Self.marks, id: \.0) { action, symbol, name in
+                button(symbol, name, on: pressed(action)) { run(action) }
             }
             Divider().frame(height: 16).padding(.horizontal, 4)
             ForEach(MarkdownEditing.blockCommands) { command in
-                button(command.symbol, command.title, on: false) { turnInto(command) }
+                button(command.symbol, command.title, on: false) { run(command.action) }
             }
         }
         .padding(4)
@@ -159,7 +170,7 @@ struct MarkdownFormatting: Equatable {
     /// Identity only, so SwiftUI can tell one editor's publication from another's. The closure is
     /// not equatable and does not need to be — it is always the current one.
     let id: Int
-    let toggle: (MarkdownEditing.InlineMark) -> Void
+    let run: (MarkdownEditing.Action) -> Void
 
     static func == (lhs: MarkdownFormatting, rhs: MarkdownFormatting) -> Bool { lhs.id == rhs.id }
 }
@@ -180,7 +191,7 @@ struct MarkdownFormattingCommands: Commands {
             // Notion's binding. ⌘⇧S reads as Save As in document apps; this one has no such
             // command, and nothing else in the app claims it.
             item("Strikethrough", .strikethrough, "s", [.command, .shift])
-            item("Code", .code, "e", [.command])
+            item("Code", .inlineCode, "e", [.command])
             // Not ⌘K: that is Search, and it opens from anywhere including the floating notes
             // panel, so the editor does not get to take it away.
             item("Link", .link, "k", [.command, .shift])
@@ -188,10 +199,10 @@ struct MarkdownFormattingCommands: Commands {
     }
 
     private func item(
-        _ title: String, _ mark: MarkdownEditing.InlineMark,
+        _ title: String, _ action: MarkdownEditing.Action,
         _ key: KeyEquivalent, _ modifiers: EventModifiers
     ) -> some View {
-        Button(title) { formatting?.toggle(mark) }
+        Button(title) { formatting?.run(action) }
             .keyboardShortcut(key, modifiers: modifiers)
             .disabled(formatting == nil)
     }

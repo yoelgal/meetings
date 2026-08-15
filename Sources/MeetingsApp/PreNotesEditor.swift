@@ -203,11 +203,6 @@ struct SharedFieldEditor: View {
     /// The editor's own inset inside the column.
     static let editorInset: CGFloat = 10
 
-    /// From the column's left edge to the first prose character: the inset above, plus the gutter
-    /// the markers live in. Anything that has to line up with the write-up's text — the actions
-    /// under it — indents by exactly this, rather than by a number that looks about right.
-    static var bodyEdge: CGFloat { editorInset + MarkdownStyle.gutter }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             if titleShown || popOut != nil {
@@ -240,34 +235,33 @@ struct SharedFieldEditor: View {
             if tooLargeToEdit {
                 oversize
             } else {
-            LiveMarkdownEditor(text: $text)
+            editor
                 // No fill, no border, no corner radius. The write-up is the document this screen
                 // exists for, and a box around it made it read as one field on a form — the
-                // markers now sit in a gutter of their own, which is the structure a container was
-                // standing in for.
+                // engine draws the structure a container was standing in for.
                 .frame(maxWidth: Self.column)
                 // Attached *inside* the padding, so top-leading here is the text view's own origin
                 // and the only thing left to line up is its internal inset. Overlaying outside the
                 // padding instead meant two hand-tuned numbers guessing at that origin, and they
                 // guessed wrong: the caret sat above and left of the placeholder it belongs in
                 // front of. The font has to match for the same reason — a different font puts the
-                // first baseline in a different place, and so does the gutter the first line is
-                // indented by.
+                // first baseline in a different place. The 6 pt is the editor's own
+                // `TextInsets(vertical:)`, and there is no leading inset to match any more — the
+                // engine has no gutter, so prose starts at the column's edge.
                 .overlay(alignment: .topLeading) {
                     if text.isEmpty {
                         Text(placeholder)
                             // Matches the font an unstyled line is drawn at, for the reason above.
                             .font(.body)
                             .foregroundStyle(.tertiary)
-                            .padding(.leading, MarkdownStyle.gutter)
                             .padding(.top, 6)
                             .allowsHitTesting(false)
                     }
                 }
                 .padding(Self.editorInset)
-                // A floor, not a height. The editor is as tall as its document now — see
-                // ``MarkdownTextView/sizeThatFits(_:nsView:context:)`` — and this only keeps an
-                // empty one big enough to aim a pointer at.
+                // A floor, not a height. The editor is as tall as its document now — that is what
+                // `heightBehavior: .fitsContent` buys — and this only keeps an empty one big enough
+                // to aim a pointer at.
                 .frame(minHeight: 220, alignment: .top)
                 // Centred, so the leftover width on a wide pane becomes margin either side of the
                 // measure rather than a longer line.
@@ -295,6 +289,14 @@ struct SharedFieldEditor: View {
             receive(incoming)
         }
         .onDisappear { if !tooLargeToEdit { flush() } }
+    }
+
+    /// The editor, mounted once for both fields that have two writers, so the summary and the
+    /// pre-notes cannot end up behaving differently. Everything the surrounding view does — the
+    /// measure, the placeholder, the accessibility label, the change watcher that autosaves — is
+    /// applied out here, because none of it is the editor's business.
+    private var editor: some View {
+        LiveMarkdownEditor(text: $text, documentId: identity)
     }
 
     private var status: String {
@@ -416,191 +418,6 @@ struct SharedFieldEditor: View {
         saving = true
         save(text)
         saving = false
-    }
-}
-
-/// Markdown that renders while you type it: a heading is heading-sized the moment its `##` lands,
-/// bold is bold, a bullet reads as a list — and the characters that say so are still there, still
-/// selectable, still what the store holds.
-///
-/// This is a text editor rather than a preview, and the difference matters. Nothing is a mode, so
-/// there is no edit/preview toggle to be on the wrong side of, and no second representation to
-/// convert back from — the value in and out is the same `String` the CLI writes, which is why the
-/// conflict handling, autosave and oversize guard around it did not have to change at all.
-///
-/// **No library, and no text engine of our own.** The engine is `NSTextView`, which is where the
-/// caret, the undo stack and the hanging indent already live — see ``MarkdownTextView`` for why
-/// SwiftUI's `TextEditor` could not carry the gutter. Everything here is the markdown decision
-/// (``MarkdownSyntax`` and ``MarkdownEditing``, in MeetingsCore where they are tested), a font for
-/// each answer, and two floating surfaces hung off rects the text view measured.
-///
-/// Markers are styled *with* the text they mark rather than hidden. Hiding them means the document
-/// on screen has different offsets from the document in the store, which is a second text model to
-/// keep in step, and it is the thing that makes a caret land a character off.
-struct LiveMarkdownEditor: View {
-    @Binding var text: String
-    /// The measure a floating surface is kept inside — **read off the laid-out editor, not assumed
-    /// from the constant the detail pane happens to frame it to.**
-    ///
-    /// It used to be `SharedFieldEditor.column`, handed in, on the reasoning that the frame above is
-    /// set from the same number. It is not, in either of the other two mounts: `.frame(maxWidth:)`
-    /// is a cap, so a pane narrower than the column gives the editor the pane. Measured through the
-    /// real container: a 700 pt detail pane lays the editor out at **520 pt**, a 380 pt notes panel
-    /// at **296 pt**, and a 300 pt one at **216 pt** — while the clamp was told 520 every time. The
-    /// slash menu measures 300 × 299, so in the panel it was free to sit at x = 220 and run 224 pt
-    /// past the editor's right edge, where the panel clips it.
-    ///
-    /// Starts at the column so the first frame has a sane measure, and is corrected the moment the
-    /// editor has a width.
-    @State private var width = SharedFieldEditor.column
-
-    /// The selection as character offsets, published by the text view. Everything on this screen
-    /// that has to know where the caret is — the slash menu, the toolbar's pressed buttons — reads
-    /// it from here rather than asking AppKit again and getting a different unit.
-    @State private var selection = 0..<0
-    @State private var caretRect: CGRect?
-    @State private var selectionRect: CGRect?
-    @State private var handle = MarkdownEditorHandle()
-    /// Which row of the slash menu Return would take.
-    @State private var highlighted = 0
-    /// Escape closes the menu without moving the caret, which would otherwise re-open it on the
-    /// very next keystroke. Cleared when the caret leaves the query.
-    @State private var dismissedQuery: Range<Int>?
-
-    var body: some View {
-        MarkdownTextView(
-            text: $text,
-            selection: $selection,
-            caretRect: $caretRect,
-            selectionRect: $selectionRect,
-            handle: handle,
-            intercept: intercept
-        )
-        // The editor's own width, which is what the surfaces above are clamped inside. A background
-        // rather than a `GeometryReader` around the editor: a reader would take the proposal and
-        // hand the text view an infinite one, which is the opposite of what `sizeThatFits` needs.
-        .background(
-            GeometryReader { proxy in
-                Color.clear
-                    .onAppear { width = proxy.size.width }
-                    .onChange(of: proxy.size.width) { _, measure in width = measure }
-            }
-        )
-        // Both float in the editor's own coordinate space, over the rect the text view measured.
-        // Neither is a popover: a popover takes key window, and a menu you cannot keep typing into
-        // while it filters is not a filter.
-        .overlay(alignment: .topLeading) { menuOverlay }
-        .overlay(alignment: .topLeading) { toolbarOverlay }
-        // The formatting shortcuts are menu items rather than key handlers, because a focused
-        // NSTextView owns its own key events and the main menu is the one thing that outranks it.
-        // Published only while this editor holds focus, so ⌘B elsewhere still means nothing.
-        .focusedValue(\.markdownFormatting, MarkdownFormatting(id: text.count) { toggle($0) })
-    }
-
-    // MARK: - The slash menu
-
-    private var slashQuery: Range<Int>? {
-        guard selection.isEmpty else { return nil }
-        return MarkdownEditing.slashQuery(in: text, caret: selection.lowerBound)
-    }
-
-    private var menu: (range: Range<Int>, matches: [MarkdownEditing.SlashCommand])? {
-        guard let range = slashQuery, range != dismissedQuery else { return nil }
-        let matches = MarkdownEditing.slashMatches(String(Array(text)[range]))
-        return matches.isEmpty ? nil : (range, matches)
-    }
-
-    /// The highlight, clamped to the list as it stands. Typing narrows the menu under the
-    /// selection — arrowing to the ninth item and then filtering to one would otherwise leave
-    /// Return pointing at a row that is no longer there.
-    private var highlightedRow: Int {
-        guard let menu else { return 0 }
-        return min(max(highlighted, 0), menu.matches.count - 1)
-    }
-
-    @ViewBuilder private var menuOverlay: some View {
-        if let menu, let anchor = caretRect {
-            SlashMenu(matches: menu.matches, highlighted: highlightedRow) { command in
-                choose(command, over: menu.range)
-            }
-            .fixedSize()
-            .floating(over: anchor, in: width)
-        }
-    }
-
-    /// Deterministic, because `NSTextView` routes every one of these through `doCommandBy` and we
-    /// answer there. The previous build hoped a SwiftUI `onKeyPress` would win the race against a
-    /// focused text view for Return and the arrows; this does not have to hope.
-    private func intercept(_ key: MarkdownTextView.EditorKey) -> Bool {
-        guard let menu else { return false }
-        switch key {
-        case .up:
-            highlighted = max(highlightedRow - 1, 0)
-        case .down:
-            highlighted = min(highlightedRow + 1, menu.matches.count - 1)
-        case .enter:
-            guard let command = menu.matches[safe: highlightedRow] else { return false }
-            choose(command, over: menu.range)
-        case .escape:
-            dismissedQuery = menu.range
-        }
-        return true
-    }
-
-    private func choose(_ command: MarkdownEditing.SlashCommand, over range: Range<Int>) {
-        handle.apply(MarkdownEditing.insert(command, over: range, in: text))
-        highlighted = 0
-    }
-
-    // MARK: - The selection toolbar
-
-    @ViewBuilder private var toolbarOverlay: some View {
-        // Only over a real selection, and never at the same time as the menu — the menu belongs to
-        // a caret and the toolbar to a range, so the two cannot both be right.
-        if let anchor = selectionRect, !selection.isEmpty, menu == nil {
-            SelectionToolbar(text: text, selection: selection) { mark in
-                toggle(mark)
-            } turnInto: { command in
-                handle.apply(MarkdownEditing.applyBlock(command, in: text, over: selection))
-            }
-            .fixedSize()
-            .floating(over: anchor, in: width)
-        }
-    }
-
-    private func toggle(_ mark: MarkdownEditing.InlineMark) {
-        handle.apply(MarkdownEditing.toggle(mark, in: text, selection: selection))
-    }
-}
-
-extension View {
-    /// Places a floating surface over `anchor` in the editor's own coordinate space, through the one
-    /// decision in ``MarkdownEditing/floating(over:size:in:gap:)`` — so the toolbar and the slash
-    /// menu cannot drift apart about what "over the text" means, and neither can be pushed off an
-    /// edge where the split view's pane clips it.
-    ///
-    /// Alignment guides rather than an offset: the guide closure is handed the surface's own
-    /// dimensions, which is exactly what the placement needs and what a `.offset` would not have.
-    func floating(over anchor: CGRect, in width: CGFloat) -> some View {
-        alignmentGuide(.leading) { size in
-            -MarkdownEditing.floating(
-                over: anchor, size: CGSize(width: size.width, height: size.height), in: width
-            ).x
-        }
-        .alignmentGuide(.top) { size in
-            -MarkdownEditing.floating(
-                over: anchor, size: CGSize(width: size.width, height: size.height), in: width
-            ).y
-        }
-    }
-}
-
-extension Collection {
-    /// The element at `offset`, or nil. Keyboard navigation indexes a list that shrinks under it as
-    /// the query narrows, and a trap there is a crash on a keystroke.
-    subscript(safe offset: Int) -> Element? {
-        guard offset >= 0, offset < count else { return nil }
-        return self[index(startIndex, offsetBy: offset)]
     }
 }
 

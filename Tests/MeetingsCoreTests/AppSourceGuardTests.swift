@@ -119,8 +119,12 @@ import Testing
 
     // MARK: - The window has to say what the CLI says
 
-    static func source(_ name: String) throws -> String {
-        try String(contentsOf: appSources.appendingPathComponent(name), encoding: .utf8)
+    static func source(_ name: String, in directory: String = "Sources/MeetingsApp") throws -> String {
+        let root = appSources.deletingLastPathComponent().deletingLastPathComponent()
+        return try String(
+            contentsOf: root.appendingPathComponent(directory).appendingPathComponent(name),
+            encoding: .utf8
+        )
     }
 
     /// `transcript_issues` was read by the CLI and by nothing in the app.
@@ -418,6 +422,30 @@ import Testing
                 "the conflict decision belongs to MeetingsCore, where it is tested")
     }
 
+    /// **One editor, no toggle**, and both fields with two writers mount the same one.
+    ///
+    /// There was a seam here — `MEETINGS_EDITOR=engine|native` — while the library and the
+    /// hand-built editor were being photographed side by side. Keeping it past that decision would
+    /// mean two editors to fix every bug in, and a variable that silently changes which one shipped.
+    /// The mount stays inside `SharedFieldEditor` for the reason it always did: the summary and the
+    /// pre-notes are one field with two writers, and an editor chosen per call site is two answers
+    /// that drift.
+    @Test func thereIsOneEditorAndItIsMountedOnce() throws {
+        let app = try Self.source("MeetingsApp.swift")
+        #expect(!app.contains("MEETINGS_EDITOR"), """
+            The editor switch is back. There is one editor; a variable that picks between two is a \
+            second code path nobody photographs before shipping.
+            """)
+
+        let editor = try Self.source("PreNotesEditor.swift")
+        let mount = try #require(editor.range(of: "private var editor: some View"),
+                                 "the one mount has to stay inside the one shared editor")
+        let body = String(editor[mount.upperBound...].prefix(120))
+        #expect(body.contains("LiveMarkdownEditor(text: $text, documentId: identity)"),
+                "and it is the engine-backed editor, handed the field's identity as its document")
+        #expect(!editor.contains("editorEngine"), "with nothing branching on which editor to use")
+    }
+
     /// The write-up is the surface this screen exists for, and the layout has to say so.
     ///
     /// It did not: the transcript and the notes sat above the fold at full height and the summary
@@ -464,19 +492,17 @@ import Testing
     /// is 28 pt, ten lines 172 pt, forty lines 652 pt — and the same forty-line document is 236 pt
     /// at 520 pt wide against 492 pt at 260 pt wide, so it rewraps rather than clipping.
     @Test func theWriteUpGrowsWithItsDocumentRatherThanScrollingInsideThePage() throws {
-        let editor = try Self.source("MarkdownTextView.swift")
-        #expect(!editor.contains("let scroll = NSTextView.scrollableTextView()"),
-                "a scroll view inside the page's scroll view is two surfaces and one ambiguous drag")
-        #expect(!editor.contains("func makeNSView(context: Context) -> NSScrollView"),
-                "the representable is the text view itself now")
-        #expect(editor.contains("func sizeThatFits("),
-                "the editor has to report its own height, or the parent has to invent one")
-        #expect(editor.contains("usageBoundsForTextContainer"),
-                "the height is what TextKit 2 laid out, measured, not a constant")
-        #expect(editor.contains("layout.ensureLayout(for: layout.documentRange)"),
-                "layout is lazy — measuring before it runs reports the height of nothing")
-        #expect(editor.contains("widthTracksTextView = true"),
-                "the height is only right if the container rewraps to the width being measured")
+        let editor = try Self.source("MarkdownEditor.swift")
+        #expect(editor.contains("heightBehavior: .fitsContent"), """
+            `.scrolls` is the library's default. Taking it puts an NSScrollView inside the page's \
+            own ScrollView, which is two surfaces and one ambiguous trackpad drag.
+            """)
+        #expect(editor.contains("scrollers: .hidden"),
+                "and a scroller on a view that does not scroll is a control that does nothing")
+        #expect(editor.contains("readingWidth: nil") || !editor.contains("readingWidth:"), """
+            The measure is SharedFieldEditor.column, applied by the frame outside the editor. A \
+            reading column inside that frame is two answers to one question.
+            """)
 
         // Every other home of the same editor gained the page scroll the write-up already had, so
         // "one scrolling surface" is the rule everywhere rather than a special case in one pane.
@@ -531,186 +557,109 @@ import Testing
         #expect(model.contains("func saveSummary(meetingID: String, text: String)"),
                 "which leaves the one write path the write-up already had")
 
-        // The checkbox itself: a real control over the characters, never instead of them.
-        let editor = try Self.source("MarkdownTextView.swift")
-        #expect(editor.contains("MarkdownSyntax.taskItem("),
-                "what counts as a task list item is MeetingsCore's decision, where it is tested")
-        #expect(editor.contains("MarkdownEditing.toggleTask("), """
-            Ticking goes through the same edit path as typing, or it is not undoable and it does \
-            not autosave.
-            """)
-        #expect(editor.contains("override func mouseDown"), "and the click has to be hit-tested")
-        #expect(editor.contains("value: NSColor.clear, range: range(task.box)"), """
-            The box is drawn transparent at its own width — the three characters stay in the \
-            string, at the same offsets, which is the rule that protects the caret.
+        // The checkbox itself belongs to the engine now, and that is the whole point: it draws the
+        // box inside the NSTextLayoutFragment, with the draw site and the hit-test site calling one
+        // shared TaskCheckboxGeometry. The last bug this app shipped was the other arrangement — an
+        // overlay view computing its own positions, which drifted four hundred points down the
+        // page. Nothing in this app may start drawing one again.
+        for file in try Self.swiftFiles() {
+            let text = file.lines.joined(separator: "\n")
+            #expect(!text.contains("NSButton.checkboxSquare") && !text.contains("checkboxRect"), """
+                \(file.name) is computing checkbox geometry. The engine draws the box inside its \
+                own layout fragment; a second set of coordinates is the bug that put the glyphs \
+                four hundred points below their text.
+                """)
+        }
+
+        // And the one command the engine's bus has no verb for still reaches the document, because
+        // an action item is the construct `meetings actions list` reads back out of the write-up.
+        let editor = try Self.source("MarkdownEditor.swift")
+        #expect(editor.contains("case .taskList:") && editor.contains(#"replaceCharacters(in: caret, with: "[ ] ")"#), """
+            /todo has no verb on the MarkdownEditorBus. It asks for a bullet and types the box into \
+            the line the engine just made — through shouldChangeText/didChangeText, so it is \
+            undoable and it autosaves.
             """)
     }
 
-    /// The summary renders its markdown as it is typed, and it does it with the platform's own text
-    /// engine rather than a second one of our own.
+    /// The write-up renders its markdown as it is typed, and the value of record stays a `String`.
     ///
-    /// The characters on screen have to stay the characters in the store, at the same offsets —
-    /// hiding a `##` means keeping two documents in step, which is how a caret comes to land a
-    /// character off from where it was clicked.
-    ///
-    /// This used to pin `TextEditor(text:selection:)` by name. It now pins the *invariant* that
-    /// spelling stood for, because the spelling had to change: SwiftUI's attributed `TextEditor`
-    /// works in a scope with no paragraph-style key, so a hanging indent is not expressible in it,
-    /// and its selection carries no geometry for the toolbar to anchor to. What must not change is
-    /// that the engine is AppKit's — one `NSTextView`, its own caret, its own undo — and that the
-    /// value of record stays the plain `String` the CLI writes.
+    /// This used to pin the hand-built `MarkdownTextView` by name, then its TextKit-2 internals.
+    /// Both are gone: `swift-markdown-engine` owns the text view, the styling, the typing rules and
+    /// the checkbox. What must not change is the seam — the store holds the plain `String` the CLI
+    /// writes, and the editor is a lens over it. Everything above the editor (autosave, the
+    /// two-writer banner, the oversize guard, `meetings summary get`, the exporter) is built on that
+    /// and an editor that started holding the truth in an attributed form would take all of it.
     @Test func theEditorRendersMarkdownWithoutASecondTextModel() throws {
-        let editor = try Self.source("MarkdownTextView.swift")
-        #expect(editor.contains("NSViewRepresentable") && editor.contains("NSTextView(frame: .zero)"),
-                "the engine is AppKit's own text view — nothing here rolls its own")
-        #expect(editor.contains("MarkdownSyntax.line(") && editor.contains("MarkdownSyntax.inline("),
-                "what counts as markdown is MeetingsCore's decision, where it is tested")
-
-        // The value of record. Everything above this view — autosave, the two-writer banner, the
-        // oversize guard — works off a `String`, and an editor that started holding the truth in an
-        // attributed form would take all three with it.
-        let mount = try #require(try Self.source("PreNotesEditor.swift").range(of: "LiveMarkdownEditor(text: $text)"))
-        #expect(mount.isEmpty == false)
+        let editor = try Self.source("MarkdownEditor.swift")
         #expect(editor.contains("@Binding var text: String"),
                 "the store still holds the string the CLI writes, not an attributed one")
-        #expect(editor.contains("parent.text = now"),
-                "what the user typed is pushed back up as characters")
+        #expect(editor.contains("NativeTextViewWrapper("),
+                "and the engine is the library's, not a second text stack of our own")
 
-        // TextKit 2, not the legacy layout manager — asking for `NSLayoutManager` on macOS 26
-        // drags the text view back onto the compatibility engine.
-        #expect(editor.contains("textLayoutManager"),
-                "selection geometry comes from NSTextLayoutManager")
-        // The TextKit 1 accessor, which is what silently drops the view onto the old engine.
-        #expect(!editor.contains(".layoutManager"), "TextKit 1 would be a downgrade, not a fallback")
-
-        // The *other* way onto the old engine, and it does not look like one. Measured on macOS 26:
-        // a subclass of `NSTextView` that overrides `draw(_:)` comes back with `textLayoutManager`
-        // **nil** — the whole view silently falls to TextKit 1, taking the gutter's measurements,
-        // the document height and the rects the toolbar and the slash menu hang off with it.
-        // `drawBackground(in:)` is the hook that does not, which is where the checkbox is painted.
-        #expect(!editor.contains("override func draw(_ dirtyRect"), """
-            Overriding draw(_:) on an NSTextView drops it to TextKit 1 on macOS 26 — measured: \
-            textLayoutManager comes back nil. Draw above the text in MarkdownCheckboxOverlay, \
-            which is a plain NSView with no layout to lose.
-            """)
-
-        // And the rule is about the *text view*, not about the file. The checkboxes are painted in
-        // an overlay that does override `draw(_:)` — which is free on a plain `NSView` and is what
-        // keeps the control above the selection highlight instead of under it. Moving the text
-        // view's drawing in there would sail straight past the guard above, so: that view is an
-        // `NSView`, and it stays one.
-        let overlay = try Self.source("MarkdownCheckboxOverlay.swift")
-        #expect(overlay.contains("final class MarkdownCheckboxOverlay: NSView"), """
-            The overlay is a plain NSView. An NSTextView subclass overriding draw(_:) is the \
-            downgrade this whole arrangement exists to avoid.
-            """)
-        #expect(!overlay.contains(": NSTextView"), "and it does not become one by another route")
-    }
-
-    /// Undo has to survive, and the two ways to lose it are both here.
-    ///
-    /// Writing the whole string back into the text view on every change is the first: SwiftUI hands
-    /// the binding back down after every keystroke, and a view that obeys it flattens the undo
-    /// stack into one blob. Changing text behind the user's back without telling AppKit is the
-    /// second: a list continuation that skips `shouldChangeText` is a change ⌘Z cannot reach.
-    @Test func undoSurvivesBothWaysOfLosingIt() throws {
-        let editor = try Self.source("MarkdownTextView.swift")
-        #expect(editor.contains("textView.allowsUndo = true"))
-        #expect(editor.contains("guard textView.string != text else { return }"),
-                """
-                Without this guard the view writes the document back to itself on every keystroke, \
-                and every one of them lands as a single undo step over the whole string.
-                """)
-        let apply = try #require(editor.range(of: "func apply(_ edit: MarkdownEditing.Edit)"))
-        let body = String(editor[apply.upperBound...].prefix(700))
-        #expect(body.contains("shouldChangeText(in: range, replacementString: edit.replacement)"),
-                "a follow-up edit has to be registered with AppKit or ⌘Z cannot reach it")
-        #expect(body.contains("textView.didChangeText()"),
-                "and the change has to be closed, or it never lands on the undo stack")
-
-        // Restyling is attributes only, and attributes are not text — so none of it is undoable,
-        // and ⌘Z after typing a `#` undoes the character rather than the colour it caused.
-        #expect(editor.contains("storage.beginEditing()") && editor.contains("storage.endEditing()"))
-    }
-
-    /// The gutter is drawn with **attributes**, never by taking characters out.
-    ///
-    /// Hiding a marker by deleting it from the drawn text is the one thing this editor must not do:
-    /// the document on screen would then have different offsets from the document in the store, and
-    /// that is precisely what makes a caret land a character off. The markers stay; a `kern` pads
-    /// them out to a common width and a `foregroundColor` dims them, and both are restyles the
-    /// existing `transform(updating:)` already keeps the selection valid across.
-    @Test func theGutterIsAnAttributeAndNotACharacterEverRemoved() throws {
-        let editor = try Self.source("MarkdownTextView.swift")
-        #expect(editor.contains("MarkdownSyntax.blockMarker("),
-                "which characters go in the gutter is MeetingsCore's decision, where it is tested")
-        #expect(editor.contains("MarkdownSyntax.markers("),
-                "which characters dim is MeetingsCore's decision too")
-
-        // The gutter is a paragraph property. It is the only thing that can put a line with *no*
-        // marker on the same left edge as one with a six-character marker, because there is no
-        // character in front of a paragraph to pad.
-        #expect(editor.contains("style.firstLineHeadIndent") && editor.contains("style.headIndent"),
-                "the gutter is a hanging indent")
-        #expect(editor.contains("MarkdownSyntax.gutterIndent("),
-                "the indent arithmetic is MeetingsCore's, where it is tested")
-        // And the padding hack it replaced is gone rather than left alongside it.
-        #expect(!editor.contains(".kern"),
-                "two mechanisms for one gutter is one more than can be reasoned about")
-
-        // Never characters. The storage is only ever handed attributes by the styling pass; the one
-        // place characters change is `apply`, which is the user's own edit going through undo.
-        #expect(!editor.contains("MarkdownStyle") || !editor.contains("replaceCharacters(in: whole"),
-                "styling must never remove a marker from the document")
-
-        // The styling function is handed the caret so it knows which line to reveal, and the
-        // selection changing has to restyle or the reveal never moves off the first line.
-        #expect(editor.contains("caret utf16: Int?"), "the reveal needs to know where the caret is")
-        #expect(editor.contains("func textViewDidChangeSelection"),
-                "moving the caret changes which line is revealed")
-
-        // The container is gone. A box around the write-up made it read as one field on a form.
         let pane = try Self.source("PreNotesEditor.swift")
-        #expect(!pane.contains(".background(.quaternary.opacity(0.35)"),
-                "the write-up sits on the pane, not in a filled box")
-        #expect(pane.contains("maxWidth: Self.column"),
-                "the document is a centred measure, not the full width of a wide window")
+        #expect(pane.contains("SharedFieldEdit.receive("),
+                "the conflict decision belongs to MeetingsCore, where it is tested")
+        #expect(pane.contains("static let editLimit = 200_000"),
+                "and the oversize guard still keeps a ten-megabyte file out of a text view")
     }
 
-    /// Inline markers are **hidden** off the caret's line; block markers stay dim in the gutter.
+    /// The editor's rules live in the engine, and this app keeps **no second copy of them**.
     ///
-    /// Dimming was not enough. A dimmed `**` still occupies its two characters, so bold text read as
-    /// punctuation with a word inside it and the surface still looked like source waiting to be
-    /// rendered. Hidden here means a hair-sized transparent font over characters that are all still
-    /// in the string — measured, `make it **bold** now` draws 102.38 pt with the markers hidden
-    /// against 102.36 pt with the four characters actually deleted, and 126.58 pt when they are
-    /// merely coloured clear. Colour alone hides nothing; it leaves the gap.
-    ///
-    /// Nothing is removed, which is the rule that protects the caret: the drawn document and the
-    /// stored document keep identical offsets. And a line the caret is on reveals its markers at
-    /// full size, so the caret can never sit inside a hair-sized run.
-    @Test func inlineMarkersAreHiddenAndBlockMarkersStayInTheGutter() throws {
-        let editor = try Self.source("MarkdownTextView.swift")
-        #expect(editor.contains("static let hiddenFont = NSFont.systemFont(ofSize: 0.01)"), """
-            An inline marker is hidden by drawing it at no width. `ofSize: 0` is not that — AppKit \
-            reads zero as "the default size" and would draw the markers full size.
-            """)
-        #expect(editor.contains("value: NSColor.clear"), "and transparent, so no ghost of it remains")
+    /// Two implementations of "what does Return at the end of a bullet do" is one more than can be
+    /// reasoned about, and the loser is whichever one the document is not actually going through.
+    /// So the transforms were deleted rather than left beside the library: `MarkdownEditing` is a
+    /// catalogue and a placement rule now, and every edit is a verb posted on the engine's own bus.
+    @Test func theTypingRulesAreTheEnginesAndThereIsNoSecondCopy() throws {
+        let editing = try Self.source("MarkdownEditing.swift", in: "Sources/MeetingsCore")
+        for gone in ["func followUp(", "func toggleTask(", "func applyBlock(", "func toggle(",
+                     "func isActive(", "struct Edit"] {
+            #expect(!editing.contains(gone), """
+                \(gone) is back in MeetingsCore. The engine holds the document and applies these \
+                itself; a second implementation here is a rule that disagrees with the one running.
+                """)
+        }
+        #expect(editing.contains("public static func floating("),
+                "what survives is the placement the engine ships nothing for")
+        #expect(editing.contains("public static let slashCommands"),
+                "and the slash catalogue, which the engine also ships nothing for")
 
-        // The split. `markers` merges ranges that touch, so `- **bold**` arrives as one span across
-        // the bullet and the opening delimiters; the gutter's end is where the two treatments part.
-        #expect(editor.contains("let blockEnd = MarkdownSyntax.blockMarker(line)?.upperBound ?? 0"), """
-            Without the split a bullet touching a bold run is hidden along with it, and the gutter \
-            — the whole point of the design — silently loses its marker.
-            """)
-        #expect(editor.contains("if span.lowerBound < blockEnd"),
-                "the part of the span inside the gutter stays visible and dim")
-
-        // Still never characters. This is the same rule the gutter test pins, restated for the one
-        // change that would have been most tempting to make by deleting text.
-        #expect(!editor.contains("deleteCharacters") && !editor.contains("replacingOccurrences(of: \"**\""),
-                "hiding a marker by removing it is two documents to keep in step, and a caret a character off")
+        // Every command reaches the engine through the bus, and nothing in the app splices markdown
+        // characters into the document behind it.
+        let editor = try Self.source("MarkdownEditor.swift")
+        #expect(editor.contains("MarkdownEditorBus("),
+                "the menu and the toolbar drive the engine through its own bus")
+        for hardcoded in ["\"## \"", "\"# \"", "\"> \"", "\"- \""] {
+            #expect(!editor.contains(hardcoded), """
+                \(hardcoded) is being spliced in by the app. What a heading or a list does to a \
+                line is the engine's answer, asked for by name on the bus.
+                """)
+        }
     }
+
+    /// Nothing in this app may hold a second opinion about where the text is drawn.
+    ///
+    /// The engine's markers, gutter, reveal and checkbox are all inside its own layout fragment.
+    /// A styling pass of ours over the same storage is the arrangement that shipped markers and
+    /// text in different places, so the types that made it possible are gone and stay gone.
+    @Test func theAppDrawsNoneOfTheDocumentItself() throws {
+        let names = try FileManager.default
+            .contentsOfDirectory(atPath: Self.appSources.path)
+            .filter { $0.hasSuffix(".swift") }
+        for gone in ["MarkdownTextView.swift", "MarkdownCheckboxOverlay.swift"] {
+            #expect(!names.contains(gone), """
+                \(gone) is back. One editor: the engine draws the document, and a second view over \
+                the same storage is how a checkbox came to sit four hundred points below its text.
+                """)
+        }
+        for file in try Self.swiftFiles() {
+            let text = file.lines.joined(separator: "\n")
+            #expect(!text.contains(": NSTextView {"), """
+                \(file.name) subclasses NSTextView. The engine's own NativeTextView is the text \
+                view; a second one is a second set of layout answers.
+                """)
+        }
+    }
+
 
     /// The write-up is read at a measure, and everything on the screen shares its edge.
     ///
@@ -727,8 +676,10 @@ import Testing
             The measure is 40rem of this app's own body text. A hardcoded point size is right at \
             one system text size and wrong at every other.
             """)
-        #expect(pane.contains("static var bodyEdge: CGFloat { editorInset + MarkdownStyle.gutter }"),
-                "anything lining up with the prose measures the gutter rather than guessing at it")
+        // `bodyEdge` is gone with the gutter it measured: the engine draws no marker column, so
+        // prose starts at the column's own edge and nothing has an indent to line up with.
+        #expect(!pane.contains("bodyEdge"),
+                "a gutter measurement over an editor that has no gutter is a number about nothing")
 
         let detail = try Self.source("MeetingDetailView.swift")
         #expect(detail.contains("static var documentWidth: CGFloat { SharedFieldEditor.column"), """
@@ -776,20 +727,27 @@ import Testing
                 "and it is the one move path, which the context menu still calls")
     }
 
-    /// Both floating surfaces hang off a rect the text view measured, not off a corner of the pane.
+    /// Both floating surfaces hang off a rect **measured against the layout that is on screen**.
+    ///
     /// A menu that opens at the top-left while you are typing on line forty is a menu about
-    /// somewhere else.
+    /// somewhere else — and the way this app got there last time was measuring through a lazy
+    /// layout estimate, which answers before the text has been laid out and never revises itself.
+    /// `firstRect(forCharacterRange:actualRange:)` is the rect AppKit hands an input method for its
+    /// candidate window: it cannot be ahead of the glyphs, because it is what the glyphs produced.
     @Test func theMenuAndTheToolbarAnchorToWhereTheTextActuallyIs() throws {
-        let editor = try Self.source("MarkdownTextView.swift")
-        #expect(editor.contains("enumerateTextSegments("),
-                "the rects come from the layout manager rather than from a guess")
-        #expect(editor.contains("@Binding var caretRect: CGRect?")
-                && editor.contains("@Binding var selectionRect: CGRect?"))
-
-        let pane = try Self.source("PreNotesEditor.swift")
-        #expect(pane.contains("if let menu, let anchor = caretRect"),
+        let editor = try Self.source("MarkdownEditor.swift")
+        #expect(editor.contains("firstRect(forCharacterRange: range, actualRange: nil)"), """
+            The anchor has to come from the on-screen layout. A rect taken from a lazy layout \
+            estimate is the bug that put a checkbox four hundred points below its own text.
+            """)
+        #expect(editor.contains("probe.convert(window.convertFromScreen(onScreen), from: nil)"), """
+            Screen coordinates in, view coordinates out, through the real view tree — so the \
+            engine's reading-column centring and its header band are AppKit's arithmetic and not a \
+            second copy of it here.
+            """)
+        #expect(editor.contains("if let query = bridge.openQuery, let anchor = bridge.anchor"),
                 "the slash menu opens under the caret")
-        #expect(pane.contains("if let anchor = selectionRect, !selection.isEmpty"),
+        #expect(editor.contains("if let anchor = bridge.anchor, bridge.selection.length > 0"),
                 "the toolbar appears over the selection, and only over a real one")
 
         // **Where** it lands is a decision with tests behind it, not arithmetic buried in an
@@ -797,88 +755,84 @@ import Testing
         // a 280 pt toolbar centred on a selection at the left edge of the text computed a negative
         // origin, which is outside the document column and past the left edge of the split view's
         // detail pane — and an NSSplitView pane clips.
-        #expect(pane.contains(".floating(over: anchor, in: width)"),
+        #expect(editor.contains(".floating(over: anchor, in: bridge.width)"),
                 "both surfaces go through the one placement, so they cannot disagree about it")
-        #expect(pane.contains("MarkdownEditing.floating("),
+        #expect(editor.contains("MarkdownEditing.floating("),
                 "and that placement is MeetingsCore's, where the clamp and the flip are tested")
 
-        // **And the measure it is clamped inside is the editor's, measured.** It was
-        // `SharedFieldEditor.column`, handed in, on the reasoning that the frame above is set from
-        // the same number — but `.frame(maxWidth:)` is a cap, and this editor has three mounts. A
-        // 700 pt detail pane lays it out at 520 pt, a 380 pt notes panel at 296 pt and a 300 pt one
-        // at 216 pt. The slash menu is 300 pt wide, so against a hardcoded 520 it could sit at
-        // x = 220 in a 296 pt editor and run out through the panel's clip.
-        #expect(pane.contains("@State private var width"),
-                "the clamp's measure is the editor's own, not a constant borrowed from one mount")
-        #expect(pane.contains("onChange(of: proxy.size.width)"),
-                "and it follows the editor when the pane or the panel is resized")
-
-        // An anchor is only as good as its freshness. Published from the selection delegate alone,
-        // it went stale on any layout change — a resized pane, a re-wrapped document, or a
-        // selection made before the text had been laid out at all, which leaves it nil forever.
-        #expect(editor.contains("coordinator.publishRects()"), """
-            The rects have to be republished when the layout changes, not only when the selection \
-            does, or the toolbar hangs off where the text used to be — or off nothing.
+        // The width is the editor's own, measured. A constant is how the menu came to be clamped
+        // against a 520 pt column while the floating notes panel lays the editor out at 296, and
+        // ran 224 pt outside the panel's clip.
+        #expect(editor.contains("let laidOut = max(probe.bounds.width, 1)"), """
+            The clamp needs the width the editor was actually laid out at. A constant is right in \
+            the detail pane and wrong in the notes panel by two hundred points.
             """)
-    }
 
-    /// Typing the shorthand, Return continuing a list and the slash menu are all one vocabulary,
-    /// and every one of them is a pure function in `MeetingsCore` rather than a rule buried in a
-    /// view where nothing can reach it.
-    @Test func theEditorsTypingRulesLiveWhereTheyCanBeTested() throws {
-        let engine = try Self.source("MarkdownTextView.swift")
-        let pane = try Self.source("PreNotesEditor.swift")
-        #expect(engine.contains("MarkdownEditing.followUp("),
-                "list continuation and the shorthand are MeetingsCore's, where they are tested")
-        #expect(pane.contains("MarkdownEditing.slashQuery("),
-                "when the menu is open is a decision with tests behind it")
-        #expect(pane.contains("MarkdownEditing.insert("),
-                "and so is what choosing an item does")
-
-        // Driven by what the text became, not by second-guessing which key produced it.
-        #expect(engine.contains("before: before, after: now"),
-                "a keystroke is read off the document rather than reconstructed from the event")
-
-        // The menu's keys are taken at `doCommandBy`, which is a real interception point. The
-        // previous build used SwiftUI's `onKeyPress` and hoped it would win the race against a
-        // focused text view for Return and the arrows.
-        #expect(engine.contains("func textView(_ textView: NSTextView, doCommandBy selector: Selector)"),
-                "the slash menu's keys have to be taken where NSTextView offers them")
-        for command in ["NSResponder.moveUp", "NSResponder.moveDown",
-                        "NSResponder.insertNewline", "NSResponder.cancelOperation"] {
-            #expect(engine.contains(command), "the slash menu lost its keyboard wiring: \(command)")
+        // An anchor is only as good as its freshness: published from the selection alone it goes
+        // stale on any layout change — a resized pane, a rewrapped document, or a selection made
+        // before the text was laid out at all, which leaves it nil forever.
+        for trigger in ["NSTextView.didChangeSelectionNotification", "NSText.didChangeNotification",
+                        "NSView.frameDidChangeNotification"] {
+            #expect(editor.contains(trigger), """
+                The anchor has to be recomputed on \(trigger) as well, or the toolbar hangs off \
+                where the text used to be — or off nothing.
+                """)
         }
-        #expect(!pane.contains(".onKeyPress("), "onKeyPress on a focused text view is a race, not a binding")
     }
 
-    /// One transform behind every surface that turns a line into a heading or a list.
+    /// The menu's keys are taken **before** the text view sees them.
+    ///
+    /// A build before this one used SwiftUI's `onKeyPress` and hoped it would win the race against a
+    /// focused `NSTextView` for Return and the arrows. It does not. The engine's own `doCommandBy`
+    /// interception is gated on its wiki-link preview and is not open to an embedder, so a local
+    /// event monitor — which runs ahead of the responder chain — is the interception point left.
+    @Test func theSlashMenuTakesItsKeysAheadOfTheTextView() throws {
+        let editor = try Self.source("MarkdownEditor.swift")
+        #expect(editor.contains("NSEvent.addLocalMonitorForEvents(matching: .keyDown)"),
+                "the menu's keys have to be taken somewhere that outranks a focused NSTextView")
+        #expect(editor.contains("tv.window?.firstResponder === tv"),
+                "and the monitor has to be inert unless this editor is the one being typed into")
+        #expect(editor.contains("let open = openQuery else"),
+                "and inert unless its menu is open, or it eats Return for the whole app")
+        #expect(!editor.contains(".onKeyPress("),
+                "onKeyPress on a focused text view is a race, not a binding")
+    }
+
+    /// One catalogue behind every surface that turns a line into a heading or a list, and one route
+    /// from a chosen row to the document.
     ///
     /// A menu that builds its own `"## "` and a toolbar that builds another is two definitions of
-    /// Heading 2 that will disagree the first time either grows a rule — about indentation, about
-    /// what happens to the marker already there.
+    /// Heading 2 that will disagree the first time either grows a rule. Both now name a
+    /// ``MarkdownEditing/Action`` and post it on the engine's bus, which is the only thing holding
+    /// the document.
     @Test func everyBlockTransformGoesThroughTheOneImplementation() throws {
         let chrome = try Self.source("MarkdownEditorChrome.swift")
         #expect(chrome.contains("MarkdownEditing.SlashCommand"),
                 "the menu draws the commands MeetingsCore defines, it does not list its own")
         for hardcoded in ["\"## \"", "\"- [ ] \"", "\"# \""] {
             #expect(!chrome.contains(hardcoded),
-                    "\(hardcoded) is built in the view instead of by MarkdownEditing.applyBlock")
+                    "\(hardcoded) is built in the view instead of asked for on the bus")
         }
-
-        // The toolbar is a third way to reach the same two functions, and it draws its pressed
-        // state from the same question `toggle` asks — a button that says "on" while the shortcut
-        // turns it on again is two answers to one question.
-        #expect(chrome.contains("MarkdownEditing.isActive(mark, in: text, selection: selection)"),
-                "the toolbar's pressed state has to come from MarkdownEditing, not from a guess")
         #expect(chrome.contains("MarkdownEditing.blockCommands"),
                 "the turn-into buttons are the commands MeetingsCore defines")
-        let pane = try Self.source("PreNotesEditor.swift")
-        #expect(pane.contains("MarkdownEditing.applyBlock(command, in: text, over: selection)"),
-                "the toolbar's block buttons go through the one transform the slash menu uses")
-        // `over:` rather than `replacing:`: the toolbar hands over the words somebody highlighted,
-        // and the transform that read them as a span to swallow deleted them.
-        #expect(!pane.contains("applyBlock(command, in: text, replacing:"),
-                "a block marker applies to the line, and never eats the selection it was asked for")
+
+        // The toolbar's pressed state is the engine's own answer, posted after every selection
+        // change — the same answer ⌘B uses to decide which way it is going, so a button cannot say
+        // "on" while the shortcut turns it on again.
+        let editor = try Self.source("MarkdownEditor.swift")
+        #expect(editor.contains("selectionBoldDidChange: name(\"isBold\")")
+                && editor.contains("selectionItalicDidChange: name(\"isItalic\")"), """
+            The pressed state has to come off the engine's bus. Re-deriving it here is a second \
+            markdown parser disagreeing with the one holding the document.
+            """)
+
+        // And each editor owns its own notification names, because the engine subscribes with
+        // `object: nil`: one shared name means ⌘B in the floating notes panel also emboldens the
+        // write-up behind it.
+        #expect(editor.contains(#"Notification.Name("meetings.editor.\(id).\(verb)")"#), """
+            The bus names have to be unique per mounted editor. The engine observes them with \
+            object: nil, so a shared name is a format request delivered to every editor on screen.
+            """)
 
         // The formatting shortcuts are menu items, because the main menu is the one thing that
         // outranks a focused NSTextView for a key equivalent.
@@ -897,6 +851,7 @@ import Testing
         #expect(!chrome.contains("\"k\", [.command]"), "link insertion must not shadow ⌘K")
         #expect(app.contains("MarkdownFormattingCommands()"), "the Format menu has to be mounted")
     }
+
 
     // MARK: - The transcription engine choice
 

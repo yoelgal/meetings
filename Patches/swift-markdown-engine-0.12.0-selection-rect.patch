@@ -1,0 +1,91 @@
+diff -ru a/Sources/MarkdownEngine/TextView/Coordinator/NativeTextViewCoordinator+TextDelegate.swift b/Sources/MarkdownEngine/TextView/Coordinator/NativeTextViewCoordinator+TextDelegate.swift
+--- a/Sources/MarkdownEngine/TextView/Coordinator/NativeTextViewCoordinator+TextDelegate.swift	2026-08-15 11:26:49
++++ b/Sources/MarkdownEngine/TextView/Coordinator/NativeTextViewCoordinator+TextDelegate.swift	2026-08-15 11:27:23
+@@ -694,6 +694,15 @@
+         // Skip during a pending edit — viewRect is stale until textDidChange's restyle runs; otherwise the overlay flashes to the old Y before settling.
+         if !shouldSkipSelectionRestyle {
+             updateCodeBlockSelection(textView: tv, parsed: parsed)
++            // Same freshness rule, same reason: a floating toolbar anchored off a
++            // stale rect flashes to the previous line before settling. Reported
++            // here rather than at the top of this method so the rect is measured
++            // against the layout the restyle above has already settled.
++            if let onSelectionRectChange {
++                let selRange = tv.selectedRange()
++                let rect = tv.viewRect(forCharacterRange: selRange, using: layoutBridge)
++                DispatchQueue.main.async { onSelectionRectChange(rect, selRange) }
++            }
+         }
+     }
+ 
+diff -ru a/Sources/MarkdownEngine/TextView/Coordinator/NativeTextViewCoordinator.swift b/Sources/MarkdownEngine/TextView/Coordinator/NativeTextViewCoordinator.swift
+--- a/Sources/MarkdownEngine/TextView/Coordinator/NativeTextViewCoordinator.swift	2026-08-15 11:26:49
++++ b/Sources/MarkdownEngine/TextView/Coordinator/NativeTextViewCoordinator.swift	2026-08-15 11:27:23
+@@ -78,6 +78,7 @@
+     var layoutDelegate: MarkdownLayoutManagerDelegate?
+     var onLinkClick: ((String) -> Void)?
+     var onCaretRectChange: ((CGRect) -> Void)?
++    var onSelectionRectChange: ((CGRect?, NSRange) -> Void)?
+     /// Embedder hook to build the right-click menu (the engine ships none). Gets the
+     /// default menu + current selection range, returns the menu to show.
+     var onBuildContextMenu: ((NSMenu, NSRange) -> NSMenu)?
+@@ -286,6 +287,7 @@
+         _isWikiLinkActive = isWikiLinkActive
+         self.onLinkClick = onLinkClick
+         self.onCaretRectChange = nil
++        self.onSelectionRectChange = nil
+         self.onInlineSelectionChange = onInlineSelectionChange
+         self.lastSyncedText = text.wrappedValue
+         super.init()
+diff -ru a/Sources/MarkdownEngine/TextView/NativeTextViewWrapper.swift b/Sources/MarkdownEngine/TextView/NativeTextViewWrapper.swift
+--- a/Sources/MarkdownEngine/TextView/NativeTextViewWrapper.swift	2026-08-15 11:26:46
++++ b/Sources/MarkdownEngine/TextView/NativeTextViewWrapper.swift	2026-08-15 11:27:23
+@@ -83,6 +83,17 @@
+     /// Fires whenever the caret rect inside an active wiki-link changes,
+     /// so embedders can position a follow-the-caret UI.
+     public var onCaretRectChange: ((CGRect) -> Void)?
++    /// Fires after EVERY selection change with the on-screen rect of the current
++    /// selection (or caret) and the range it covers, so embedders can anchor a
++    /// floating selection toolbar or a slash-command menu. `nil` when the rect
++    /// cannot be measured (no layout yet).
++    ///
++    /// Unlike ``onCaretRectChange`` this is not gated on an active wiki-link or
++    /// image embed: it is the general "where is the selection on screen" hook.
++    /// The rect is in the SCROLL VIEW's coordinate space — the same space
++    /// ``onCaretRectChange`` reports in, and already corrected for the reading
++    /// column's x-offset and the scroll-away header's y-offset.
++    public var onSelectionRectChange: ((CGRect?, NSRange) -> Void)?
+     /// Build the editor's right-click menu (the engine ships no menu). Receives the default
+     /// NSMenu + the current selection range; return the menu to display (or unchanged).
+     public var onBuildContextMenu: ((NSMenu, NSRange) -> NSMenu)?
+@@ -149,6 +160,7 @@
+         onPasteImage: ((NSPasteboard) -> String?)? = nil,
+         onLinkClick: ((String) -> Void)? = nil,
+         onCaretRectChange: ((CGRect) -> Void)? = nil,
++        onSelectionRectChange: ((CGRect?, NSRange) -> Void)? = nil,
+         onBuildContextMenu: ((NSMenu, NSRange) -> NSMenu)? = nil,
+         onInlineSelectionChange: ((InlineSelectionState?) -> Void)? = nil,
+         onInlinePreviewKey: ((InlinePreviewKey) -> Bool)? = nil,
+@@ -174,6 +186,7 @@
+         self.onPasteImage = onPasteImage
+         self.onLinkClick = onLinkClick
+         self.onCaretRectChange = onCaretRectChange
++        self.onSelectionRectChange = onSelectionRectChange
+         self.onBuildContextMenu = onBuildContextMenu
+         self.onInlineSelectionChange = onInlineSelectionChange
+         self.onInlinePreviewKey = onInlinePreviewKey
+@@ -323,6 +336,7 @@
+         context.coordinator.textView = textView
+         context.coordinator.wikiLinkMetadata = initialState.metadata
+         context.coordinator.onCaretRectChange = onCaretRectChange
++        context.coordinator.onSelectionRectChange = onSelectionRectChange
+         context.coordinator.onBuildContextMenu = onBuildContextMenu
+         context.coordinator.onInlineSelectionChange = onInlineSelectionChange
+         context.coordinator.onInlinePreviewKey = onInlinePreviewKey
+@@ -664,6 +678,7 @@
+         }
+ 
+         context.coordinator.onCaretRectChange = onCaretRectChange
++        context.coordinator.onSelectionRectChange = onSelectionRectChange
+         context.coordinator.onBuildContextMenu = onBuildContextMenu
+         context.coordinator.onInlineSelectionChange = onInlineSelectionChange
+         context.coordinator.onInlinePreviewKey = onInlinePreviewKey
