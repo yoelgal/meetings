@@ -26,3 +26,4 @@
 {"kind":"rule","text":"soak window: one full green CI cycle"}
 {"kind":"rule","text":"safety-gate-integrity: a red check is fixed, never silenced - do not disable a lint rule, skip or weaken a test, or lower a threshold to reach green."}
 {"kind":"rule","text":"context-hygiene: the repo's standing context (CLAUDE.md + always-loaded blocks) is a per-turn tax - keep it lean, prune stale lines on each release, and rewrite instructions written for an older model rather than carrying them forward."}
+{"kind":"rule","text":"branch-model: trunk"}

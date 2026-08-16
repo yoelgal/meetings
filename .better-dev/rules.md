@@ -1,7 +1,6 @@
 # Project rules (promoted, human-readable)
 
 - adoption: team
-- branch-model: staged
 - graphify: CLI present (verified at /update 2026-08-16); registry not yet built for this worktree - the first /graphify-wrapper-query carves the domain and builds the graph, no setup owed
 - stack: Swift package landed (Package.swift, Sources/, Tests/, Packaging/) - SwiftUI macOS app + CLI in one package, as the PRD planned
 - guardrails: wired - staged-diff secret scan at .git/hooks/pre-commit (proven: clean pass / planted key refused / revert pass) and CI at .github/workflows/verify.yml running scripts/verify.sh on macos-26. Gap: no lint/format gate, because the repo carries no linter config (see 'verify lint')
@@ -24,3 +23,4 @@
 - soak window: one full green CI cycle
 - safety-gate-integrity: a red check is fixed, never silenced - do not disable a lint rule, skip or weaken a test, or lower a threshold to reach green.
 - context-hygiene: the repo's standing context (CLAUDE.md + always-loaded blocks) is a per-turn tax - keep it lean, prune stale lines on each release, and rewrite instructions written for an older model rather than carrying them forward.
+- branch-model: trunk
