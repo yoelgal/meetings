@@ -10,49 +10,45 @@
 //
 // WHY A .icon AND NOT JUST A .icns
 // The app declares LSMinimumSystemVersion 26.0, and on 26 an .icns is a static sticker: it gets none
-// of the Light, Dark, Clear or Tinted appearances the system draws for every other icon in the Dock.
-// Those appearances come from a *layered* icon — a `.icon` bundle, which is a plain directory of
-// `icon.json` plus SVG layers, compiled by `actool` into an `Assets.car`. The system composites the
-// squircle, the material, the specular rim and the per-appearance recolouring itself; the artwork
-// supplies only the flat layers. That is why Assets/*.svg contain nothing but four rectangles and no
-// background, no rounded-corner mask and no shading of their own.
+// of the squircle, material, specular rim and shadow the system draws for every other icon in the
+// Dock. Those come from a *layered* icon — a `.icon` bundle, which is a plain directory of
+// `icon.json` plus its layer art, compiled by `actool` into an `Assets.car`.
 //
 // Icon Composer.app (inside Xcode) is the GUI for this format, but nothing about it is required:
-// `icon.json` is ordinary JSON and the layers are ordinary SVG, so the whole icon is diffable text
-// in the repo. Icon Composer's own CLI, `ictool`, renders a `.icon` exactly as the system will —
-// used below for the preview and for the fallback .icns, so both show the real composited result
-// rather than a re-implementation of it.
+// `icon.json` is ordinary JSON, so the icon's structure is diffable text in the repo. Icon Composer's
+// own CLI, `ictool`, renders a `.icon` exactly as the system will — used below for the preview and
+// for the fallback .icns, so both show the real composited result rather than a re-implementation.
 //
 // THE MARK
-// `brand/logo.png`, the operator's own brand mark, drawn onto the icon grid — not redrawn. Two
-// overlapping capsules, blue above and offset left, pink below and offset right, with one vertical
-// beam of light through both: the product's one idea, that a meeting has two sides and Meetings
-// keeps them separate. The hues are the mark's, and they are the hues ChannelStyle already gives the
+// `brand/logo.png`, the operator's own brand mark: a glass waveform whose two halves meet in a lens
+// at the centre, lit blue on the left and magenta on the right — the product's one idea, that a
+// meeting has two sides and Meetings keeps them separate, in the hues ChannelStyle already gives the
 // mic and system channels in the transcript.
 //
-// Recomposed, not resized. In the source the mark fills about 55% of the square; Apple's own icons
-// fill closer to 80%, and at 32 pt beside Mail and Finder the source proportion reads timid. Every
-// shape here is the source geometry — measured off logo.png, not eyeballed — scaled about the canvas
-// centre by 1.1204 so the mark spans 819 of 1024 points. The 1254-point source coordinates map as
-// `new = (old − 627) × 1.1204 + 512`; redraw from logo.png with that transform if the mark changes.
+// It ships as authored. `Assets/mark.png` is that render at 1024, full-bleed and opaque — glow, dark
+// ground and all — not a silhouette lifted out of it. An earlier pass did lift one: cut the glass out
+// by luma, flood-fill the interior, repaint it with the render's own hues at raised chroma. It
+// composited cleanly and it was the wrong icon, because most of what the eye reads in this mark is the
+// light around the glass, and that is exactly what a cut-out throws away. Replacing the mark is
+// therefore one command, and no geometry to redraw:
+//
+//   sips -s format png -Z 1024 brand/logo.png --out Packaging/AppIcon.icon/Assets/mark.png
 //
 // WHAT THE RENDERER WILL AND WILL NOT DO (measured on this machine, not assumed)
 // Icon Composer accepts `blend-mode`, `translucency`, `is-glass`, `specular` and `shadow` on a layer
 // and, for macOS, renders none of them: every layer is flattened with normal alpha and given the
-// system's own material, rim and shadow. A layer's alpha becomes its material *shape*, so a soft or
-// faded edge comes back as a solid edge with a highlight on it. That is why the source's glow is not
-// reproduced as a glow: the beam is painted in the colours the light actually produces — cyan across
-// the blue capsule, rose across the pink, cool blue and mauve where it crosses bare plate — with the
-// lit bands living inside the capsule layers so the light reads as passing through them. A beam laid
-// on top would have greyed the capsules instead of lighting them.
+// system's own material, rim and shadow. A layer's alpha becomes its material *shape*. A full-bleed
+// opaque layer therefore has one shape — the square — so the material lands as a rim and a shadow
+// around the whole icon and leaves the artwork inside it alone, which is what makes shipping the
+// render straight through work at all.
 //
-// THE PLATE IS DARK, IN ALL FOUR APPEARANCES
-// The mark is a beam of light. Light only reads as light against a dark ground, and both channel
-// hues carry on near-black where neither carries on white. macOS 26 draws Light, Dark, Clear and
-// Tinted from these same layers; the plate colour below shows in Light and Dark, and the system does
-// not require a light one — Terminal, Podcasts and TV all ship dark plates. Clear and Tinted ignore
-// layer colour entirely and composite from coverage alone, so what survives there is the silhouette:
-// two horizontal bars crossed by one vertical. All six renditions were rendered and looked at.
+// WHAT IT COSTS, SAID PLAINLY
+// Clear and Tinted ignore layer colour and composite from coverage alone. A silhouette gives them a
+// waveform; this layer's coverage is the entire square, so in those two appearances the icon is a
+// plain tinted squircle with no mark in it. That is a deliberate trade: Light and Dark are what the
+// Dock draws by default and they carry the artwork exactly as authored. `icon.json`'s dark plate fill
+// stays for the same reason it was chosen — it is what shows if a future layer ever has alpha again —
+// but nothing of it is visible under a layer that covers the grid.
 
 import Foundation
 
