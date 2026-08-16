@@ -12,7 +12,55 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 STEP=0
-step() { STEP=$((STEP + 1)); echo; echo "=== $STEP/7  $*"; }
+step() { STEP=$((STEP + 1)); echo; echo "=== $STEP/8  $*"; }
+
+step "the toolchain gate, and the Command Line Tools staying enough to build this"
+# fix/install-requires-xcode. A stranger's install cloned the repo, spent their login password on a
+# signing certificate, fetched every package and then died on `@Entry` — because the check that stood
+# in install.sh asked "is there a macOS SDK", which the Command Line Tools pass and which says
+# nothing about its version. Two invariants came out of that, and this is the cheap end of both.
+#
+# First: no macro whose plugin ships only inside Xcode. `libSwiftUIMacros.dylib` and its siblings
+# live under Xcode's Platforms directory and have no copy in the Command Line Tools, so one `@Entry`
+# or `#Preview` silently turns a 1.5 GB dependency into a 12 GB one — and fails twenty-five modules
+# into someone else's build, with an error that reads like a bug in this source. `^[^/]*` so the
+# comments that explain this rule are not caught by it. scripts/clean-clone-check.sh proves the real
+# thing, by building with those tools; this is the tripwire that fires the moment one is typed.
+XCODE_ONLY='@Entry|#Preview|@Model|@Query|#Predicate|#Expression'
+MACRO_HITS="$(grep -rEn "^[^/]*($XCODE_ONLY)" Sources --include='*.swift' || true)"
+[ -z "$MACRO_HITS" ] || { echo "verify: a macro whose plugin ships only inside Xcode — the Command
+                       Line Tools cannot expand it, and the build fails partway through:
+$MACRO_HITS" >&2; exit 1; }
+echo "no Xcode-only macros in Sources"
+
+# Second: both doors refuse a toolchain too old to build this, before doing anything. A stub xcrun
+# reporting the macOS 15 SDK is the whole test — the real one here is 26, so nothing else can say
+# what a 2024 toolchain would meet.
+STUB="$(mktemp -d)"
+printf '#!/bin/sh\ncase "$*" in *--show-sdk-version*) echo 15.7 ;; *) exit 1 ;; esac\n' > "$STUB/xcrun"
+chmod +x "$STUB/xcrun"
+
+OLD="$(PATH="$STUB:$PATH" scripts/build-app.sh release 2>&1 </dev/null)" \
+    && { echo "verify: build-app.sh accepted a macOS 15 SDK" >&2; exit 1; }
+case "$OLD" in
+    *"targets macOS 26"*) echo "build-app.sh: $(printf '%s' "$OLD" | head -1)" ;;
+    *) echo "verify: build-app.sh failed on a macOS 15 SDK, but not at the gate:
+$OLD" >&2; exit 1 ;;
+esac
+
+# install.sh carries its own copy of the check, on purpose: it is fetched over curl and runs before
+# this repo exists, so it cannot source one from here. It is also the copy that has to fire before
+# the certificate prompt spends a password, so it is checked the same way rather than grepped for.
+SRC_PROBE="$STUB/should-not-exist"
+OLD="$(PATH="$STUB:$PATH" MEETINGS_SRC="$SRC_PROBE" MEETINGS_NO_OPEN=1 ./install.sh 2>&1 </dev/null)" \
+    && { echo "verify: install.sh accepted a macOS 15 SDK" >&2; exit 1; }
+case "$OLD" in
+    *"macOS 26 SDK"*) echo "install.sh: $(printf '%s' "$OLD" | head -1)" ;;
+    *) echo "verify: install.sh failed on a macOS 15 SDK, but not at the gate:
+$OLD" >&2; exit 1 ;;
+esac
+[ ! -e "$SRC_PROBE" ] || { echo "verify: install.sh cloned before checking the toolchain" >&2; exit 1; }
+rm -rf "$STUB"
 
 step "swift build"
 swift build

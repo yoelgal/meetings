@@ -212,8 +212,21 @@ struct MarkdownFormatting: Equatable {
     static func == (lhs: MarkdownFormatting, rhs: MarkdownFormatting) -> Bool { lhs.id == rhs.id }
 }
 
+/// Hand-written rather than `@Entry`, and that is a distribution decision rather than a style one.
+/// `@Entry` is expanded by `libSwiftUIMacros.dylib`, which ships only inside Xcode — there is no copy
+/// anywhere in the Command Line Tools — so this one line is what made building this app require a
+/// 12 GB IDE. Without the plugin the compiler cannot expand the macro and the build dies on this
+/// declaration, twenty-five modules in, with "plugin for module 'SwiftUIMacros' not found": an error
+/// that reads like a bug in this file. Six lines of key conformance is what the macro writes anyway.
 extension FocusedValues {
-    @Entry var markdownFormatting: MarkdownFormatting?
+    private struct MarkdownFormattingKey: FocusedValueKey {
+        typealias Value = MarkdownFormatting
+    }
+
+    var markdownFormatting: MarkdownFormatting? {
+        get { self[MarkdownFormattingKey.self] }
+        set { self[MarkdownFormattingKey.self] = newValue }
+    }
 }
 
 /// The Format menu. Present always, enabled only while a markdown editor has focus — a greyed-out

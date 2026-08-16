@@ -14,9 +14,10 @@ That clones the repo, sets up code signing, builds, installs the app and the `me
 tool, installs the agent skill, and opens the app. A few minutes, mostly compiling. Re-run it any
 time to update.
 
-It needs macOS 26 and Xcode 26, and it asks one question, about the signing certificate. Say yes: it
-is what stops macOS re-asking for the microphone after every update. Read it first if you would
-rather ([install.sh](install.sh)), or do it by hand:
+It needs macOS 26 and Apple's command line developer tools — not the full Xcode — and it asks one
+question, about the signing certificate. Say yes: it is what stops macOS re-asking for the
+microphone after every update. Read it first if you would rather ([install.sh](install.sh)), or do it
+by hand:
 
 ```sh
 git clone https://github.com/yoelgal/meetings.git && cd meetings && ./install.sh
@@ -35,7 +36,9 @@ notes you took, not by someone else's template.
 ## Requirements
 
 - macOS 26 or later. The app is built against APIs that do not exist earlier.
-- Xcode 26 or its command line tools. `swift --version` should report 6.2 or later.
+- Apple's command line developer tools, with the macOS 26 SDK — `xcode-select --install`, about
+  1.5 GB, no Apple ID and no Xcode. `swift --version` should report 6.2 or later. A full Xcode works
+  too, and if neither is installed `install.sh` offers to do it for you.
 - About 1 GB of disk for the speech models. They download the first time transcription runs, into
   `~/Library/Application Support/FluidAudio/Models`. Nothing is bundled in the app.
 - About 2 GB for the build itself, in `.build/`. Delete it any time.

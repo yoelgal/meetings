@@ -31,14 +31,135 @@ die()  { printf '\033[1;31mmeetings:\033[0m %s\n' "$1" >&2; exit 1; }
 major=$(sw_vers -productVersion | cut -d. -f1)
 [ "$major" -ge 26 ] || die "Needs macOS 26 or later; this is $(sw_vers -productVersion)."
 
-command -v swift >/dev/null 2>&1 || die "No Swift toolchain. Install Xcode from the App Store, then run:
-    sudo xcode-select -s /Applications/Xcode.app
-    sudo xcodebuild -license accept"
+# ---------------------------------------------------------------- the toolchain
+# One requirement, and it is not Xcode: a Swift toolchain whose macOS SDK is 26 or newer, because
+# Package.swift targets macOS 26. The Command Line Tools are enough — about 1.5 GB and no Apple ID,
+# against Xcode's 12 GB — and this app deliberately uses no Xcode-only macro so that stays true;
+# scripts/verify.sh pins it.
+#
+# What follows repairs the two states that are repairable and explains the two that are not. It used
+# to do neither: the check that stood here asked "is there a macOS SDK", which the Command Line Tools
+# pass and which says nothing about the SDK's version, so a Mac that could not build this cloned the
+# repo, spent the user's login password on a signing certificate, fetched every package, and failed
+# in the compiler half an hour later.
 
-# swift exists but points at the Command Line Tools, which cannot build a SwiftUI app.
-xcrun --sdk macosx --show-sdk-path >/dev/null 2>&1 \
-  || die "The active developer directory has no macOS SDK. Install Xcode, then:
-    sudo xcode-select -s /Applications/Xcode.app"
+# Yes unless they say no, and a no when there is nobody to ask — every caller answers that with the
+# exact command to run by hand, which is the right outcome for a CI job or an agent.
+#
+# From /dev/tty, because under `curl | bash` stdin is the script itself. `[ -r /dev/tty ]` is not
+# enough on its own: with no controlling terminal the device is still readable by that test and the
+# open fails anyway, so the read's own failure has to count as a no rather than fall through to the
+# default yes. `2>/dev/null` before the redirection, not after — bash applies them left to right, and
+# the other order prints "/dev/tty: Device not configured" before the suppression takes effect.
+ask() {
+    printf '    %s [Y/n] ' "$1"
+    if ! read -r reply 2>/dev/null < /dev/tty; then echo "(no terminal to ask on)"; return 1; fi
+    case "$reply" in [nN]*) return 1 ;; *) return 0 ;; esac
+}
+
+# The macOS SDK major of a developer directory ("26"), or nothing at all if it has none. `|| true`
+# because a failing command substitution in an assignment takes the whole script down under `set -e`.
+sdk_major() {
+    DEVELOPER_DIR="$1" xcrun --sdk macosx --show-sdk-version 2>/dev/null | cut -d. -f1 || true
+}
+
+CLT=/Library/Developer/CommandLineTools
+DEV_DIR="$(xcode-select -p 2>/dev/null || true)"
+SDK="$(sdk_major "$DEV_DIR")"
+
+if [ "${SDK:-0}" -lt 26 ]; then
+    # Something newer may already be installed and simply not selected — a second Xcode, or the
+    # Command Line Tools sitting behind an Xcode that is too old. Pick the best of what is here.
+    BEST=""
+    BEST_SDK=0
+    for candidate in /Applications/Xcode*.app/Contents/Developer "$CLT"; do
+        [ -d "$candidate" ] || continue
+        found="$(sdk_major "$candidate")"
+        if [ "${found:-0}" -gt "$BEST_SDK" ]; then
+            BEST="$candidate"
+            BEST_SDK="${found:-0}"
+        fi
+    done
+
+    if [ "$BEST_SDK" -ge 26 ] && [ "$BEST" != "$DEV_DIR" ]; then
+        echo
+        echo "    The developer tools in use are ${DEV_DIR:-not set}, whose macOS SDK is"
+        echo "    ${SDK:-too old to read} — this needs 26. You already have a newer one installed:"
+        echo
+        echo "        $BEST  (macOS $BEST_SDK SDK)"
+        echo
+        echo "    Switching is one command, and macOS will ask for your password because it changes"
+        echo "    a system-wide setting: sudo xcode-select -s $BEST"
+        echo
+        ask "Switch to it now?" \
+            || die "Left alone. Run this when you are ready, then re-run the install:
+    sudo xcode-select -s $BEST"
+        say "switching the developer tools to $BEST"
+        sudo xcode-select -s "$BEST" < /dev/tty \
+            || die "That did not take. Run it by hand, then re-run the install:
+    sudo xcode-select -s $BEST"
+    elif [ ! -d "$CLT" ]; then
+        # Nothing usable is installed at all. `xcode-select --install` opens Apple's own installer,
+        # needs no sudo and no Apple ID, and is the whole of what this app needs to build.
+        echo
+        echo "    This Mac has no Swift toolchain yet. The Command Line Tools are what this app"
+        echo "    needs — about 1.5 GB, from Apple, no Apple ID and no Xcode. macOS runs its own"
+        echo "    installer; a window will appear and this will wait for it."
+        echo
+        ask "Install them now?" \
+            || die "Nothing installed. Run this when you are ready, then re-run the install:
+    xcode-select --install"
+        # A refused request is not something to wait 40 minutes on: Software Update has to be
+        # reachable and offering them, and when it is not it says so immediately.
+        if ! request="$(xcode-select --install 2>&1)"; then
+            if [ -n "$request" ]; then printf '    %s\n' "$request"; fi
+            die "macOS would not start the installer. Install the command line developer tools from
+    System Settings → General → Software Update, then re-run this."
+        fi
+        say "Waiting for the Command Line Tools to finish installing"
+        waited=0
+        while :; do
+            found="$(sdk_major "$CLT")"
+            if [ "${found:-0}" -ge 26 ]; then break; fi
+            waited=$((waited + 1))
+            if [ "$waited" -ge 160 ]; then
+                die "Still not installed after 40 minutes. Finish Apple's installer, then re-run this."
+            fi
+            if [ $((waited % 8)) -eq 0 ]; then say "still installing…"; fi
+            sleep 15
+        done
+        # macOS makes a fresh install the active developer directory on its own. If it somehow did
+        # not, the check below says so — better than a second sudo on a guess.
+    fi
+
+    # Whatever happened above, the requirement is the requirement.
+    DEV_DIR="$(xcode-select -p 2>/dev/null || true)"
+    SDK="$(sdk_major "$DEV_DIR")"
+    [ "${SDK:-0}" -ge 26 ] || die "The developer tools here (${DEV_DIR:-none}) have no macOS 26 SDK, and this
+    app is built against macOS 26 APIs. Update the Command Line Tools in System Settings →
+    General → Software Update, or Xcode in the App Store, then re-run this."
+fi
+
+# The toolchain is the right vintage; this asks whether it actually runs. An Xcode whose licence has
+# never been accepted fails here rather than twenty-five modules into the build.
+probe="$(swift --version 2>&1)" || case "$probe" in
+    *[lL]icense*)
+        echo
+        echo "    Xcode's licence has not been accepted on this Mac, and nothing compiles until it"
+        echo "    is. macOS will ask for your password: sudo xcodebuild -license accept"
+        echo
+        ask "Accept it now?" \
+            || die "Not accepted. Run this, then re-run the install:
+    sudo xcodebuild -license accept"
+        sudo xcodebuild -license accept < /dev/tty \
+            || die "The licence was not accepted. Run it by hand, then re-run the install:
+    sudo xcodebuild -license accept"
+        ;;
+    *)
+        die "The Swift toolchain at ${DEV_DIR:-none} does not run:
+$probe"
+        ;;
+esac
 
 # ---------------------------------------------------------------- get the source
 # Only when this script is a real file sitting next to the package. Piped into bash there is no

@@ -38,6 +38,29 @@ for icon in AppIcon.car AppIcon.icns; do
         || die "Packaging/$icon is missing — run: swift scripts/make-icon.swift"
 done
 
+# The toolchain, checked here rather than only in install.sh, because this is the one door every
+# build path goes through — install.sh, scripts/dev.sh, scripts/verify.sh, and the README's own
+# `./scripts/build-app.sh`. A stranger following the README never runs install.sh at all.
+#
+# The requirement is the macOS SDK's version and nothing else: Package.swift targets macOS 26, and an
+# older SDK cannot compile that. Not Xcode — the Command Line Tools build this app, which is why
+# nothing here uses an Xcode-only macro (see FocusedValues in MarkdownEditorChrome.swift, and the
+# check for it in verify.sh). Not the host's macOS version either: this cross-builds fine on an older
+# Mac, and refusing one that cannot *run* the result is install.sh's job.
+#
+# One second here instead of half an hour: without it, a toolchain too old to build this fetched the
+# whole package graph first and then failed in the compiler.
+#
+# `|| true`: a failing command substitution in an assignment takes the script down under `set -e`.
+SDK_VERSION="$(xcrun --sdk macosx --show-sdk-version 2>/dev/null || true)"
+case "${SDK_VERSION%%.*}" in
+    ''|*[!0-9]*) die "no macOS SDK here — xcrun could not name one. Run ./install.sh, which offers
+                      to install the Command Line Tools for you." ;;
+    *) [ "${SDK_VERSION%%.*}" -ge 26 ] || die "the macOS SDK here is $SDK_VERSION and Package.swift
+                      targets macOS 26. Update the Command Line Tools in Software Update, or Xcode
+                      in the App Store. ./install.sh explains this too." ;;
+esac
+
 echo "==> swift build -c $CONF"
 swift build -c "$CONF"
 BIN="$(swift build -c "$CONF" --show-bin-path)"

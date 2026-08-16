@@ -63,7 +63,25 @@ echo "carried $PENDING uncommitted file(s) across into the clone"
 
 step "build it — the README's one command: ./scripts/build-app.sh"
 cd "$CLONE"
-./scripts/build-app.sh || fail "./scripts/build-app.sh did not succeed in a fresh clone"
+# With the Command Line Tools rather than this Mac's Xcode, when they are new enough. They are what
+# README.md asks for and the cheaper thing a stranger installs — 1.5 GB against Xcode's 12 — so they
+# are the toolchain a fresh clone is worth proving against. This is also the only mechanical proof
+# that no macro whose plugin ships solely inside Xcode has crept into Sources: verify.sh greps for
+# them in a fraction of a second, and this compiles the whole app without them.
+#
+# Stale Command Line Tools beside a current Xcode would fail the SDK gate for a reason that has
+# nothing to do with this clone, so that case says so out loud and uses the default toolchain.
+CLT="/Library/Developer/CommandLineTools"
+CLT_SDK="$(DEVELOPER_DIR="$CLT" xcrun --sdk macosx --show-sdk-version 2>/dev/null || true)"
+if [ "${CLT_SDK%%.*}" -ge 26 ] 2>/dev/null; then
+    echo "building with the Command Line Tools (macOS $CLT_SDK SDK)"
+    DEVELOPER_DIR="$CLT" ./scripts/build-app.sh \
+        || fail "./scripts/build-app.sh did not succeed in a fresh clone with the Command Line Tools —
+                       a stranger with no Xcode cannot build this"
+else
+    echo "no Command Line Tools with a macOS 26 SDK here (found ${CLT_SDK:-none}) — building with $(xcode-select -p)"
+    ./scripts/build-app.sh || fail "./scripts/build-app.sh did not succeed in a fresh clone"
+fi
 [ -d "$CLONE/dist/Meetings.app" ] || fail "the README promises dist/Meetings.app and it is not there"
 
 step "install it — the README's mv into /Applications"
