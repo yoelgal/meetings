@@ -11,7 +11,15 @@ import Testing
 ///     MEETINGS_LIVE_TRANSCRIBE=1 MEETINGS_HOME=$(mktemp -d) swift test --filter LiveBatchPass
 ///
 /// Speech is synthesised with `say -o` straight to a file — nothing ever reaches the speakers.
-@Suite(.serialized, .enabled(if: ProcessInfo.processInfo.environment["MEETINGS_LIVE_TRANSCRIBE"] != nil))
+///
+/// The `MEETINGS_HOME` half of that gate is enforced, not merely documented. This suite calls
+/// `Paths.ensureDirectories()` and `MeetingStore()`, both of which resolve through `Paths.root` —
+/// and with nothing overriding it that is `~/Library/Application Support/Meetings`, the operator's
+/// own store. So on the one env var alone the "run it against a throwaway store" line above would
+/// have been advice rather than a rule, and a live run would create directories in, and write
+/// meetings to, real data. `RefResolverDemoTests` gates on the same variable for the same reason.
+@Suite(.serialized, .enabled(if: ProcessInfo.processInfo.environment["MEETINGS_LIVE_TRANSCRIBE"] != nil
+    && ProcessInfo.processInfo.environment["MEETINGS_HOME"] != nil))
 struct LiveBatchPassTests {
     static let micLine = """
         Sofia, can you confirm the ptychography rig is free on Thursday? \

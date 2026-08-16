@@ -124,7 +124,25 @@ struct RobustRecordingTests {
 
     // MARK: - A very long recording
 
-    @Test("three hours of buffers do not grow memory", .timeLimit(.minutes(5)))
+    /// **This one has to have the process to itself, so it is not in the default run.**
+    ///
+    /// `residentBytes()` is `mach_task_basic_info.resident_size` — the RSS of the whole test
+    /// process, not of the writer. swift-testing runs suites in parallel inside that one process,
+    /// and appending three hours of buffers takes about a hundred seconds, so the window between
+    /// the baseline and the second reading is not this test's window: it is the entire test run's.
+    /// Measured here, 844 lines of other tests' output landed between the two readings, and every
+    /// allocation any of them made counted as growth against a 32 MB threshold.
+    ///
+    /// That is the flake this gate closes. It failed twice immediately after the round-7 merge —
+    /// which put `StoreOpenRaceTests` (forty subprocesses) and the snapshot tests (`VACUUM INTO`
+    /// of a whole store) into that same parallel pool — and then passed nine times running, because
+    /// whether a heavy test lands inside the window is a scheduling accident. A green run of a test
+    /// like that proves nothing, and this suite is what decides a release.
+    ///
+    /// Run alone the reading means what it says it means, so the check gets stronger, not weaker.
+    /// `scripts/verify.sh` runs it as its own step, the way it already runs the editor suites.
+    @Test("three hours of buffers do not grow memory", .timeLimit(.minutes(5)),
+          .enabled(if: ProcessInfo.processInfo.environment["MEETINGS_MEMORY_CHECK"] == "1"))
     func longRecordingIsFlat() throws {
         let url = directory.appendingPathComponent("mic.wav")
         let writer = try ChannelWriter(url: url, origin: Date())
@@ -139,6 +157,10 @@ struct RobustRecordingTests {
         for _ in 0..<(3 * 3600 * 10) { writer.append(chunk) }
         let growth = Int64(residentBytes()) - Int64(baseline)
         writer.finish()
+
+        // Printed on the way past, not only on failure: the number is the whole point of the test,
+        // and a headroom that has quietly shrunk from 30 MB to 2 is the warning before the break.
+        print("longRecordingIsFlat: RSS grew \(growth / (1 << 20)) MB of a 32 MB budget")
 
         #expect(seen > 16_000 * 3 * 3600, "the hook must have seen the whole meeting")
         #expect(growth < 32 << 20, "RSS grew \(growth / (1 << 20)) MB over three hours")

@@ -12,7 +12,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 STEP=0
-step() { STEP=$((STEP + 1)); echo; echo "=== $STEP/6  $*"; }
+step() { STEP=$((STEP + 1)); echo; echo "=== $STEP/7  $*"; }
 
 step "swift build"
 swift build
@@ -31,6 +31,17 @@ swift test
 # here safe rather than merely convenient. `AppSourceGuardTests` pins that no window is opened.
 step "swift test (the editor suites, behind MEETINGS_LIVE_EDITOR)"
 MEETINGS_LIVE_EDITOR=1 swift test --filter "EditorMountTests|ViewportProbeTests"
+
+# The recording-memory check, alone in its own process, which is the only way its number means
+# anything. It reads the RSS of the whole test process, and appending three hours of buffers takes
+# about a hundred seconds — so inside the default run its baseline and its second reading sit either
+# side of the *entire* suite, and every other test's allocations count as growth against a 32 MB
+# budget. That is what made the gate flaky, and a flaky gate means a green run proves nothing.
+#
+# `--filter` leaves one test in the process and `--no-parallel` says why out loud. Nothing is skipped
+# by this: the check moved here, it did not go away.
+step "swift test (the recording-memory check, alone in the process)"
+MEETINGS_MEMORY_CHECK=1 swift test --no-parallel --filter "longRecordingIsFlat"
 
 step "assemble dist/Meetings.app"
 scripts/build-app.sh release

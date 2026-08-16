@@ -1,0 +1,37 @@
+--- a/Sources/MarkdownEngine/Configuration/MarkdownEditorConfiguration.swift
++++ b/Sources/MarkdownEngine/Configuration/MarkdownEditorConfiguration.swift
+@@ -330,16 +330,24 @@
+ public struct TaskCheckboxStyle: Sendable {
+     /// SF Symbol drawn for an unchecked task item (`[ ]`).
+     public var uncheckedSymbolName: String
+     /// SF Symbol drawn for a checked task item (`[x]`).
+     public var checkedSymbolName: String
++    /// Tint for a checked box. `nil` keeps the previous behaviour — the theme's `bodyText`.
++    ///
++    /// A ticked box drawn in the prose colour reads as disabled rather than done; every checklist
++    /// people know tints it. Separate from `bodyText` because that colour is the document's text
++    /// and cannot move without moving the writing with it.
++    public var checkedColor: NSColor?
+ 
+     public init(
+         uncheckedSymbolName: String = "square",
+-        checkedSymbolName: String = "checkmark.square.fill"
++        checkedSymbolName: String = "checkmark.square.fill",
++        checkedColor: NSColor? = nil
+     ) {
+         self.uncheckedSymbolName = uncheckedSymbolName
+         self.checkedSymbolName = checkedSymbolName
++        self.checkedColor = checkedColor
+     }
+ 
+     public static let `default` = TaskCheckboxStyle()
+ }
+--- a/Sources/MarkdownEngine/Renderer/MarkdownTextLayoutFragment.swift
++++ b/Sources/MarkdownEngine/Renderer/MarkdownTextLayoutFragment.swift
+@@ -729,7 +729,7 @@
+                 let sizeConfig = NSImage.SymbolConfiguration(pointSize: iconRect.height, weight: .regular)
+-                let tint = isChecked ? configuration.theme.bodyText : configuration.theme.mutedText
++                let tint = isChecked
++                    ? (style.checkedColor ?? configuration.theme.bodyText)
++                    : configuration.theme.mutedText
+                 let colorConfig = NSImage.SymbolConfiguration(hierarchicalColor: tint)
