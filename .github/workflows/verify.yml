@@ -1,0 +1,50 @@
+# The repo's one gate, run on the machine class the app ships for.
+#
+# It runs scripts/verify.sh — the same command a release runs locally — rather than a CI-only subset,
+# so "green" means one thing in both places and nothing downstream has to know which gate it got.
+name: verify
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# A superseded run on the same ref is wasted macOS runner time; the newest push is the one that matters.
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    # arm64 (`macos-26` is the Apple Silicon label; `macos-26-intel` is the x64 one). The package
+    # declares .macOS(.v26) and FluidAudio's CoreML work belongs on Apple Silicon, so an Intel
+    # runner would be testing a machine nobody ships to.
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # scripts/build-app.sh stamps CFBundleShortVersionString from `git describe --tags` and
+          # CFBundleVersion from the commit count. A shallow clone has neither, and the assembly
+          # would quietly stamp 0.0.0 instead of failing.
+          fetch-depth: 0
+
+      - name: toolchain
+        # Printed rather than pinned: the image's default Xcode moves (26.6 ships Swift 6.3), and a
+        # toolchain-shaped failure should be one line into the log, not inferred from a compile error.
+        run: |
+          swift --version
+          sw_vers
+          xcodebuild -version
+
+      # The supply-chain half of the gate: a resolve that would change the pinned graph fails here
+      # instead of silently building a different tree than the one Package.resolved names.
+      - name: dependencies match Package.resolved
+        run: swift package resolve --force-resolved-versions
+
+      - name: verify
+        # There is no tty on a runner, so build-app.sh already takes its ad-hoc signing path without
+        # prompting. Set explicitly so the run does not depend on that test staying as it is.
+        env:
+          MEETINGS_SIGN_ADHOC: "1"
+        run: scripts/verify.sh

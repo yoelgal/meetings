@@ -2,9 +2,25 @@
 
 - adoption: team
 - branch-model: staged
-- graphify: deferred at onboard - no code to index yet; the first /graphify-wrapper-query builds it, or run /graphify-wrapper-setup once the stack lands
-- stack: greenfield at onboard 2026-08-12 - PRD only (meetings-prd.md), no code; planned SwiftUI macOS 26 app + CLI in one Swift package (see PRD D1/D4)
-- guardrails: deferred at onboard - no stack yet; secret-scan pre-commit hook installed and proven (clean pass / planted key refused / revert pass). Re-run /guardrails-install once /groundwork lands the Swift package, which is when verify/dev-run/seed-reset/ops-runner, the real denylist and the enforcement hook can be recorded from what exists
+- graphify: CLI present (verified at /update 2026-08-16); registry not yet built for this worktree - the first /graphify-wrapper-query carves the domain and builds the graph, no setup owed
+- stack: Swift package landed (Package.swift, Sources/, Tests/, Packaging/) - SwiftUI macOS app + CLI in one package, as the PRD planned
+- guardrails: wired - staged-diff secret scan at .git/hooks/pre-commit (proven: clean pass / planted key refused / revert pass) and CI at .github/workflows/verify.yml running scripts/verify.sh on macos-26. Gap: no lint/format gate, because the repo carries no linter config (see 'verify lint')
 - safety-secret-leak: a committed secret is compromised - revoke and reissue the key first, then purge history; deleting the line is not enough.
-- pending-decision: merge-policy - may the agent merge a gates-passed green PR, or does a human click it? (parked at onboard, no stack yet)
-- pending-decision: release-cadence - does a merge continue into a release, or wait to be asked? (parked at onboard, no stack yet)
+- verify: scripts/verify.sh - the one gate (swift build, swift test, the MEETINGS_LIVE_EDITOR editor suites, the MEETINGS_MEMORY_CHECK memory test alone in-process, dist/Meetings.app assembly, CLI smoke against a throwaway MEETINGS_HOME, and the 0.1.2 -> current migration upgrade check). CI runs this same command verbatim (.github/workflows/verify.yml)
+- verify typecheck: swift build - Swift has no separate typecheck; the build is it (verify.sh step 1/7)
+- verify test: swift test (default suite; the editor and memory suites are .enabled(if:) on MEETINGS_LIVE_EDITOR / MEETINGS_MEMORY_CHECK and are skipped without them). The other two modes verify.sh runs: MEETINGS_LIVE_EDITOR=1 swift test --filter "EditorMountTests|ViewportProbeTests" and MEETINGS_MEMORY_CHECK=1 swift test --no-parallel --filter longRecordingIsFlat
+- verify lint: none - the repo carries no SwiftLint/swift-format config, so there is no lint gate to run. The toolchain does ship 'swift format' (6.2.3), but with default rules only, which would restyle the whole tree against a style nobody chose - adding one is a deliberate work-item, not a guardrail default
+- dev-run: scripts/dev.sh - debug build into a separate dev bundle (~/Applications/meetings-dev.app) with its own store and bundle id, so it never touches the installed app; DEV_FOREGROUND=1 brings it to the front
+- seed-reset: none - no seed or reset command exists. Test-shaped data comes from scripts/cli-acceptance.sh (seeds a throwaway store through MeetingsCore) and scripts/fixtures/store-0.1.2.sql; a dev store resets by deleting MEETINGS_DEV_HOME (default ~/Library/Application Support/meetings-dev)
+- ops-runner: none - a local macOS app with no server side; there is no route for a production job. Operational work is the shipped 'meetings' CLI run against a user's own store
+- deploy-surface: none - a macOS app the user installs locally (install.sh symlinks the CLI, dist/Meetings.app is the bundle). No hosted service, so deploy-url/status/health/preview/migrate/env and the obs-* keys have no object here; a release is a tag plus a build people install
+- version-surface: git tags - scripts/build-app.sh:108 stamps CFBundleShortVersionString from 'git describe --tags --abbrev=0 --match v[0-9]*' and CFBundleVersion from the commit count. Packaging/Info.plist's 1.0 is a placeholder the assembly overwrites, and no root manifest carries a version, so a release bumps nothing but the tag
+- release-automation: none - no release-please/changesets/.releaserc and no workflow that cuts tags; releases are cut and tagged by hand
+- safety-denylist: Sources/MeetingsCore/Store/Schema.swift, Sources/MeetingsCore/Store/Database.swift, Package.swift, Package.resolved, Packaging/Info.plist, Packaging/Meetings.entitlements, scripts/build-app.sh, scripts/make-signing-identity.sh, install.sh, .github/workflows/**, .env*, **/secrets/**, *.pem, *.key, id_rsa*
+- safety-gate: schema migrations (Sources/MeetingsCore/Store/Schema.swift - a migration rewrites somebody's own meeting prose once, with a backup snapshot as the only undo), dependency/version bumps (Package.swift + Package.resolved, incl. the exact-pinned swift-markdown-engine), distribution and signing config (Packaging/*, install.sh, scripts/build-app.sh, scripts/make-signing-identity.sh, .github/workflows/**). No auth/authz and no payments/billing surface exists in this repo - both classes are absent, not waived
+- safety-scope: 15 - raised from the 10 default on this repo's observed norms: of the last 20 commits, four touch 11-17 files (11, 15, 17, 11) while the median is 5, so 10 would trip on ordinary work here
+- merge-policy: auto-on-green
+- release-cadence: per-merge
+- soak window: one full green CI cycle
+- safety-gate-integrity: a red check is fixed, never silenced - do not disable a lint rule, skip or weaken a test, or lower a threshold to reach green.
+- context-hygiene: the repo's standing context (CLAUDE.md + always-loaded blocks) is a per-turn tax - keep it lean, prune stale lines on each release, and rewrite instructions written for an older model rather than carrying them forward.
