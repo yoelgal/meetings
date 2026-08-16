@@ -37,6 +37,22 @@ jobs:
           sw_vers
           xcodebuild -version
 
+      # verify.sh's step 7 loads scripts/fixtures/store-0.1.2.sql through the sqlite3 CLI, and that
+      # fixture carries an FTS5 virtual table. macOS ships an FTS5-enabled sqlite3 (3.51.0 locally),
+      # but the runner image's is built without it - the first CI run died on "no such module: fts5"
+      # with the migration check, the single most valuable step here, never running. Homebrew's
+      # sqlite has FTS5 and is keg-only, so its bin has to go on PATH explicitly.
+      - name: sqlite3 with FTS5
+        run: |
+          brew install sqlite
+          echo "$(brew --prefix sqlite)/bin" >> "$GITHUB_PATH"
+
+      - name: FTS5 is actually there
+        run: |
+          command -v sqlite3
+          sqlite3 --version
+          sqlite3 :memory: 'CREATE VIRTUAL TABLE probe USING fts5(x);'
+
       # The supply-chain half of the gate: a resolve that would change the pinned graph fails here
       # instead of silently building a different tree than the one Package.resolved names.
       - name: dependencies match Package.resolved
