@@ -1,16 +1,35 @@
+import FluidAudio
 import Foundation
 
-/// Owns the models and the batch queue. One instance per process.
+/// Owns the model and the batch queue. One instance per process.
 ///
-/// The batch pass is deliberately independent of recording: it reads two WAVs off disk and writes
-/// segments to the store, which is exactly what an imported meeting needs too.
+/// The pass is deliberately independent of recording: it reads two WAVs off disk and writes segments
+/// to the store, which is exactly what an imported meeting needs too.
 public actor TranscriptionService {
     let store: MeetingStore
 
-    /// Injected engine, else one built from settings on first use. Held so the models are loaded
-    /// once per process rather than once per meeting.
+    /// Injected engine, else one built from settings on first use. Held so the model is loaded once
+    /// per process rather than once per meeting.
     private var engine: TranscriptionEngine?
+    /// Whether ``engine`` is this actor's own cache of what the settings said, as opposed to one a
+    /// caller handed in.
+    ///
+    /// Both live in the same slot and they are not the same thing: an injected engine means "use this
+    /// and read no settings", a resolved one is a cache with no authority of its own. ``plan()`` and
+    /// ``forgetResolvedEngine()`` both have to tell them apart, and both used to do it by asking what
+    /// *type* the engine was — which meant every engine type had to be named in two `is` checks, a
+    /// test's stub was indistinguishable from a cached resolution, and the answer could flip halfway
+    /// through a process the moment a resolution landed in the slot.
+    private var engineWasResolved = false
     private let audioRoot: URL?
+    /// How the local branch gets its engine.
+    ///
+    /// A seam, because the `engine` parameter cannot do this job: handing an engine in makes
+    /// ``plan()`` report `.injected`, which is precisely the branch that skips the local decision —
+    /// promote the live rows, or transcribe the files — that this service exists to make. Passing the
+    /// factory instead leaves the plan reading the settings, so a test can drive the local path
+    /// without 600 MB of Core ML.
+    private let localEngine: @Sendable (StreamingModelVariant) -> TranscriptionEngine
 
     /// The one in-flight model download, if any, with an id so a joiner can tell whether the slot it
     /// is clearing is still the one it waited on. See ``prepareModels(progress:)``.
@@ -27,8 +46,8 @@ public actor TranscriptionService {
     /// picked up again next launch — but retrying it in a loop now would spin on a corrupt file.
     private var failedThisSession: Set<String> = []
 
-    /// What the most recent batch pass did with the custom vocabulary in effect, so the
-    /// feature is inspectable rather than a black box.
+    /// What the most recent pass did with the custom vocabulary in effect, so the feature is
+    /// inspectable rather than a black box.
     ///
     /// In memory only, and that is a gap rather than a design: the natural home is a row per pass
     /// beside `transcript_issues`, which needs a migration and a store accessor this unit does not
@@ -41,23 +60,32 @@ public actor TranscriptionService {
 
     /// Injection seam. Tests supply a stub engine (600 MB of models is not a unit test) and a
     /// throwaway audio root, because `Paths` reads process environment that tests must not mutate.
-    init(store: MeetingStore, engine: TranscriptionEngine?, audioRoot: URL?) {
+    init(
+        store: MeetingStore,
+        engine: TranscriptionEngine?,
+        audioRoot: URL?,
+        localEngine: @escaping @Sendable (StreamingModelVariant) -> TranscriptionEngine = {
+            StreamingFileEngine(variant: $0)
+        }
+    ) {
         self.store = store
         self.engine = engine
         self.audioRoot = audioRoot
+        self.localEngine = localEngine
     }
 
     // MARK: - Models
 
-    /// Downloads **both** Parakeet models if they are absent and loads them. `progress` is 0…1 and
-    /// may be called from any executor.
+    /// Downloads the local model if it is absent and loads it. `progress` is 0…1 and may be called
+    /// from any executor.
     ///
-    /// Both, because there are two engines and only one of them can be fetched on demand. The batch
-    /// pass runs after a meeting, so a download there costs you a wait. The live pass runs *during*
-    /// one, and `FluidAudioStreamingTranscriber.start` therefore refuses to download rather than put
-    /// a network fetch between pressing record and capturing the room — which means a live model
-    /// that was never fetched in advance is a live transcript that silently never appears. Onboarding
-    /// is the only honest place to pay for it.
+    /// One model, which is the point of ``LocalTranscriber``: the checkpoint that writes the live
+    /// pane is the same one ``StreamingFileEngine`` drives over a file, so there is nothing to
+    /// download twice and no second, larger model that only turns up after the first meeting ends.
+    /// It has to be fetched *in advance* all the same: `FluidAudioStreamingTranscriber.start` refuses
+    /// to download rather than put a network fetch between pressing record and capturing the room,
+    /// which means a model that was never fetched is a live transcript that silently never appears.
+    /// Onboarding is the only honest place to pay for it.
     ///
     /// Calling this while a download is already running **joins** that download. It does not start a
     /// second one.
@@ -101,41 +129,35 @@ public actor TranscriptionService {
     }
 
     private func runPreparation() async throws {
-        let option: LocalTranscriptionOption
+        let transcriber: LocalTranscriber
         switch plan() {
         case .cloud:
-            // Cloud downloads nothing at all — not the batch model, and not the live one either.
-            // That is the point of the option: somebody who chose an endpoint to avoid a 600 MB
-            // fetch has not agreed to a 250 MB one for a live pane. It costs them the live
-            // transcript, which the wizard and Settings both say in as many words.
+            // Cloud downloads nothing at all — not a file model, and not a live one either. That is
+            // the point of the option: somebody who chose an endpoint to avoid a large fetch has not
+            // agreed to a smaller one for a live pane. It costs them the live transcript, which the
+            // wizard and Settings both say in as many words.
             return publish(1)
         case .injected:
             // A handed-in engine is still prepared — that is what a caller injecting one is asking
             // for — but there is no live model behind it to go and fetch.
             try await resolvedEngine().prepare(progress: { [weak self] value in
-                Task { await self?.publish(value * 0.6) }
+                Task { await self?.publish(value) }
             })
             return publish(1)
         case .local(let chosen):
-            option = chosen
+            transcriber = chosen
         }
 
-        // The batch model is the larger of the two, and the one a meeting cannot be written up
-        // without, so it goes first and takes the bigger share of the bar. An option with no
-        // separate batch pass has one model, which then owns the whole bar.
-        let liveShare = option.runsSeparateBatchPass ? 0.4 : 1.0
-        if liveShare < 1 {
-            try await resolvedEngine().prepare(progress: { [weak self] value in
-                Task { await self?.publish(value * (1 - liveShare)) }
-            })
-        }
-        guard !FluidAudioStreamingTranscriber.modelsAreCached(option.liveVariant) else {
+        // One model owns the whole bar. It used to own 60% of it, with a separate larger batch model
+        // taking the rest, and a bar that stopped at 60% on an install that only ever needed the one
+        // model read as a download that had stalled.
+        guard !FluidAudioStreamingTranscriber.modelsAreCached(transcriber.variant) else {
             return publish(1)
         }
         try await FluidAudioStreamingTranscriber.prepareModels(
-            variant: option.liveVariant,
+            variant: transcriber.variant,
             progress: { [weak self] value in
-                Task { await self?.publish((1 - liveShare) + value * liveShare) }
+                Task { await self?.publish(value) }
             }
         )
         publish(1)
@@ -155,15 +177,15 @@ public actor TranscriptionService {
 
     /// Drops the engine resolved on first use, so the next pass reads the settings again.
     ///
-    /// The cache exists to load 600 MB of Core ML once per process rather than once per meeting,
-    /// and it is right for that — but it also outlives a user changing the engine in Settings or in
-    /// the wizard, which is how "I switched to my own endpoint and it still transcribed locally"
-    /// happens. An injected engine is never dropped: a test's stub is not a cached resolution.
+    /// The cache exists to load the model once per process rather than once per meeting, and it is
+    /// right for that — but it also outlives a user changing the engine in Settings or in the wizard,
+    /// which is how "I switched to my own endpoint and it still transcribed locally" happens. An
+    /// injected engine is never dropped: a test's stub is not a cached resolution.
     public func forgetResolvedEngine() async {
-        guard let current = engine, current is FluidAudioBatchEngine || current is OpenAICompatibleRemoteEngine
-        else { return }
+        guard engineWasResolved, let current = engine else { return }
         await current.release()
         engine = nil
+        engineWasResolved = false
     }
 
     /// What this store is actually set up to do, resolved once. Every gate below reads it, so no two
@@ -172,24 +194,20 @@ public actor TranscriptionService {
     /// The injected-engine case comes first and stays first: tests hand in a stub engine precisely
     /// so they never touch settings, the network or 600 MB of Core ML.
     enum Plan {
-        /// Models on this Mac, and which ones.
-        case local(LocalTranscriptionOption)
+        /// The model on this Mac. Which model is not a choice; see ``LocalTranscriber``.
+        case local(LocalTranscriber)
         /// A remote endpoint was chosen. Nothing is downloaded, whether or not it is fully filled
         /// in — an unconfigured endpoint is a setup problem to report, never a reason to quietly
-        /// fetch 600 MB of models the user explicitly declined.
+        /// fetch a model the user explicitly declined.
         case cloud(configured: Bool)
         /// An engine was handed in. Nothing to download and nothing to check.
         case injected
     }
 
     func plan() -> Plan {
-        if engine != nil, !(engine is FluidAudioBatchEngine) { return .injected }
-        guard store.transcriptionEngine() == .cloud else { return .local(localOption()) }
+        if engine != nil, !engineWasResolved { return .injected }
+        guard store.transcriptionEngine() == .cloud else { return .local(.current) }
         return .cloud(configured: remoteConfiguration() != nil)
-    }
-
-    func localOption() -> LocalTranscriptionOption {
-        store.localTranscriptionOption()
     }
 
     /// Cheap, synchronous-ish check used by onboarding, the recording prerequisites and
@@ -198,21 +216,18 @@ public actor TranscriptionService {
     /// "Ready" means *this engine* can transcribe, which is why it is not a file-existence check any
     /// more. On the cloud path there are no models by design and a hard "the models are missing"
     /// would have told a correctly configured user that recording was broken, on every launch,
-    /// forever. On the local path it is still every model the chosen option needs: reporting ready
-    /// on the batch model alone is what let a fresh install finish setup, start its first meeting,
-    /// and find the live transcript empty with nothing having warned it would be.
+    /// forever. On the local path it is one question now rather than two, because the live pane and
+    /// the file pass load the same checkpoint: reporting ready on one model while another was missing
+    /// is what let a fresh install finish setup, start its first meeting, and find the transcript
+    /// empty with nothing having warned it would be.
     public func modelsReady() async -> Bool {
         switch plan() {
         case .injected:
             return true
         case .cloud(let configured):
             return configured
-        case .local(let option):
-            guard FluidAudioStreamingTranscriber.modelsAreCached(option.liveVariant) else {
-                return false
-            }
-            guard option.runsSeparateBatchPass else { return true }
-            return FluidAudioBatchEngine.modelsAreCached()
+        case .local(let transcriber):
+            return FluidAudioStreamingTranscriber.modelsAreCached(transcriber.variant)
         }
     }
 
@@ -236,11 +251,10 @@ public actor TranscriptionService {
                 + (isCleartextEgress(base) ? ", in the clear over http — anything between this Mac "
                     + "and \(host) can read it. `meetings config set transcribe.remote.baseURL` no "
                     + "longer accepts http, but a URL stored before that is still used" : "")
-        case .local(let option):
-            let ready = await modelsReady()
-            return ready
-                ? "on this Mac: \(option.title) — \(option.liveModel) live, \(option.finalModel)"
-                : "on this Mac: \(option.title) — not downloaded yet (\(option.downloadSizeText)). "
+        case .local(let transcriber):
+            return await modelsReady()
+                ? "on this Mac (\(transcriber.languages)); nothing is uploaded"
+                : "on this Mac, but not downloaded yet (\(transcriber.downloadSizeText)). "
                     + "The app downloads it on first run"
         }
     }
@@ -300,29 +314,36 @@ public actor TranscriptionService {
             }
         }
 
-        // An option whose live model *is* its final model has no second pass to run. The live rows
-        // are already the transcript, so they are handed back through the same replace-and-remap
-        // transaction every other path ends in — which is what promotes them from `live` to `final`,
-        // remaps the notes and moves the meeting to `ready`. Skipping the call instead would leave
-        // the meeting at `transcribing` forever.
-        if case .local(let option) = plan(), !option.runsSeparateBatchPass {
-            let live = try store.segments(meetingID: meetingID)
-            try store.replaceLiveSegments(
-                meetingID: meetingID,
-                with: live.filter { !$0.edited }.map {
-                    TranscriptSegment(
-                        meetingID: meetingID, channel: $0.channel, tStartMs: $0.tStartMs,
-                        tEndMs: $0.tEndMs, text: $0.text, pass: .final)
-                },
-                channels: Set(files.map(\.channel))
-            )
-            progress(1)
-            return
+        // **The local model runs once, and the live text is the transcript.** So a meeting that was
+        // streamed already has its transcript in the store: the live rows are handed back through the
+        // same replace-and-remap transaction every other path ends in, which promotes them from
+        // `live` to `final`, remaps the notes and moves the meeting to `ready`. Skipping the call
+        // would leave the meeting at `transcribing` for ever, which is where the queue looks for work.
+        //
+        // **And a meeting that was never streamed has to be transcribed from its files.** That was
+        // the shipped bug (papercut 2662434591): the promote branch ran whether or not there were any
+        // live rows to promote, so an *import* — two WAVs and no live session — was "promoted" from
+        // nothing, reached `ready`, and showed an empty transcript with no error anywhere. The
+        // condition is the presence of live rows, not the engine's identity, because those are the
+        // two genuinely different situations the file on disk cannot tell you apart.
+        //
+        // The gate is per *meeting*, and the same question is asked again per *channel* inside
+        // ``promoteLiveSegments(meetingID:stored:files:progress:)``: a meeting can be streamed on one
+        // channel and not the other, because each channel gets its own live transcriber and each one
+        // can fail on its own. Both places answer it by transcribing the file, which is why they
+        // answer it with the same function.
+        if case .local = plan() {
+            let stored = try store.segments(meetingID: meetingID)
+            if stored.contains(where: { $0.pass == .live }) {
+                try await promoteLiveSegments(
+                    meetingID: meetingID, stored: stored, files: files, progress: progress)
+                return
+            }
         }
 
         let engine = try resolvedEngine()
         // Preparing is part of the pass — on a fresh install the first batch pass is what downloads
-        // the models. Give it the first tenth of the bar and split the rest across the channels.
+        // the model. Give it the first tenth of the bar and split the rest across the channels.
         try await engine.prepare(progress: { progress($0 * 0.1) })
 
         let vocabulary = (try? store.vocabularyInEffect(meetingID: meetingID)) ?? []
@@ -338,32 +359,17 @@ public actor TranscriptionService {
             let base = 0.1 + 0.9 * Double(index) / Double(files.count)
             let span = 0.9 / Double(files.count)
             do {
-                // The launch sweep is the general guarantee; this is the specific one. A WAV whose
-                // header was never finalised reads as zero frames, and a batch pass that read it
-                // that way would "succeed" with an empty transcript and delete the live rows that
-                // were the only record. Repairing the file we are about to open means that cannot
-                // happen even in the session that crashed, with no restart in between. Costs one
-                // header read on a healthy file and writes nothing.
-                try? WAVRepair.repair(at: file.url)
-                let recognised = try await engine.transcribe(
-                    file.url,
+                let outcome = try await transcribeChannelFile(
+                    meetingID: meetingID,
+                    channel: file.channel,
+                    url: file.url,
+                    engine: engine,
                     vocabulary: vocabulary,
-                    progress: { progress(base + span * min(1, max(0, $0))) }
+                    progress: { progress(base + span * $0) }
                 )
-                if let report = await engine.vocabularyReport() {
-                    reports.append((file.channel, report))
-                }
+                if let report = outcome.report { reports.append((file.channel, report)) }
                 transcribed.insert(file.channel)
-                segments += recognised.map {
-                    TranscriptSegment(
-                        meetingID: meetingID,
-                        channel: file.channel,
-                        tStartMs: $0.startMs,
-                        tEndMs: $0.endMs,
-                        text: $0.text,
-                        pass: .final
-                    )
-                }
+                segments += outcome.segments
             } catch {
                 failures.append((file.channel, error))
             }
@@ -412,6 +418,241 @@ public actor TranscriptionService {
             ))
         }
         progress(1)
+    }
+
+    /// The live rows *are* the transcript, so promote them — and correct their jargon on the way.
+    ///
+    /// The vocabulary pass is the part that is easy to leave out and impossible to notice missing.
+    /// Biasing needs the samples the words were recognised from, which the live path never kept, so
+    /// it is redone here against the recording on disk: same rows, same timings, only the spelling of
+    /// the terms the user added changes. Without this, every recorded meeting silently ignored the
+    /// Vocabulary tab and only *imports* got their jargon fixed — the surface would still list the
+    /// terms, and nothing would ever apply them.
+    ///
+    /// Per channel, because a term is scored against the audio it was said in: the microphone's
+    /// samples cannot tell you where a word in the system audio was spoken.
+    private func promoteLiveSegments(
+        meetingID: String,
+        stored: [TranscriptSegment],
+        files: [(channel: Channel, url: URL)],
+        progress: @Sendable @escaping (Double) -> Void
+    ) async throws {
+        // An edited row is the user's own text. It is neither promoted nor re-spelled here, and
+        // `replaceLiveSegments` leaves it in place — a correction somebody typed is the one thing in
+        // the transcript that no recogniser gets to overrule.
+        let unedited = Dictionary(grouping: stored.filter { !$0.edited }, by: \.channel)
+        // Which channels have *any* row at all, edited or not. The recovery branch below needs this
+        // rather than `unedited`, because "no unedited rows" and "no rows" are not the same channel:
+        // one produced nothing, the other produced nothing but corrections the user typed.
+        let channelsWithRows = Set(stored.map(\.channel))
+        let vocabulary = (try? store.vocabularyInEffect(meetingID: meetingID)) ?? []
+        let entries = VocabularyBiasing.entries(for: vocabulary)
+        progress(0.1)
+
+        var promoted: [TranscriptSegment] = []
+        var reports: [(channel: Channel, report: VocabularyBiasingReport)] = []
+        // Every channel this pass contributes rows for, which is exactly the set
+        // `replaceLiveSegments` has to be handed. It deletes the unedited rows of the channels it is
+        // given and no others, so a channel whose rows are in `promoted` but not in here has its
+        // originals kept *and* the promoted copies inserted beside them — every line of that channel
+        // twice. The set used to be `Set(files.map(\.channel))`, which is the one set that is wrong:
+        // it names the channels with audio rather than the channels being written, and the fileless
+        // branch below writes rows for a channel with no audio by design. Only `AppModel` hid it, by
+        // filtering on `pass == .final`; `meetings show`, `meetings transcript`, the markdown export,
+        // the bundle and the text sent to a cloud summariser all read the rows unfiltered and saw
+        // the whole conversation duplicated.
+        var written: Set<Channel> = []
+        // Channels this pass re-read from disk, so their stale transcription warning comes down.
+        var retranscribed: Set<Channel> = []
+        var failures: [(channel: Channel, error: Error)] = []
+        for (index, file) in files.enumerated() {
+            // Ascending, because that is what putting the corrections back relies on: a correction
+            // is placed by where its span starts, so rows out of order would land a fix in the
+            // wrong phrase. The store returns them in order; this does not depend on that.
+            let rows = (unedited[file.channel] ?? []).sorted { $0.tStartMs < $1.tStartMs }
+            let base = 0.1 + 0.9 * Double(index) / Double(files.count)
+            let span = 0.9 / Double(files.count)
+
+            // A channel with audio on disk and nothing to promote is a channel whose live recogniser
+            // never ran, and its file is the only record of that side of the meeting. This branch
+            // used to `continue`, while the channel was still handed to `replaceLiveSegments` below
+            // — which deleted its unedited rows and inserted nothing. That is reachable per channel:
+            // `RecordingController.attachLive` builds one transcriber per channel and handles each
+            // `start(channel:)` failure independently, reporting only to an in-memory flag that
+            // never reaches the store. So a meeting whose system-audio recogniser failed to load
+            // reached `ready` holding your own voice and nobody else's, with nothing in the app, the
+            // CLI or an export saying a channel was missing — precisely the silent half-transcript
+            // this pass's contract says it will never produce. Transcribing the file is what the
+            // retired batch pass did for this case, and it is still the right answer.
+            // `channelsWithRows`, not just `rows.isEmpty`. Keyed on the unedited rows alone this also
+            // fired for a channel whose every live row is a user correction — a real state: a batch
+            // pass that failed on one channel leaves its `.live` rows in place, and `meetings
+            // transcript edit` is legal at `ready`, so somebody can correct all of them. That channel
+            // would then be re-transcribed and the machine's rows inserted beside the corrections,
+            // because `replaceLiveSegments` drops a new segment only where a correction *wholly*
+            // covers it — so any recognised span whose boundaries differ survives, and the same
+            // speech appears twice. A channel that has said its piece, however edited, is done.
+            if rows.isEmpty, !channelsWithRows.contains(file.channel) {
+                do {
+                    let engine = try resolvedEngine()
+                    // On a fresh install this is the download, and the promote path is normally the
+                    // one path that never pays for it — so it is charged here, inside this channel's
+                    // slice of the bar, rather than up front where a meeting that needs no engine
+                    // would wait for it too.
+                    try await engine.prepare(progress: { progress(base + span * 0.1 * $0) })
+                    let outcome = try await transcribeChannelFile(
+                        meetingID: meetingID,
+                        channel: file.channel,
+                        url: file.url,
+                        engine: engine,
+                        vocabulary: vocabulary,
+                        progress: { progress(base + span * (0.1 + 0.9 * $0)) }
+                    )
+                    if let report = outcome.report { reports.append((file.channel, report)) }
+                    promoted += outcome.segments
+                    written.insert(file.channel)
+                    retranscribed.insert(file.channel)
+                } catch {
+                    // The other half of "never silently". The meeting still reaches `ready` on the
+                    // strength of the channel that did stream, and the reason this one is absent is
+                    // in `transcript_issues`, which is what makes the half transcript legible as a
+                    // half transcript rather than as a finished one.
+                    failures.append((file.channel, error))
+                }
+                progress(base + span)
+                continue
+            }
+
+            let outcome = await biased(
+                rows.map { EngineSegment(startMs: $0.tStartMs, endMs: $0.tEndMs, text: $0.text) },
+                against: file.url,
+                entries: entries,
+                progress: { progress(base + span * min(1, max(0, $0))) }
+            )
+            if let report = outcome.report { reports.append((file.channel, report)) }
+            promoted += outcome.segments.map {
+                TranscriptSegment(
+                    meetingID: meetingID, channel: file.channel, tStartMs: $0.startMs,
+                    tEndMs: $0.endMs, text: $0.text, pass: .final)
+            }
+            written.insert(file.channel)
+            progress(base + span)
+        }
+        // A channel with rows and no file on disk — purged audio, or a capture that never wrote —
+        // is promoted untouched. There is nothing to score its words against, and losing the text
+        // would be a far worse trade than leaving its jargon alone.
+        for (channel, rows) in unedited where !files.contains(where: { $0.channel == channel }) {
+            promoted += rows.map {
+                TranscriptSegment(
+                    meetingID: meetingID, channel: channel, tStartMs: $0.tStartMs,
+                    tEndMs: $0.tEndMs, text: $0.text, pass: .final)
+            }
+            written.insert(channel)
+        }
+        promoted.sort { ($0.tStartMs, $0.channel.rawValue) < ($1.tStartMs, $1.channel.rawValue) }
+        lastVocabularyReport = VocabularyBiasingReport.union(reports.map(\.report))
+
+        try store.replaceLiveSegments(meetingID: meetingID, with: promoted, channels: written)
+
+        // A capture failure recorded while the meeting was being recorded is still true afterwards,
+        // and promoting a row does not re-read the audio that would say otherwise — so the only
+        // transcription verdicts this path touches are for the channels it actually re-read from
+        // disk. For those it behaves exactly like the file pass: a re-run that finally opens a
+        // repaired file has to take last week's warning down with it.
+        for channel in retranscribed {
+            try store.clearTranscriptIssue(meetingID: meetingID, channel: channel)
+        }
+        for failure in failures {
+            try store.recordTranscriptIssue(TranscriptIssue(
+                meetingID: meetingID,
+                channel: failure.channel,
+                reason: String(describing: failure.error)
+            ))
+        }
+        for (channel, report) in reports {
+            try store.clearTranscriptIssue(meetingID: meetingID, channel: channel, kind: .vocabulary)
+            guard let why = report.unavailable else { continue }
+            try store.recordTranscriptIssue(TranscriptIssue(
+                meetingID: meetingID, channel: channel, kind: .vocabulary, reason: why
+            ))
+        }
+        progress(1)
+    }
+
+    /// Transcribe one channel's file and hand back rows the store can take, plus whatever the
+    /// vocabulary pass had to say.
+    ///
+    /// One function, reached from both branches of ``runBatchPass(meetingID:progress:)``, because
+    /// they used to be a branch and half a branch. The file branch transcribed every channel it
+    /// found; the promote branch transcribed none, and simply skipped a channel whose live
+    /// recogniser had produced nothing — while still handing that channel to `replaceLiveSegments`,
+    /// which deleted its rows and inserted nothing. Converging on one function is what stops the two
+    /// drifting again: the header repair, the channel tagging, the vocabulary verdict and the
+    /// `.final` pass label are decided once, so recovery on the promote path cannot quietly become a
+    /// second, weaker version of the same thing.
+    ///
+    /// Throws whatever the engine threw, deliberately: both callers turn that into a
+    /// ``TranscriptIssue`` for the channel rather than failing the whole meeting.
+    private func transcribeChannelFile(
+        meetingID: String,
+        channel: Channel,
+        url: URL,
+        engine: TranscriptionEngine,
+        vocabulary: [VocabularyTerm],
+        progress: @Sendable @escaping (Double) -> Void
+    ) async throws -> (segments: [TranscriptSegment], report: VocabularyBiasingReport?) {
+        // The launch sweep is the general guarantee; this is the specific one. A WAV whose header
+        // was never finalised reads as zero frames, and a batch pass that read it that way would
+        // "succeed" with an empty transcript and delete the live rows that were the only record.
+        // Repairing the file we are about to open means that cannot happen even in the session that
+        // crashed, with no restart in between. Costs one header read on a healthy file and writes
+        // nothing.
+        try? WAVRepair.repair(at: url)
+        let recognised = try await engine.transcribe(
+            url,
+            vocabulary: vocabulary,
+            progress: { progress(min(1, max(0, $0))) }
+        )
+        let rows = recognised.map {
+            TranscriptSegment(
+                meetingID: meetingID,
+                channel: channel,
+                tStartMs: $0.startMs,
+                tEndMs: $0.endMs,
+                text: $0.text,
+                pass: .final
+            )
+        }
+        return (rows, await engine.vocabularyReport())
+    }
+
+    /// One channel's segments with the vocabulary applied, and what the pass did.
+    ///
+    /// Nil report means the pass never ran because there was nothing to apply, which is different
+    /// from a pass that ran and could not: the first is silence, the second is a recorded reason.
+    private func biased(
+        _ segments: [EngineSegment],
+        against audio: URL,
+        entries: [VocabularyBiasing.Entry],
+        progress: @Sendable @escaping (Double) -> Void
+    ) async -> (segments: [EngineSegment], report: VocabularyBiasingReport?) {
+        guard !entries.isEmpty else { return (segments, nil) }
+        // Same specific guarantee as the file path: a WAV whose header was never finalised reads as
+        // zero frames, and the spotter would then score the transcript against no audio at all.
+        try? WAVRepair.repair(at: audio)
+        do {
+            let samples = try AudioConverter().resampleAudioFile(audio)
+            let outcome = await VocabularyBiasing.shared.apply(
+                to: segments, samples: samples, entries: entries, progress: progress)
+            return (outcome.segments, outcome.report)
+        } catch {
+            // The transcript is already written and perfectly readable; what is lost is the jargon
+            // correction, which is invisible in the result — so it degrades the way the rest of the
+            // invisible degradation does, as a reason in `transcript_issues`.
+            var report = VocabularyBiasingReport(terms: entries.map(\.text))
+            report.unavailable = "the recording could not be read for the vocabulary pass (\(error))"
+            return (segments, report)
+        }
     }
 
     // MARK: - The queue
@@ -494,25 +735,26 @@ public actor TranscriptionService {
         case .injected:
             // Unreachable by construction: `plan()` returns `.injected` only when `engine` is
             // non-nil, and a non-nil `engine` returned on the first line of this function. It traps
-            // rather than falling back, because the fallback was `FluidAudioBatchEngine()` — 600 MB
-            // fetched on its first `prepare` from a branch documented as impossible, which is the
-            // same silent download the `.cloud` arm below was rewritten to stop.
+            // rather than falling back, because the fallback was a local engine — 600 MB fetched on
+            // its first `prepare` from a branch documented as impossible, which is the same silent
+            // download the `.cloud` arm below was rewritten to stop.
             preconditionFailure("resolvedEngine reached .injected with no injected engine")
         case .cloud(let configured):
             guard configured, let configuration = remoteConfiguration() else {
                 // The important half of this branch. Before, an incomplete remote configuration fell
-                // through to `FluidAudioBatchEngine()`, which downloads 600 MB on its first
-                // `prepare` — silently fetching the models the user chose the cloud to avoid, and
-                // producing a local transcript from a setting that says remote.
+                // through to the local engine, which downloads the model on its first `prepare` —
+                // silently fetching what the user chose the cloud to avoid, and producing a local
+                // transcript from a setting that says remote.
                 throw TranscriptionError.remoteFailed(
                     "the remote endpoint is selected but incomplete: base URL, model and a Keychain "
                         + "key reference are all required")
             }
             resolved = OpenAICompatibleRemoteEngine(configuration: configuration)
-        case .local:
-            resolved = FluidAudioBatchEngine()
+        case .local(let transcriber):
+            resolved = localEngine(transcriber.variant)
         }
         engine = resolved
+        engineWasResolved = true
         return resolved
     }
 

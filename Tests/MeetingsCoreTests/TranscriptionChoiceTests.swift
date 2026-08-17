@@ -4,8 +4,8 @@ import Testing
 
 @testable import MeetingsCore
 
-/// The engine and model choice: what a store reads, what an unrecognised value does, and the
-/// gates that used to assume there was only ever one answer.
+/// The engine choice and the model that is *not* a choice: what a store reads, what an unrecognised
+/// value does, and the gates that used to assume there was only ever one answer.
 @Suite final class TranscriptionChoiceTests {
     let directory: URL
     let store: MeetingStore
@@ -17,38 +17,59 @@ import Testing
 
     deinit { try? FileManager.default.removeItem(at: directory) }
 
-    // MARK: - The catalogue
+    // MARK: - The transcriber
 
-    /// The whole point of the data type: adding a tier is an element, and everything downstream
-    /// picks it up. If this ever needs editing to add one, the branching came back.
-    @Test func everyOptionIsDistinctAndOrderedMostDemandingFirst() {
-        let all = LocalTranscriptionOption.all
-        #expect(all.count >= 2)
-        #expect(Set(all.map(\.id)).count == all.count, "two options share an id")
-        #expect(all.map(\.tier) == all.map(\.tier).sorted(), "the ladder is not in tier order")
-        #expect(all.last == LocalTranscriptionOption.fallback,
-                "the fallback has to be last, because that is where the ladder stops")
-        for option in all {
-            #expect(option.downloadBytes > 0)
-            #expect(!option.summary.isEmpty)
+    /// The whole point of collapsing the catalogue: the model is derived from the system's primary
+    /// language, so there is nothing to pick, nothing to store, and nothing to get out of step.
+    ///
+    /// The *primary* language, not "English appears somewhere in the list": macOS puts English second
+    /// on a great many non-English installs, and a French speaker whose second language is English
+    /// wants their French meetings transcribed rather than heard as English-shaped nonsense.
+    @Test func theTranscriberIsResolvedFromThePrimarySystemLanguage() {
+        #expect(LocalTranscriber.resolved(preferredLanguages: ["en-GB"]) == .english)
+        #expect(LocalTranscriber.resolved(preferredLanguages: ["fr-FR"]) == .multilingual)
+        #expect(LocalTranscriber.resolved(preferredLanguages: ["fr-FR", "en-GB"]) == .multilingual,
+                "English second is a French install, and it must not be read as an English one")
+        #expect(LocalTranscriber.resolved(preferredLanguages: ["en"]) == .english)
+        // Nothing to go on, and a malformed tag, both resolve to something that transcribes: the
+        // multilingual model handles English too, so it is the safe end of the guess. The empty list
+        // used to resolve to English-only, against both this comment and the doc comment on
+        // `resolved` — a Mac reporting no preferred languages fetched the 643 MB English checkpoint
+        // and heard non-English speech as English-shaped nonsense.
+        #expect(LocalTranscriber.resolved(preferredLanguages: []) == .multilingual)
+        #expect(LocalTranscriber.resolved(preferredLanguages: ["zz"]) == .multilingual)
+    }
+
+    /// Two models, and they have to actually differ — an English-only pick that loaded the
+    /// multilingual checkpoint would be a resolution that does nothing.
+    @Test func theTwoTranscribersAreDistinctAndBothHaveASize() {
+        #expect(LocalTranscriber.english.variant != LocalTranscriber.multilingual.variant)
+        #expect(LocalTranscriber.english != LocalTranscriber.multilingual)
+        for transcriber in [LocalTranscriber.english, .multilingual] {
+            #expect(transcriber.downloadBytes > 0)
+            #expect(!transcriber.languages.isEmpty)
         }
     }
 
-    /// An id from a newer build, or a hand-edited row, must not leave the app with no transcriber.
-    @Test func anUnknownModelIDFallsBackRatherThanFailing() {
-        #expect(LocalTranscriptionOption.named(nil) == .fallback)
-        #expect(LocalTranscriptionOption.named("") == .fallback)
-        #expect(LocalTranscriptionOption.named("nemotron-80ms-from-the-future") == .fallback)
-        #expect(LocalTranscriptionOption.named("balanced").id == "balanced")
+    /// One string for the size, so the wizard, Settings and `meetings status` cannot disagree about
+    /// the same download — and rounded, because the reader is deciding whether to start it, not
+    /// auditing it.
+    @Test func theDownloadSizeReadsAsOneRoundedSentence() {
+        #expect(LocalTranscriber.english.downloadSizeText == "About 640 MB")
+        #expect(LocalTranscriber.multilingual.downloadSizeText == "About 220 MB")
     }
 
-    /// The existing-install guarantee. A store that has never seen this feature reads exactly as it
-    /// did before: local engine, two models, no fit record.
-    @Test func aStoreThatChoseNothingIsOnTheModelThatAlwaysShipped() {
+    /// The existing-install guarantee. A store that has never seen this feature still reads as local,
+    /// and there is no longer a model row for a stale value to sit in.
+    @Test func aStoreThatChoseNothingRunsLocallyAndStoresNoModel() throws {
         #expect(store.transcriptionEngine() == .local)
-        #expect(store.localTranscriptionOption() == .balanced)
-        #expect(store.localTranscriptionOption().runsSeparateBatchPass)
-        #expect(store.fitRecord() == nil)
+        #expect(SettingKey.defaults[SettingKey("transcribe.localModel")] == nil)
+        #expect(!SettingKey.known.contains(SettingKey("transcribe.localModel")))
+        #expect(!SettingKey.known.contains(SettingKey("transcribe.fit.record")))
+        // An orphan row left by an older build is inert rather than migrated: the key is unknown, so
+        // nothing reads it and no schema change was needed to leave it there.
+        try store.setSetting(SettingKey("transcribe.localModel"), "accurate-en")
+        #expect(store.transcriptionEngine() == .local)
     }
 
     @Test func anUnknownEngineValueReadsAsLocal() throws {
@@ -63,10 +84,9 @@ import Testing
     ///
     /// Three of the four entries the readiness check requires are `.mlmodelc` *directories*, and
     /// FluidAudio's `ModelHub` writes their constituent files straight into the final path — so the
-    /// first file to land made the directory exist and the check said yes. `FitRunner.bounded`
-    /// cancels downloads mid-flight, so this is a shape that gets created. What followed was
-    /// onboarding completing over ~600 MB that was not there, and the first press of record either
-    /// failing or re-fetching it right then.
+    /// first file to land made the directory exist and the check said yes. A cancelled download is
+    /// exactly that shape, and what followed was onboarding completing over a model that was not
+    /// there, and the first press of record either failing or re-fetching it right then.
     ///
     /// `coremldata.bin` is FluidAudio's own completeness marker — `ModelCache
     /// .validateCompiledModelLayout` refuses to load a compiled model without it.
@@ -93,6 +113,16 @@ import Testing
         }
         #expect(FluidAudioStreamingTranscriber.modelsAreCached(.parakeetEou320ms, in: directory),
                 "and a complete one still reads as ready — the check must not simply always fail")
+    }
+
+    /// One model serves the live pane and the file pass, so one answer serves both questions. Two
+    /// answers is what let a store with the live model and not the batch one report ready and then
+    /// produce an empty transcript.
+    @Test func theFileEngineAndTheLivePaneAgreeAboutWhatIsDownloaded() {
+        for variant in [LocalTranscriber.english.variant, LocalTranscriber.multilingual.variant] {
+            #expect(StreamingFileEngine.modelsAreCached(variant)
+                == FluidAudioStreamingTranscriber.modelsAreCached(variant))
+        }
     }
 
     /// The gate that would have blocked the cloud user forever. `modelsReady` used to be a check
@@ -126,7 +156,7 @@ import Testing
     }
 
     /// The download the cloud path must never start. Before this, an incomplete remote setting fell
-    /// through to the local batch engine, whose first `prepare` fetches ~600 MB.
+    /// through to the local engine, whose first `prepare` fetches the whole model.
     @Test func anIncompleteCloudEngineRefusesToRunRatherThanDownloadingLocally() async throws {
         try store.setSetting(.transcribeBatchEngine, "remote")
         let service = TranscriptionService(store: store, engine: nil, audioRoot: directory)
@@ -152,17 +182,13 @@ import Testing
         #expect(seen.values.last == 1, "the bar has to reach the end, or the wizard waits forever")
     }
 
-    // MARK: - The option with no second pass
+    // MARK: - One pass
 
-    /// An option whose live model *is* its final model has no batch engine to call. The live rows
-    /// have to become the transcript — promoted to `final`, with the notes remapped and the meeting
+    /// The live model *is* the final model, so a streamed meeting already has its transcript. The
+    /// live rows have to become it — promoted to `final`, with the notes remapped and the meeting
     /// moved on — because the alternative is a meeting stuck at `transcribing` for ever, which is
     /// where the queue looks for work and would retry it on every launch.
-    @Test func anOptionWithNoSecondPassPromotesTheLiveTranscriptRatherThanStalling() async throws {
-        let option = LocalTranscriptionOption.all.first { !$0.runsSeparateBatchPass }
-        guard let option else { return }
-        try store.setSetting(.transcribeLocalModel, option.id)
-
+    @Test func aStreamedMeetingPromotesItsLiveTranscriptRatherThanStalling() async throws {
         let meeting = try store.createMeeting(Meeting(title: "one model", state: .recording))
         // Two channels of audio on disk, because which file a segment came from is the whole of the
         // app's speaker attribution and the pass keys off the files that exist.
@@ -195,7 +221,49 @@ import Testing
         #expect(try store.meeting(id: meeting.id)?.state == .ready,
                 "a meeting left at transcribing is retried on every launch, for ever")
         #expect(seen.values.last == 1)
+        // No vocabulary terms in this store, so the biasing pass never ran and never reported.
+        #expect(await service.lastVocabularyReport == nil)
     }
+
+    /// A meeting with no live rows at all is an *import*, and it must not be "promoted" from nothing.
+    ///
+    /// This is the shipped bug from the other side: with one pass, the promote branch ran whether or
+    /// not there was anything to promote, so an import reached `ready` with an empty transcript and no
+    /// error anywhere. The engine cannot be reached here — these are two bytes of text, not a WAV —
+    /// so what is asserted is that it was *reached for*: the pass tries to transcribe rather than
+    /// quietly succeeding. See `TranscriptionBatchPassTests` for the full-transcript version.
+    @Test func anImportWithNoLiveRowsIsNotPromotedFromNothing() async throws {
+        let meeting = try store.createMeeting(Meeting(title: "import", state: .transcribing))
+        let audio = directory.appendingPathComponent(meeting.id, isDirectory: true)
+        try FileManager.default.createDirectory(at: audio, withIntermediateDirectories: true)
+        try Data("RIFF".utf8).write(to: audio.appendingPathComponent("mic.wav"))
+
+        // A local engine that refuses, standing in for 600 MB of models. Reaching it at all is the
+        // point: the old code never did.
+        let service = TranscriptionService(
+            store: store, engine: nil, audioRoot: directory,
+            localEngine: { _ in RefusingEngine() })
+        await #expect(throws: RefusingEngine.Refusal.self) {
+            try await service.runBatchPass(meetingID: meeting.id, progress: { _ in })
+        }
+        #expect(try store.meeting(id: meeting.id)?.state == .transcribing,
+                "an import that could not be transcribed stays in the queue rather than reading ready")
+        #expect(try store.segments(meetingID: meeting.id).isEmpty)
+    }
+}
+
+/// Fails on `prepare`, so a test can prove the local branch reached for an engine without any model
+/// existing anywhere.
+private struct RefusingEngine: TranscriptionEngine {
+    struct Refusal: Error {}
+    let name = "refusing"
+    let model = "refusing"
+    func prepare(progress: @Sendable (Double) -> Void) async throws { throw Refusal() }
+    func transcribe(
+        _ audio: URL, vocabulary: [VocabularyTerm], progress: @Sendable (Double) -> Void
+    ) async throws -> [EngineSegment] { throw Refusal() }
+    func vocabularyReport() async -> VocabularyBiasingReport? { nil }
+    func release() async {}
 }
 
 /// A box a `@Sendable` progress closure can append to from any executor.

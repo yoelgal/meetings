@@ -1296,18 +1296,157 @@ import Testing
         }
     }
 
-    /// The picker is data, not branches. A new tier is an element of
-    /// `LocalTranscriptionOption.all`; if a view names an option by id, adding one means editing
-    /// the view, which is the thing this design exists to avoid.
-    @Test func theModelPickerIsDrivenByTheCatalogueAndNotByIdentity() throws {
-        for name in ["OnboardingView.swift", "SettingsView.swift"] {
-            let source = try Self.source(name)
-            #expect(source.contains("LocalTranscriptionOption.all"),
-                    "\(name) has to render the catalogue")
-            for id in LocalTranscriptionOption.all.map(\.id) {
-                #expect(!source.contains("\"\(id)\""),
-                        "\(name) hardcodes the option id \(id); the list has to stay data-driven")
-            }
+    /// All three write-up modes are offered at once, and only the chosen one's fields are drawn.
+    ///
+    /// Two of the three used to sit behind an "Advanced modes…" disclosure — in the one pane whose
+    /// entire purpose is choosing between them. Anybody who never pressed it never learned that
+    /// getting a write-up without doing it by hand was on offer, and the least capable mode stayed
+    /// selected for them by default. The other half of the same fix is the `switch`: the manual
+    /// command field used to draw unconditionally, so Local agent showed a "Command to copy"
+    /// directly above a "Command to run" — two near-identical labels, one of them irrelevant to the
+    /// chosen mode and both of them plausible places to type.
+    ///
+    /// There is no UI test target and nothing here is reachable as a value, so the shape of the
+    /// source is the only place either half can be pinned.
+    @Test func allThreeWriteUpModesAreOfferedAndOnlyTheChosenOnesFieldsAre() throws {
+        let settings = try Self.source("SettingsView.swift")
+        let pane = try #require(settings.range(of: "private struct AISettings: View"),
+                                "the AI pane was renamed — this guard is reading nothing")
+        let nextType = try #require(
+            settings.range(of: "\nstruct ", range: pane.upperBound..<settings.endIndex)
+        )
+        let ai = String(settings[pane.upperBound..<nextType.lowerBound])
+
+        // The tags rather than the labels: a copy pass rewrites what a row says, and what this
+        // guard is about is which modes exist as choices at all.
+        let picker = try #require(ai.range(of: "selection: modeBinding"),
+                                  "the mode picker is gone or no longer bound to the stored mode")
+        let styled = try #require(ai.range(of: ".pickerStyle(", range: picker.upperBound..<ai.endIndex))
+        let choices = String(ai[picker.upperBound..<styled.lowerBound])
+        for mode in [".tag(AIMode.manual)", ".tag(AIMode.localAgent)", ".tag(AIMode.cloud)"] {
+            #expect(choices.contains(mode), """
+                \(mode) is not drawn in the mode picker. All three write-up modes have to be on \
+                screen together in the pane that exists to choose between them.
+                """)
         }
+        #expect(!choices.contains("if "), """
+            A condition around a mode row is a mode somebody cannot find. The rows are drawn \
+            unconditionally; what varies is which one is selected.
+            """)
+        #expect(!ai.contains("DisclosureGroup") && !ai.contains("showAdvanced"), """
+            A disclosure is back in the AI pane. The two modes that produce a write-up for you \
+            lived behind one, so the pane shipped looking as though doing it by hand was the only \
+            option on offer.
+            """)
+
+        // One mode's fields at a time, picked by the mode in effect.
+        #expect(ai.contains("switch mode {"),
+                "the fields on screen have to be the chosen mode's, not every mode's at once")
+        for fields in ["ManualPasteCommandFields(store:", "LocalAgentCommandFields(store:",
+                       "CloudProviderFields(store:"] {
+            let drawn = ai.components(separatedBy: fields).count - 1
+            #expect(drawn == 1, """
+                \(fields) is drawn \(drawn) times in the AI pane rather than exactly once. Two \
+                modes' fields together is two near-identical command labels, one of which does \
+                nothing for the mode that is actually selected.
+                """)
+        }
+    }
+
+    /// Continue is dead while the model downloads, and that hold is the one with no way past it.
+    ///
+    /// The two holds on the transcriber step are different shapes and must not share an escape. A
+    /// download is a **wait**: it settles by itself in under a minute, so a briefly dead Continue is
+    /// the only honest control. An unverified endpoint is a **judgement** that can legitimately fail
+    /// — a VPN that is not up yet — so it gets a verify action and, after one attempt, a link past.
+    ///
+    /// Collapsing the two back into one Bool, which is what the `Hold` enum replaced, went wrong in
+    /// both directions: the download inherited "Continue without verifying", handing the user a link
+    /// past a model the app was halfway through fetching, and either condition arming overwrote the
+    /// other, so switching cards mid-download turned a plain wait into a verify prompt.
+    @Test func theWizardHoldsContinueWhileTheModelDownloadsAndOffersNoLinkPastIt() throws {
+        let wizard = try Self.source("OnboardingView.swift")
+        let squashed = Self.squashed(wizard)
+        #expect(wizard.contains("case downloadRunning"), """
+            The download hold is gone. One Bool for both holds is what this replaced: either \
+            condition arming overwrote the other, so a failed verification became no hold at all.
+            """)
+        // Named as one expression: split into a `.disabled(` somewhere and a `.downloadRunning`
+        // somewhere, the pair passes while Continue is live for the whole download.
+        #expect(squashed.contains(".disabled(hold == .downloadRunning)"), """
+            Continue is not disabled while a model downloads. Pressing it walks the user out of \
+            setup and into an install whose transcriber is half on disk.
+            """)
+
+        // The escape hatch belongs to the endpoint hold and to nothing else.
+        let escape = try #require(
+            wizard.range(of: "Button(\"Continue without verifying\")"),
+            "the endpoint's way past is gone — a wizard that cannot be left over a VPN is a trap"
+        )
+        let guarding = String(wizard[..<escape.lowerBound].suffix(200))
+        #expect(guarding.contains("hold == .unverifiedEndpoint"), """
+            The way past is no longer gated on the unverified-endpoint hold specifically. Offered \
+            for any hold, it is offered during the download too.
+            """)
+        #expect(!guarding.contains("downloadRunning"), """
+            The download hold reaches the "continue anyway" link. A download has nothing to \
+            override — it finishes by itself — so the link can only skip a half-fetched model.
+            """)
+
+        let waiting = try #require(wizard.range(of: "else if hold == .downloadRunning"),
+                                   "the footer no longer says anything while the download runs")
+        let restOfFooter = try #require(
+            wizard.range(of: "Spacer()", range: waiting.upperBound..<wizard.endIndex)
+        )
+        #expect(!wizard[waiting.upperBound..<restOfFooter.lowerBound].contains("Button("), """
+            The download's branch of the footer offers a control. It gets one sentence saying what \
+            the wait is for and nothing else — anything pressable there is a way past a model that \
+            is still arriving.
+            """)
+    }
+
+    /// The write-up step arrives on the local agent, with that agent's commands already filled in.
+    ///
+    /// This is the largest single saving in the wizard: the mode that does the thing the app is for
+    /// without being asked, already selected, with its command written from the agent this Mac
+    /// actually has, so the step costs one press. Drawing the selection is not enough — the row is
+    /// written too, or the page shows a mode the store does not hold and Continue agrees with a
+    /// screen that lied.
+    @Test func theWizardArrivesOnTheLocalAgentWithItsCommandFilledIn() throws {
+        let wizard = try Self.source("OnboardingView.swift")
+        let squashed = Self.squashed(wizard)
+        #expect(wizard.contains("@State private var mode = AIMode.localAgent"), """
+            The write-up step no longer opens on the local agent. The recommended mode arriving \
+            unselected leaves the least capable one chosen for everybody who presses Continue.
+            """)
+        // Selected *and* committed, as one expression: the condition on its own could be guarding
+        // anything, and the write on its own would overwrite a mode somebody deliberately chose.
+        #expect(squashed.contains("if stored == SettingKey.aiMode.defaultValue { select(.localAgent)"), """
+            The recommended mode is drawn without being written, or is written over a store the \
+            user has already set. Drawn-not-written is a setting that silently disagrees with the \
+            screen that set it; written-unconditionally throws away a mode somebody chose.
+            """)
+        #expect(wizard.contains("AgentPreset.detected()"), """
+            The step no longer fills the command in from the agent this Mac has. Without it the \
+            recommended mode arrives holding a command that may name a binary that is not \
+            installed, which fails silently after the first meeting.
+            """)
+
+        // Re-seeded through the counter, never by a new identity. `.id()` here destroyed the
+        // fields' `@State` — including the in-flight "Check the command" and its verdict — and the
+        // prefill lands up to two seconds in, which is exactly when that button gets pressed.
+        let mount = try #require(wizard.range(of: "LocalAgentCommandFields(store: model.store"),
+                                 "the step has to draw the shared fields, not a second copy")
+        let mounted = String(wizard[mount.lowerBound...].prefix(160))
+        #expect(mounted.contains("reloadRequested:"), """
+            The prefilled rows are not handed to the shared fields as a reload. They seed once on \
+            appear, so without this the picker sits on whatever the row said before the detection \
+            finished.
+            """)
+        #expect(!mounted.contains(".id("), """
+            The shared fields are remounted rather than re-seeded. A new identity destroys their \
+            `@State`, so a "Check the command" in flight loses its spinner and its verdict — the \
+            button reads as broken, for the one mode that then runs unattended.
+            """)
     }
 }

@@ -253,8 +253,9 @@ public actor EnhancementRunner {
     /// this app has open, including under an acceptance run pointed at a throwaway directory.
     ///
     /// PATH is widened because a GUI app launched from Finder inherits `/usr/bin:/bin:/usr/sbin:
-    /// /sbin` and nothing else, so `claude` — installed in `~/.local/bin` or Homebrew — is simply
-    /// not found. That failure looks like "Mode B does nothing" and is miserable to diagnose.
+    /// /sbin` and nothing else, so the agent binary — wherever its package manager put it — is simply
+    /// not found. That failure looks like "Mode B does nothing" and is miserable to diagnose. See
+    /// ``searchPath(in:)`` for where the extra directories come from.
     func environment(for meetingID: String) -> [String: String] {
         var environment = baseEnvironment
         environment["MEETINGS_DB"] = store.dbPool.path
@@ -266,15 +267,44 @@ public actor EnhancementRunner {
     /// The PATH a spawned agent is actually launched with, and therefore the only PATH a verify may
     /// search. Checking the app's own PATH instead would report `claude` missing on exactly the
     /// Finder launch where the widening here is the thing that finds it.
+    ///
+    /// Three sources, in this order, because `/usr/bin/env` takes the first match and the order is
+    /// therefore a precedence decision rather than a formatting one:
+    ///
+    /// 1. The PATH this process inherited, with its own order untouched. If the user launched the
+    ///    app from a shell that puts a wrapper ahead of the real binary, that wrapper is what they
+    ///    meant.
+    /// 2. The login shell's PATH (``LoginShellPath``). This is the general answer to "where did the
+    ///    user's agent CLI install itself": every package manager appends its shim directory to an
+    ///    rc file, so asking the shell covers bun, npm, pipx, cargo and the next one equally.
+    /// 3. The hardcoded usual suspects, still last and still there. A machine whose rc file is
+    ///    broken, slow, or absent gets exactly the behaviour that shipped before step 2 existed,
+    ///    which is the whole reason this is a union and not a replacement.
     public static func searchPath(in environment: [String: String]) -> String {
+        searchPath(in: environment, shellEntries: LoginShellPath.cached)
+    }
+
+    /// Test seam. A test must not depend on the rc files of whatever machine it runs on, and must
+    /// not spawn a shell to find that out, so it supplies the shell's answer — or its failure.
+    static func searchPath(in environment: [String: String], shellLookup: LoginShellPath.Lookup) -> String {
+        searchPath(in: environment, shellEntries: LoginShellPath.entries(using: shellLookup))
+    }
+
+    private static func searchPath(in environment: [String: String], shellEntries: [String]) -> String {
         let home = environment["HOME"] ?? FileManager.default.homeDirectoryForCurrentUser.path
         let extra = [
             "/opt/homebrew/bin", "/usr/local/bin",
             "\(home)/.local/bin", "\(home)/.claude/local", "\(home)/bin",
         ]
-        let existing = (environment["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin")
+        let inherited = (environment["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin")
             .split(separator: ":").map(String.init)
-        return (existing + extra.filter { !existing.contains($0) }).joined(separator: ":")
+        // De-duplicated by first appearance, so a directory the shell also lists does not move and
+        // does not appear twice. A PATH with the same directory in it four times is not wrong, but
+        // it is what this looks like when it goes unexamined, and it is shown to the user.
+        var seen = Set<String>()
+        return (inherited + shellEntries + extra)
+            .filter { seen.insert($0).inserted }
+            .joined(separator: ":")
     }
 
     /// Runs to completion and returns the exit code with the tail of its output.

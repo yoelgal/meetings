@@ -489,10 +489,10 @@ import Testing
     /// tomorrow's ten o'clock depending on what time the suite happened to run.
     @Test func theLookAheadSettingDecidesTheCLIsHorizon() throws {
         let environment = ["MEETINGS_CALENDAR_FIXTURE": CalFixture.url.path]
-        #expect(try upcomingCount(run(["upcoming", "--json"], environment: environment)) == 3)
-
-        try store.setSetting(.calendarLookAheadDays, "14")
         #expect(try upcomingCount(run(["upcoming", "--json"], environment: environment)) == 5)
+
+        try store.setSetting(.calendarLookAheadDays, "7")
+        #expect(try upcomingCount(run(["upcoming", "--json"], environment: environment)) == 3)
     }
 
     /// The flag is for one invocation, in both directions, and never writes the setting back: an
@@ -508,7 +508,7 @@ import Testing
 
     @Test func theLookAheadIsWritableAndRefusesAWindowOfNothing() throws {
         #expect(try run("config", "set", "calendar.lookAheadDays", "0").status == 64)
-        #expect(try store.setting(.calendarLookAheadDays) == "7", "the refusal wrote nothing")
+        #expect(try store.setting(.calendarLookAheadDays) == "14", "the refusal wrote nothing")
 
         #expect(try run("config", "set", "calendar.lookAheadDays", "21").status == 0)
         #expect(try store.setting(.calendarLookAheadDays) == "21")

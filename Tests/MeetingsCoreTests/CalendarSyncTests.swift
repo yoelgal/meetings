@@ -240,29 +240,39 @@ final class StubCalendar: CalendarSource, @unchecked Sendable {
 
     // MARK: - The look-ahead setting
 
-    @Test func theLookAheadDefaultsToSevenDays() throws {
-        #expect(CalendarSync.lookAheadDays(in: store) == 7)
+    @Test func theLookAheadDefaultsToFourteenDays() throws {
+        #expect(CalendarSync.lookAheadDays(in: store) == 14)
     }
 
+    /// Narrower than the default on purpose. Set to the default's own value this asserted nothing:
+    /// a build that ignored the row entirely would have passed it. A three-day window against an
+    /// event nine days out proves the setting *excludes*, which is the half that can actually break.
     @Test func theLookAheadSettingDecidesTheWindow() async throws {
-        try store.setSetting(.calendarLookAheadDays, "14")
-        #expect(CalendarSync.lookAheadDays(in: store) == 14)
+        try store.setSetting(.calendarLookAheadDays, "3")
+        #expect(CalendarSync.lookAheadDays(in: store) == 3)
 
         let calendar = StubCalendar([Self.event("EV-near", inDays: 2), Self.event("EV-far", inDays: 9)])
         try await sync(calendar)
 
         #expect(try store.meeting(calendarEventID: "EV-near") != nil)
-        #expect(try store.meeting(calendarEventID: "EV-far") != nil)
+        #expect(try store.meeting(calendarEventID: "EV-far") == nil, "nine days out is past a three-day window")
     }
 
     /// A window of nothing is an Upcoming list that is empty for a reason no surface explains, and a
-    /// value that is not a number at all reads as nil. Both floor at a day rather than at zero.
+    /// value that is not a number at all reads as nil. Zero floors at a day; a non-numeric row falls
+    /// back to the declared default, which is the fortnight `SettingKey.defaults` names.
+    ///
+    /// This asserted 7 while the declared default said 14, because `lookAheadDays` carried its own
+    /// second literal. Pinned to `SettingKey.calendarLookAheadDays.defaultValue` here so the test
+    /// cannot certify a drift between the two again.
     @Test func anUnusableLookAheadFallsBackRatherThanEmptyingTheList() throws {
         try store.setSetting(.calendarLookAheadDays, "0")
         #expect(CalendarSync.lookAheadDays(in: store) == 1)
 
         try store.setSetting(.calendarLookAheadDays, "a fortnight")
-        #expect(CalendarSync.lookAheadDays(in: store) == 7)
+        #expect(CalendarSync.lookAheadDays(in: store) == 14)
+        #expect(SettingKey.calendarLookAheadDays.defaultValue == "14",
+                "the fallback is the declared default, so a change there must land here too")
     }
 }
 

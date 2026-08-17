@@ -24,13 +24,21 @@ import Testing
 
     /// Written straight to the table rather than through the CLI, because the point is a row the
     /// current gate would refuse — the only way one gets there is an older build.
+    ///
+    /// The Keychain account is unique per call, and that is not tidiness. Both tests in this suite
+    /// go through here, swift-testing runs them in parallel, and a shared account name made one
+    /// test's `defer` delete the secret the other was still about to read — whereupon
+    /// `remoteConfiguration()` came back nil and `engineSummary()` answered "selected but not fully
+    /// configured" instead of naming the endpoint. That failed roughly one run in three, on an
+    /// assertion about cleartext egress, which is the last thing that should be reported flakily.
     private func summary(baseURL: String) async throws -> String {
+        let account = "unit-test-cleartext-\(UUID().uuidString)"
         try store.setSetting(.transcribeBatchEngine, "remote")
         try store.setSetting(.transcribeRemoteBaseURL, baseURL)
         try store.setSetting(.transcribeRemoteModel, "whisper-1")
-        try store.setSetting(.transcribeRemoteKeyRef, "unit-test-cleartext")
-        MeetingsKeychain.setSecret("sk-unit-test", account: "unit-test-cleartext")
-        defer { MeetingsKeychain.setSecret(nil, account: "unit-test-cleartext") }
+        try store.setSetting(.transcribeRemoteKeyRef, account)
+        MeetingsKeychain.setSecret("sk-unit-test", account: account)
+        defer { MeetingsKeychain.setSecret(nil, account: account) }
         return await TranscriptionService(store: store, engine: nil, audioRoot: directory)
             .engineSummary()
     }

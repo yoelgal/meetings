@@ -4,14 +4,25 @@ import SwiftUI
 /// The four things a remote transcription endpoint needs, the button that proves they work, and the
 /// sentence about where the audio goes.
 ///
-/// One view for both places it appears — the setup wizard's model step and Settings › Transcription
-/// — because the wizard verifying credentials that Settings then lets you break unverified is the
-/// same feature with a hole in it.
+/// One view for both places it appears — the setup wizard's transcriber step and Settings ›
+/// Transcription — because the wizard verifying credentials that Settings then lets you break
+/// unverified is the same feature with a hole in it.
 struct RemoteTranscriptionFields: View {
     let store: MeetingStore
     /// A counter the wizard bumps to run the verification from its own Continue button. Ignored in
     /// Settings, which has only the button below.
     var verifyRequested: Int = 0
+    /// A counter the caller bumps to mean "the settings rows changed underneath you — read them
+    /// again".
+    ///
+    /// The fields below load into `@State` once, on appear, which is right for a pane the user is
+    /// typing into: re-reading the store on every redraw would fight the cursor. It is wrong the
+    /// moment something else writes those rows, and something else now does —
+    /// ``MeetingStore/adoptCloudCredentialsForTranscription(keychainRead:keychainWrite:)`` copies the
+    /// write-up provider's endpoint across when the user picks the service card. Without this the
+    /// carry-over wrote four correct rows and left four visibly empty boxes sitting on top of them,
+    /// which does not read as "nothing needed doing", it reads as the feature being broken.
+    var reloadRequested: Int = 0
     /// Told whether the endpoint is currently proven, so the wizard can hold Continue.
     var verificationChanged: (AIVerification?) -> Void = { _ in }
 
@@ -28,9 +39,8 @@ struct RemoteTranscriptionFields: View {
 
     var body: some View {
         Label {
-            Text("The audio of every meeting is uploaded to this endpoint. Nothing else about "
-                + "Meetings changes — notes, search and your write-up stay on this Mac — but the "
-                + "recordings themselves leave it.")
+            Text("The audio of every meeting is uploaded to this endpoint. Your notes, search and "
+                + "write-ups stay on this Mac. The recordings leave it.")
                 .font(.callout)
                 .fixedSize(horizontal: false, vertical: true)
         } icon: {
@@ -50,8 +60,8 @@ struct RemoteTranscriptionFields: View {
                 text: SettingBinding(store: store, key: .transcribeRemoteKeyRef).binding($keyRef)
             )
             .labelsHidden()
-            Text("The name this key is filed under in your Keychain. Any name works. Left blank, "
-                + "Meetings uses \"\(Self.defaultKeyRef)\".")
+            Text("The name this key is filed under in your Keychain. Any name works; blank uses "
+                + "\"\(Self.defaultKeyRef)\".")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -71,25 +81,24 @@ struct RemoteTranscriptionFields: View {
             // The default is to verify, and this says so before the user has pressed anything.
             // Skipping is offered — an endpoint behind a VPN that is not up yet is a real situation —
             // but it is the second thing on the line, not the first.
-            Text("Verify before continuing. A key that is wrong here fails silently after your "
-                + "first meeting, with the audio already recorded and no transcript to show for it. "
-                + "If the endpoint is unreachable right now you can continue anyway and verify "
-                + "later from Settings.")
+            Text("Verify before continuing: a wrong key fails silently after your first meeting, "
+                + "with the audio already recorded. If the service is unreachable right now, "
+                + "continue and verify later in Settings.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
 
-        Text("Defaults are OpenAI's, because the engine speaks OpenAI's "
-
-            + "POST /audio/transcriptions — any endpoint that speaks it works, including one you "
-            + "run yourself. The key goes to the login Keychain under service "
-            + "com.yoelgal.Meetings; the settings table stores only the account name.")
+        Text("The defaults point at OpenAI, and anything that speaks the same API works — "
+            + "including one you run yourself. Your key is kept in your Keychain, never in "
+            + "Meetings' own database.")
             .font(.caption)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
-            // Zero is the initial value, so the first press is 1 and this never fires on appear.
+            // Zero is the initial value of both counters, so the first bump is 1 and neither of
+            // these fires on appear — where `load` has already run off `onAppear` above.
             .onChange(of: verifyRequested) { _, _ in check() }
+            .onChange(of: reloadRequested) { _, _ in load() }
     }
 
     // MARK: -

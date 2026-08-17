@@ -5,10 +5,10 @@ import Testing
 
 /// Counts `prepare` calls and stays in flight long enough for a second caller to arrive.
 ///
-/// It throws rather than returning. `prepareModels` moves on to the *streaming* model after the
-/// batch engine, and that step is a static on `FluidAudioStreamingTranscriber` with no injection
-/// seam — letting the test reach it would start a real ~1 GB download from the suite. Throwing stops
-/// the run at exactly the point this test is about, and both callers observe the same error.
+/// It throws rather than returning, which is what keeps these tests about one thing: the join. A
+/// `prepare` that succeeded would let the pass carry on and the slot clear on its own schedule, and
+/// what is being asserted here is how many times `prepare` was entered. Throwing stops the run at
+/// exactly that point, and both callers observe the same error.
 private final class CountingEngine: TranscriptionEngine, @unchecked Sendable {
     struct Stop: Error {}
 
@@ -99,13 +99,13 @@ private final class CountingEngine: TranscriptionEngine, @unchecked Sendable {
         async let second: Void = { try? await service.prepareModels { value in seen.append(value) } }()
         _ = await (first, second)
 
-        // 0.5 from the engine, scaled by the 0.6 the batch model is worth.
-        #expect(seen.value.first == 0.3,
+        // 0.5 from the engine, and 0.5 is what the joiner sees: one model owns the whole bar.
+        #expect(seen.value.first == 0.5,
                 "the joiner's first callback should be the progress already reached, not 0")
         // Without this the test passes with the bug present: an unguarded second call runs its own
-        // `prepare`, which reports 0.5 straight away, so the joiner sees 0.3 for the wrong reason.
+        // `prepare`, which reports 0.5 straight away, so the joiner sees 0.5 for the wrong reason.
         // The value alone does not distinguish joining from restarting; the call count does.
-        #expect(engine.prepareCalls == 1, "and it should have reached 0.3 by joining, not by restarting")
+        #expect(engine.prepareCalls == 1, "and it should have reached 0.5 by joining, not by restarting")
     }
 
     /// The flag the views read to decide whether to rejoin rather than offer a button.

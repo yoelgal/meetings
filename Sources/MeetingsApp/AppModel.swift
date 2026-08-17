@@ -363,6 +363,27 @@ final class AppModel {
         // because `SkillInstall.targets()` never creates an agent tool's config directory — it only
         // writes where one already exists. A tool you do not use sees nothing.
         Task.detached(priority: .utility) { try? SkillInstall.install() }
+        // Warms the PATH the local-agent mode resolves against, which is now the *login shell's*
+        // PATH rather than a hardcoded list — because every agent CLI ships through a different
+        // installer (`omp` arrives in `~/.bun/bin`) and a fixed list is a treadmill. Resolving it
+        // spawns `$SHELL -ilc`, once per process, bounded at two seconds.
+        //
+        // Warmed off the main actor because the first caller otherwise pays that cost, and the first
+        // caller is a *view* — Settings' verify button, or the wizard's agent detection — so a
+        // pathological rc file would stall the window at the moment somebody pressed something.
+        //
+        // **Gated on the mode, and that is a security boundary rather than a saving.** `-ilc` sources
+        // `.zshenv`, `.zprofile` and `.zshrc`, so warming unconditionally meant this app executed the
+        // user's shell startup files on every launch — inside a deliberately un-sandboxed process
+        // holding the microphone and Screen Recording grants — including for the default `manual`
+        // install, which executes nothing and has no use for a widened PATH at all. Manual mode now
+        // spawns no shell; the two modes that do run commands still get the warm. The lookup itself
+        // stays available on demand, so the wizard's agent detection is unaffected.
+        if AIMode(stored: (try? store.setting(.aiMode)) ?? nil) != .manual {
+            Task.detached(priority: .utility) {
+                _ = EnhancementRunner.searchPath(in: ProcessInfo.processInfo.environment)
+            }
+        }
         nudge.start()
         // Detached and unawaited, because this is the one thing on the launch path that touches the
         // network and the window must not wait on a socket to draw. It settles into the

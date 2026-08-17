@@ -95,7 +95,11 @@ public enum AIVerify {
 
     /// Resolved the way `/usr/bin/env` resolves it, because that is what actually launches the
     /// command: a name containing a slash is a path, anything else is searched for on PATH.
-    private static func executable(_ name: String, searchPath: String) -> String? {
+    ///
+    /// Shared with ``AgentPreset/detected(searchPath:)`` rather than reimplemented there. Two
+    /// resolvers would be two chances to disagree, and the disagreement a user would feel is
+    /// "the setup step offered me this agent and the verify button says it isn't installed".
+    static func executable(_ name: String, searchPath: String) -> String? {
         let manager = FileManager.default
         if name.contains("/") {
             let path = URL(fileURLWithPath: name).path

@@ -141,8 +141,8 @@ private struct GeneralSettings: View {
                     }
                 }
                 Text("""
-                    Every meeting with a link in that window gets a row, so you can write pre-notes \
-                    before it starts. `meetings upcoming` uses the same window.
+                    Meetings with a link in that window get a row, so you can write notes \
+                    before they start.
                     """)
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -169,8 +169,8 @@ private struct GeneralSettings: View {
                 // so SwiftUI never sees a `LocalizedStringKey` and the backticks below would draw
                 // as backticks. `MarkdownLiteralTests` fails the build if this idiom comes back.
                 Text("""
-                    `0` keeps every recording forever. Only the WAV files are deleted. \
-                    Transcripts and notes are kept.
+                    `0` keeps recordings forever. Only the audio is deleted — never your \
+                    transcripts or notes.
                     """)
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -178,16 +178,16 @@ private struct GeneralSettings: View {
 
             Section("Floating notes panel") {
                 Toggle("Hide the notes panel from screen sharing", isOn: $model.notesPanelHiddenFromCapture)
-                Text("On, the panel is invisible to Zoom, Meet, Teams and anything else that "
-                    + "records the screen. It also disappears from your own screenshots, screen "
-                    + "recordings and Mission Control.")
+                Text("""
+                    Zoom, Meet, Teams and anything else recording your screen cannot see it. \
+                    Neither can your own screenshots.
+                    """)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
                 Toggle("Keep the notes panel above other apps", isOn: $model.notesPanelFloats)
-                Text("On, the panel stays on top of other windows, including full-screen ones. "
-                    + "Off, it behaves like an ordinary window.")
+                Text("The panel stays on top of other windows, even full-screen ones.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -219,7 +219,7 @@ private struct GeneralSettings: View {
                             .font(.caption)
                             .foregroundStyle(Color(nsColor: .systemGreen))
                     case .upToDate:
-                        Text("This is the latest release.")
+                        Text("You are up to date.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     case .failed(let why):
@@ -232,10 +232,10 @@ private struct GeneralSettings: View {
                 }
 
                 Toggle("Check automatically", isOn: $model.updateCheckEnabled)
-                Text("On, Meetings asks GitHub whether a newer release is tagged: once when it "
-                    + "starts, then daily if you leave it running. It sends nothing about you and "
-                    + "nothing about your meetings. This is the only request the app makes that you "
-                    + "did not ask for by setting up a cloud mode. Check now works either way.")
+                Text("""
+                    Meetings asks GitHub daily whether a newer version exists. It sends nothing \
+                    about you or your meetings.
+                    """)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -261,8 +261,10 @@ private struct GeneralSettings: View {
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
                 }
-                Text("Symlinks the CLI inside Meetings.app to /usr/local/bin, so your agent can "
-                    + "use it from any directory.")
+                Text("""
+                    Puts the `meetings` command in /usr/local/bin, so your agent can run it \
+                    from anywhere.
+                    """)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -352,42 +354,43 @@ private struct AISettings: View {
     let model: AppModel
 
     @State private var mode = AIMode.manual
-    @State private var showAdvanced = false
 
     var body: some View {
         Form {
             Section("How meetings get written up") {
+                // All three modes, always. Two of them used to sit behind an "Advanced modes…"
+                // button, so the two ways of getting a write-up without doing it by hand were
+                // invisible to anybody who did not press a disclosure — in the one pane whose
+                // entire purpose is choosing between the three.
                 Picker("Mode", selection: modeBinding) {
-                    Text("Manual (you drive your own agent)").tag(AIMode.manual)
-                    if showAdvanced || mode != .manual {
-                        Text("Local agent (runs a command when a meeting is ready)").tag(AIMode.localAgent)
-                        Text("Cloud (an API writes the summary)").tag(AIMode.cloud)
-                    }
+                    Text("Manual — you ask your own agent").tag(AIMode.manual)
+                    Text("Local agent — Meetings runs a command").tag(AIMode.localAgent)
+                    Text("Cloud — a provider writes it").tag(AIMode.cloud)
                 }
                 .pickerStyle(.inline)
-                if !showAdvanced, mode == .manual {
-                    Button("Advanced modes…") { showAdvanced = true }
-                }
                 Text(explanation)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            // Each command in front of the mode that uses it. They were one section over one
-            // setting, and one value cannot be both a slash command to paste and a binary to exec.
-            Section("Your own agent session") {
-                ManualPasteCommandFields(store: model.store)
-            }
-
-            if showAdvanced || mode == .localAgent {
-                Section("Local agent") {
+            // Exactly one section, belonging to the mode in effect. All three could draw at once,
+            // and the manual one drew unconditionally — so Local agent showed a "Command to copy"
+            // directly above a "Command to run": two fields, near-identical labels, one of them
+            // irrelevant to the chosen mode and both of them plausible places to type. There is no
+            // state to lose by hiding a section, because every field writes its settings row as it
+            // changes rather than on a Save.
+            switch mode {
+            case .manual:
+                Section("The command you copy") {
+                    ManualPasteCommandFields(store: model.store)
+                }
+            case .localAgent:
+                Section("The command Meetings runs") {
                     LocalAgentCommandFields(store: model.store)
                 }
-            }
-
-            if showAdvanced || mode == .cloud {
-                Section("Cloud provider") {
+            case .cloud:
+                Section("Your provider") {
                     CloudProviderFields(store: model.store)
                 }
             }
@@ -409,15 +412,14 @@ private struct AISettings: View {
     private var explanation: String {
         switch mode {
         case .manual:
-            "Nothing fires on its own. A finished meeting waits under Needs write-up until you ask "
-                + "your own agent to write it."
+            "Nothing runs on its own. Finished meetings wait under Needs write-up until you ask "
+                + "your agent."
         case .localAgent:
-            "When a meeting reaches Needs write-up, Meetings runs the command below in the "
-                + "background, without asking. Whether the transcript leaves this Mac depends on "
-                + "the command you set."
+            "Meetings runs the command below as soon as a meeting is ready. Whether the transcript "
+                + "leaves this Mac depends on the command you set."
         case .cloud:
-            "When a meeting reaches Needs write-up, its transcript and your notes are sent to the "
-                + "provider below and the summary it returns is saved."
+            "Your transcript and notes are sent to the provider below, and the summary it returns "
+                + "is saved."
         }
     }
 }
@@ -443,8 +445,8 @@ struct ManualPasteCommandFields: View {
         .onAppear { command = loadSetting(store, .aiManualPasteCommand) }
 
         Text("""
-            Offered by the Copy button on a meeting that needs writing up, with `{meeting_id}` \
-            substituted. Meetings never runs it.
+            The Copy button on a finished meeting copies this, with `{meeting_id}` filled in. \
+            Meetings never runs it.
             """)
             .font(.caption)
             .foregroundStyle(.secondary)
@@ -452,41 +454,161 @@ struct ManualPasteCommandFields: View {
     }
 }
 
-/// Mode B's one setting and its check.
+/// Mode B's command, the agent it came from, and the check that resolves it.
 ///
 /// The wizard's fourth page and Settings ▸ AI both draw *this* view, so there is one field bound to
 /// one settings row. Two sets of fields over the same row is how the wizard and Settings come to
 /// disagree about what is configured.
+///
+/// **The chooser is a way of filling the field, not a second source of truth.** The stored template
+/// is the setting; the picker is seeded by asking ``AgentPreset`` which preset that template came
+/// from, and lands on "Something else" whenever the answer is none. A picker holding its own idea of
+/// the chosen agent would relabel a hand-written command as some preset it does not match, and then
+/// overwrite it from that preset on the next redraw — losing a command the user typed, in a field
+/// they were not looking at, for a mode that runs unattended.
 struct LocalAgentCommandFields: View {
     let store: MeetingStore
+    /// A counter the caller bumps to mean "the settings rows changed underneath you — read them
+    /// again". Ignored in Settings, which is the only writer of these rows while it is on screen.
+    ///
+    /// This exists because the wizard's mode step used to say the same thing with `.id()`, and a
+    /// new identity does not re-seed a view, it *destroys and rebuilds* one. Everything below is
+    /// `@State`, including ``checking`` and ``result``, so a remount landing while "Check the
+    /// command" was in flight threw away the view the check was going to answer on: the spinner
+    /// vanished, the button came back enabled, and no verdict ever appeared. That window was not
+    /// hypothetical — the step's prefill awaits a PATH resolution bounded at two seconds while the
+    /// panel is on screen from the first frame, so it is exactly when the button gets pressed, for
+    /// exactly the mode that then runs unattended. A counter re-seeds the two rows in place and
+    /// leaves the check's state alone.
+    ///
+    /// ``RemoteTranscriptionFields`` carries the identical property for the identical reason. One
+    /// idiom for "the rows moved underneath you" is the point; two was the wart.
+    var reloadRequested: Int = 0
 
+    /// Nil is "Something else": a command matching no preset, which is a legitimate answer and the
+    /// one a hand-written command has to be able to keep.
+    @State private var preset: AgentPreset?
     @State private var template = ""
     @State private var result: AIVerification?
+    /// The check is no longer instant: `EnhancementRunner.searchPath(in:)` resolves the login
+    /// shell's PATH by spawning `$SHELL -ilc` the first time anything in the process asks, bounded
+    /// at two seconds. So the press reports that it is working, exactly as the cloud check's does.
+    @State private var checking = false
 
     var body: some View {
-        TextField(
-            "Command to run",
-            text: SettingBinding(store: store, key: .aiLocalAgentRunCommand).binding($template)
-        )
-        .font(.callout.monospaced())
-        .onAppear { template = loadSetting(store, .aiLocalAgentRunCommand) }
+        Picker("Agent", selection: presetBinding) {
+            ForEach(AgentPreset.all) { agent in
+                Text(agent.name).tag(AgentPreset?.some(agent))
+            }
+            Text("Something else").tag(AgentPreset?.none)
+        }
+        .onAppear(perform: load)
+        // Zero is the counter's initial value, so the first bump is 1 and this never fires on
+        // appear, where `load` has already run.
+        .onChange(of: reloadRequested) { _, _ in load() }
+
+        TextField("Command to run", text: commandBinding)
+            .font(.callout.monospaced())
 
         // Named for what it does rather than "Verify": the check resolves a binary and stops, and a
         // button promising verification would be promising more than the sentence underneath it can
         // deliver.
-        Button("Check the command") {
-            result = AIVerify.localAgent(template: template)
+        HStack(spacing: 10) {
+            Button("Check the command", action: check)
+                .disabled(checking)
+            if checking {
+                ProgressView().controlSize(.small)
+            }
         }
 
         if let result { VerifyResultLabel(result: result) }
 
         Text("""
-            The first word has to be a real command on your PATH. `{meeting_id}` is substituted and \
-            `MEETINGS_DB` is exported. It runs directly, without a shell.
+            `{meeting_id}` becomes the meeting's id. It runs directly, so pipes and `&&` do \
+            nothing.
             """)
             .font(.caption)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
+    }
+
+    /// Seeds the field and the chooser from the store: the row is the truth and the picker is
+    /// derived from it, so a hand-written command lands on "Something else" rather than being
+    /// relabelled as a preset it does not match.
+    private func load() {
+        let stored = loadSetting(store, .aiLocalAgentRunCommand)
+        // Only when the row actually moved. A verdict describes one argv, so a re-seed that
+        // replaces the command has to take the verdict with it — but a re-seed that reads back the
+        // same command must not throw away a tick the user just earned.
+        if stored != template { result = nil }
+        template = stored
+        preset = AgentPreset.matching(runCommand: template)
+    }
+
+    /// Picking an agent fills in **both** command forms from it.
+    ///
+    /// The pasteable line and the executed line are two different settings on purpose — `claude -p`
+    /// execs and starts a fresh headless run, `/meetings` pastes into a session already open — but
+    /// they are two halves of one answer to "which agent do you use". Filling only the one in front
+    /// of the user leaves the other holding a different agent's command, which surfaces much later
+    /// as a Copy button offering a line for a tool this user does not run.
+    private var presetBinding: Binding<AgentPreset?> {
+        Binding(
+            get: { preset },
+            set: { chosen in
+                preset = chosen
+                // "Something else" writes nothing. It is the user saying they will type it
+                // themselves, and clearing the field they are about to type into would be a strange
+                // reading of that.
+                guard let chosen else { return }
+                template = chosen.runCommand
+                try? store.setSetting(.aiLocalAgentRunCommand, chosen.runCommand)
+                try? store.setSetting(.aiManualPasteCommand, chosen.pasteCommand)
+                // The old result described the old command. A green tick left sitting under a
+                // command that has just been replaced is the one way this pane can lie.
+                result = nil
+            }
+        )
+    }
+
+    /// The stored row, plus the one thing typing has to do besides store itself: move the chooser to
+    /// whatever the text now names, which for anything hand-written is "Something else".
+    ///
+    /// The text drives the chooser rather than the other way round, so the field stays editable and
+    /// a typed command is never relabelled as a preset it does not match.
+    private var commandBinding: Binding<String> {
+        let row = SettingBinding(store: store, key: .aiLocalAgentRunCommand).binding($template)
+        return Binding(
+            get: { row.wrappedValue },
+            set: { typed in
+                row.wrappedValue = typed
+                preset = AgentPreset.matching(runCommand: typed)
+                // The verdict was about the command that was there before this keystroke. Left on
+                // screen it reads as a verdict on the one now in the field, which is the one way
+                // this pane can lie about whether a write-up will happen.
+                result = nil
+            }
+        )
+    }
+
+    /// Runs the check off the main actor, and only draws its answer if it still applies.
+    ///
+    /// Off the main actor because the PATH resolution behind it spawns a login shell on its first
+    /// call in the process — up to two seconds on a pathological rc file, which on the main actor is
+    /// a beachball on the one control whose entire job is to reassure the user that something works.
+    private func check() {
+        result = nil
+        checking = true
+        let command = template
+        Task {
+            let outcome = await Task.detached { AIVerify.localAgent(template: command) }.value
+            checking = false
+            // The command moved on while the check ran — typed over, or replaced by picking an
+            // agent. The sentence describes an argv that is no longer in the field, and drawn under
+            // the new one it would read as a verdict on it.
+            guard command == template else { return }
+            result = outcome
+        }
     }
 }
 
@@ -518,8 +640,7 @@ struct CloudProviderFields: View {
         DisclosureGroup("Keychain account") {
             TextField("Keychain account", text: SettingBinding(store: store, key: .aiCloudKeyRef).binding($keyRef))
                 .labelsHidden()
-            Text("The name this key is filed under in your Keychain. Any name works. Left blank, "
-                + "Meetings uses \"cloud\".")
+            Text("The name your Keychain files this key under. Any name works.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -537,9 +658,10 @@ struct CloudProviderFields: View {
 
         if let result { VerifyResultLabel(result: result) }
 
-        Text("The key goes to the login Keychain under service com.yoelgal.Meetings. "
-            + "The settings table stores only the account name. The transcript and your notes "
-            + "are sent to the provider above.")
+        Text("""
+            Your key is stored in the login Keychain, never in the database. Your transcript and \
+            notes are sent to the provider above.
+            """)
             .font(.caption)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
@@ -592,17 +714,20 @@ struct VerifyResultLabel: View {
 
 // MARK: - Transcription
 
-/// The same choice the setup wizard makes, changeable afterwards — including the two directions
-/// that used to be dead ends: cloud back to local has to be able to run the download it skipped, and
+/// The same choice the setup wizard makes, changeable afterwards — including the two directions that
+/// used to be dead ends: cloud back to local has to be able to run the download it skipped, and
 /// local to cloud must not look like it silently threw the models away.
+///
+/// **There is no model picker, and nothing to measure.** ``LocalTranscriber`` resolves the one model
+/// this Mac runs from the system's primary language, so the only question left here is where
+/// transcription happens. What this pane used to ask instead was a choice between model sets, by
+/// name and download size, which is a decision nobody outside this repo has the information to
+/// make — and the fit check that existed to make it for them spent minutes of measurement answering
+/// a question that no longer exists.
 private struct TranscriptionSettings: View {
     let model: AppModel
 
     @State private var engine = TranscriptionEngineChoice.local
-    @State private var option = LocalTranscriptionOption.fallback
-    @State private var record: FitRecord?
-    @State private var fitting = false
-    @State private var fitStage: FitStage?
     @State private var modelsReady: Bool?
     @State private var downloading = false
     @State private var progress = 0.0
@@ -613,26 +738,16 @@ private struct TranscriptionSettings: View {
             Section("Where transcription runs") {
                 Picker("Engine", selection: engineBinding) {
                     Text("On this Mac").tag(TranscriptionEngineChoice.local)
-                    Text("A remote OpenAI-compatible endpoint").tag(TranscriptionEngineChoice.cloud)
+                    Text("A service you set up").tag(TranscriptionEngineChoice.cloud)
                 }
                 .pickerStyle(.inline)
             }
 
             if engine == .local {
-                Section("Model") {
-                    Picker("Model set", selection: optionBinding) {
-                        ForEach(LocalTranscriptionOption.all) { candidate in
-                            Text("\(candidate.title) — \(candidate.downloadSizeText)").tag(candidate)
-                        }
-                    }
-                    Text("Live: \(option.liveModel) · Final: \(option.finalModel) · \(option.languages)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-
-                    LabeledContent("On this Mac") {
+                Section("On this Mac") {
+                    LabeledContent("Status") {
                         HStack(spacing: 10) {
-                            Text(modelLabel).foregroundStyle(.secondary)
+                            Text(readinessLabel).foregroundStyle(.secondary)
                             Spacer()
                             if downloading {
                                 ProgressView(value: progress).frame(width: 120)
@@ -640,66 +755,28 @@ private struct TranscriptionSettings: View {
                                 // The one control that closes the cloud-to-local dead end: a store
                                 // that skipped its download during setup has nothing on disk, and
                                 // this is where it gets it.
-                                Button("Download \(option.downloadSizeText)") { download() }
+                                Button("Download (\(LocalTranscriber.current.downloadSizeText))") {
+                                    download()
+                                }
                             }
                         }
                     }
                     if let downloadProblem {
                         Text(downloadProblem).font(.caption).foregroundStyle(.secondary)
                     }
-                }
-
-                Section("What runs best on this Mac") {
-                    if let record {
-                        FitResultRow(record: record)
-                        Text("Measured \(record.ranAt.formatted(date: .abbreviated, time: .shortened)).")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Text("Not measured yet. Meetings can download one model, run it here on two "
-                            + "channels at once the way a meeting does, and pick from what it "
-                            + "measures rather than from the spec sheet.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    HStack(spacing: 10) {
-                        Button(record == nil ? "Check now" : "Check again", action: runFit)
-                            .disabled(fitting)
-                        if fitting {
-                            ProgressView().controlSize(.small)
-                            Text(fitStage.map(FitCheck.sentence) ?? "")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    Text("Up to \(Int(FitRunner.defaultCap / 60)) minutes, and it replaces the model "
-                        + "chosen above with whatever verifies.")
+                    Text("Your recordings stay on this Mac.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
 
             if engine == .cloud {
-                Section("Remote endpoint") {
+                Section("The service") {
                     RemoteTranscriptionFields(store: model.store)
                 }
                 Section {
-                    // Switching away does not delete anything, and saying so is the point: models
-                    // that took twenty minutes to fetch, silently deleted by a picker, would be
-                    // unforgivable — and a user who assumes they *were* deleted will not switch
-                    // back. Neither the assumption nor the deletion, then: the files stay and the
-                    // pane says where.
                     Label {
-                        Text(localModelsPresent
-                            ? "The models already on this Mac are left where they are, at "
-                                + "~/Library/Application Support/FluidAudio. Switching back to "
-                                + "\"On this Mac\" uses them again with no second download."
-                            : "There is nothing downloaded on this Mac, and choosing this endpoint "
-                                + "downloads nothing. There is also no live transcript while you "
-                                + "talk — the live pane is an on-device model, and a remote "
-                                + "endpoint transcribes the recording after the meeting instead.")
+                        Text(cloudNote)
                             .font(.callout)
                             .fixedSize(horizontal: false, vertical: true)
                     } icon: {
@@ -725,56 +802,44 @@ private struct TranscriptionSettings: View {
         })
     }
 
-    private var optionBinding: Binding<LocalTranscriptionOption> {
-        Binding(get: { option }, set: { choice in
-            option = choice
-            try? model.store.setSetting(.transcribeLocalModel, choice.id)
-            Task { await refreshEngine() }
-        })
+    /// Two sentences, and which two depends on whether there is anything downloaded to reassure the
+    /// user about. Both open with the fact that matters most, which is that their audio is uploaded.
+    ///
+    /// Switching away deletes nothing, and saying so is the point: a download silently thrown away
+    /// by a picker would be unforgivable — and a user who assumes it *was* thrown away will not
+    /// switch back. Neither, then: the files stay where they are and the pane says so.
+    private var cloudNote: String {
+        localModelsPresent
+            ? "Your recordings are uploaded to that service. What is already downloaded here is "
+                + "kept, so switching back needs no second download."
+            : "Your recordings are uploaded to that service, and nothing is downloaded here. There "
+                + "is also no live transcript while you talk."
     }
 
     private var localModelsPresent: Bool {
-        LocalTranscriptionOption.all.contains {
-            FluidAudioStreamingTranscriber.modelsAreCached($0.liveVariant)
-        } || FluidAudioBatchEngine.modelsAreCached()
+        StreamingFileEngine.modelsAreCached(LocalTranscriber.current.variant)
+    }
+
+    private var readinessLabel: String {
+        switch modelsReady {
+        case true: "Ready"
+        case false: downloading ? "Downloading…" : "Not downloaded"
+        case nil: "Checking…"
+        }
     }
 
     private func load() async {
         engine = model.store.transcriptionEngine()
-        option = model.store.localTranscriptionOption()
-        record = model.store.fitRecord()
         modelsReady = await model.transcription.modelsReady()
         // Same reason as the wizard's step: this pane can be opened, closed and reopened while a
-        // download runs, and its `downloading` flag dies with it. `prepareModels` joins the one
-        // in flight rather than starting another, so rejoining is just calling it again.
+        // download runs, and its `downloading` flag dies with it. `prepareModels` joins the one in
+        // flight rather than starting another, so rejoining is just calling it again.
         if await model.transcription.isPreparingModels { download() }
     }
 
     private func refreshEngine() async {
         await model.transcription.forgetResolvedEngine()
         modelsReady = await model.transcription.modelsReady()
-    }
-
-    private func runFit() {
-        fitting = true
-        Task {
-            let outcome = await FitCheck.run(store: model.store) { stage in
-                Task { @MainActor in fitStage = stage }
-            }
-            record = outcome
-            option = outcome.chosen
-            engine = .local
-            await refreshEngine()
-            fitting = false
-        }
-    }
-
-    private var modelLabel: String {
-        switch modelsReady {
-        case true: "Ready"
-        case false: downloading ? "Downloading…" : "Not downloaded"
-        case nil: "Checking…"
-        }
     }
 
     private func download() {
@@ -787,7 +852,7 @@ private struct TranscriptionSettings: View {
                 }
                 modelsReady = await model.transcription.modelsReady()
             } catch {
-                downloadProblem = "The model could not be downloaded: \(error.localizedDescription)"
+                downloadProblem = "The download did not finish: \(error.localizedDescription)"
             }
             downloading = false
         }
@@ -812,8 +877,8 @@ enum VocabularyRules {
     static func refusal(for term: String) -> String? {
         let trimmed = term.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.count < minimumTermLength else { return nil }
-        return "“\(trimmed)” is too short. The recogniser ignores any term under "
-            + "\(minimumTermLength) characters. Add the longer word it appears in instead."
+        return "“\(trimmed)” is too short. Words under \(minimumTermLength) letters are ignored, "
+            + "so add the longer word it appears in."
     }
 }
 
@@ -912,8 +977,10 @@ private struct VocabularySettings: View {
             }
             // The one sentence the other three tabs all have and this one did not: what the list is
             // for, and where the rows you did not type came from.
-            Text("Terms bias the transcriber toward the spelling you want. Attendee names from "
-                + "your calendar are added automatically and can be turned off here.")
+            Text("""
+                These spellings help the transcriber get names right. Names from your calendar \
+                are added for you, and you can turn any of them off.
+                """)
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

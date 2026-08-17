@@ -14,11 +14,11 @@ public struct EngineSegment: Sendable, Hashable {
     }
 }
 
-/// One protocol, two conformers: `FluidAudioBatchEngine` on device and
-/// `OpenAICompatibleRemoteEngine` for the optional remote batch pass.
+/// One protocol, two conformers: ``StreamingFileEngine`` on device and
+/// ``OpenAICompatibleRemoteEngine`` for the optional remote pass.
 ///
-/// `vocabulary` is part of the call because FluidAudio applies custom vocabulary as a post-pass over
-/// the *same samples* that produced the transcript, so it has to happen inside the engine.
+/// `vocabulary` is part of the call because custom vocabulary is applied as a post-pass over the
+/// *same samples* that produced the transcript, so it has to happen inside the engine.
 ///
 /// `progress` is per file, 0…1. It exists for one reason: the first pass that has vocabulary terms
 /// in effect downloads a second ~97.5 MB model, and a wait that long with a frozen bar reads as a

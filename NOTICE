@@ -20,7 +20,7 @@ quill's ParakeetEngine.segments(from:) — grouping word timings into readable
 segments by sentence-ending punctuation, silence gap and a hard length cap.
 
 The zero-frame probe in
-Sources/MeetingsCore/Transcription/FluidAudioBatchEngine.swift follows quill's
+Sources/MeetingsCore/Transcription/StreamingFileEngine.swift follows quill's
 guard in ParakeetEngine.transcribe(_:), and for the same reason: a track with no
 frames makes AVFoundation raise an Objective-C exception inside the resampler
 that Swift cannot catch, taking the whole process down.

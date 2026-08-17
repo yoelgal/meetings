@@ -64,11 +64,19 @@ public final class RecordingController {
     /// Where this session's WAVs are going, so `stop()` can read back what actually landed in them.
     private var audioDirectory: URL?
 
-    /// Test seam. A real one loads 80 MB of Core ML and needs an ANE; the controller's own rules —
-    /// what reaches the store, what happens when the model is missing — are worth testing without
-    /// either.
+    /// Test seam. A real one loads Core ML and needs an ANE; the controller's own rules — what
+    /// reaches the store, what happens when the model is missing — are worth testing without either.
+    ///
+    /// The variant is ``LocalTranscriber/current`` and not the default, which is the whole of what
+    /// makes one download serve both halves of the app: this is the instance that writes the live
+    /// pane, ``TranscriptionService/prepareModels(progress:)`` is what fetched it, and
+    /// ``StreamingFileEngine`` is what drives the same checkpoint over a file. Left at the parameter
+    /// default this constructed the 320 ms EOU model whatever had been downloaded — so on a Mac
+    /// resolving to the English model, onboarding fetched one checkpoint, `modelsReady()` said yes
+    /// about it, and recording then asked for a different one and got
+    /// `modelsNotDownloaded`: a meeting with no live transcript and nothing saying why.
     var makeLiveTranscriber: @Sendable () -> StreamingTranscriber = {
-        FluidAudioStreamingTranscriber()
+        FluidAudioStreamingTranscriber(variant: LocalTranscriber.current.variant)
     }
 
     public init(store: MeetingStore, transcription: TranscriptionService) {
