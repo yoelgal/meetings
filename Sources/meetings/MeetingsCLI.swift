@@ -35,7 +35,6 @@ struct MeetingsCLI: AsyncParsableCommand {
             DeleteCommand.self,
             VocabCommand.self,
             ConfigCommand.self,
-            FitCommand.self,
             AICommand.self,
             TranscriptEditCommand.self,
             ExportCommand.self,

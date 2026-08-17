@@ -363,7 +363,6 @@ meetings create --title <t> --date <d> [--duration <n>] [--folder <name>] [--att
                 [--source imported]
 meetings import <bundle> [--folder <name>] [--dry-run]
 meetings backup [--out <path>]
-meetings fit [--rerun] [--dry-run] [--cap <seconds>]      # measure which model this Mac runs well, and select it
 meetings skill install [--dry-run]
 ```
 
@@ -374,9 +373,8 @@ Time formats accepted anywhere an offset is: `12:30`, `1:05:00`, `12m`, `750s`, 
 that was actually created is what the command prints, so `BUNDLE=$(meetings export <ref> --out /tmp)`
 gives you something `meetings import` can take.
 
-`meetings fit` downloads candidate models and measures them, which takes minutes and changes the
-model every future meeting is transcribed with. Run it when the user asks for it; `meetings fit
---dry-run` reports what would be tried and downloads nothing.
+The transcriber is not configurable from the command line: Meetings picks one local model from the
+system language and runs it, so there is nothing here to measure or select.
 
 ## States
 

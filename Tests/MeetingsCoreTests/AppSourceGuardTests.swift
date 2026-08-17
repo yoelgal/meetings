@@ -1295,19 +1295,4 @@ import Testing
                     "\(name) changes the engine setting without dropping the resolved engine")
         }
     }
-
-    /// The picker is data, not branches. A new tier is an element of
-    /// `LocalTranscriptionOption.all`; if a view names an option by id, adding one means editing
-    /// the view, which is the thing this design exists to avoid.
-    @Test func theModelPickerIsDrivenByTheCatalogueAndNotByIdentity() throws {
-        for name in ["OnboardingView.swift", "SettingsView.swift"] {
-            let source = try Self.source(name)
-            #expect(source.contains("LocalTranscriptionOption.all"),
-                    "\(name) has to render the catalogue")
-            for id in LocalTranscriptionOption.all.map(\.id) {
-                #expect(!source.contains("\"\(id)\""),
-                        "\(name) hardcodes the option id \(id); the list has to stay data-driven")
-            }
-        }
-    }
 }

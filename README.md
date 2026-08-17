@@ -39,7 +39,7 @@ notes you took, not by someone else's template.
 - Apple's command line developer tools, with the macOS 26 SDK — `xcode-select --install`, about
   1.5 GB, no Apple ID and no Xcode. `swift --version` should report 6.2 or later. A full Xcode works
   too, and if neither is installed `install.sh` offers to do it for you.
-- About 1 GB of disk for the speech models. They download the first time transcription runs, into
+- About 640 MB of disk for the speech model. It downloads the first time transcription runs, into
   `~/Library/Application Support/FluidAudio/Models`. Nothing is bundled in the app.
 - About 2 GB for the build itself, in `.build/`. Delete it any time.
 

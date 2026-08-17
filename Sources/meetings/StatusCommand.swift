@@ -32,7 +32,6 @@ struct StatusCommand: AsyncParsableCommand {
             // deliberately never downloaded.
             let engineSummary = await transcription.engineSummary()
             let engine = context.store.transcriptionEngine()
-            let fit = context.store.fitRecord()
             let retentionDays = try context.store.settingInt(.audioRetentionDays) ?? 30
             let installed = installedOnPath()
             let fixture = Paths.calendarFixtureURL
@@ -50,9 +49,7 @@ struct StatusCommand: AsyncParsableCommand {
                     transcription: .init(
                         modelsReady: modelsReady,
                         engine: engine.rawValue,
-                        localModel: context.store.localTranscriptionOption().id,
-                        summary: engineSummary,
-                        fit: fit
+                        summary: engineSummary
                     ),
                     calendar: .init(
                         source: fixture == nil ? "eventkit" : "fixture",
@@ -73,8 +70,6 @@ struct StatusCommand: AsyncParsableCommand {
                 ["store", "\(databaseURL.path)\(existed ? " (\(Format.bytes(size)))" : " (created just now)")"],
                 ["meetings", meetings.isEmpty ? "none yet" : "\(meetings.count) total (\(stateSummary))"],
                 ["transcription", engineSummary],
-                ["fit", fit.map { $0.headline }
-                    ?? "not measured. `meetings fit` picks the model that runs best on this Mac"],
                 ["calendar", calendarLine(context: context, fixture: fixture)],
                 ["cli", installed.map { "on PATH at \($0)" }
                     ?? "not on PATH. Install it from Settings > Command line"],
@@ -120,14 +115,15 @@ private struct StatusJSON: Encodable {
         let byState: [String: Int]
     }
     struct Transcription: Encodable {
-        /// Whether transcription can actually run: models on disk for the local engine, a complete
-        /// configuration for the remote one. Not "files exist" — see `engine`.
+        /// Whether transcription can actually run: the model on disk for the local engine, a
+        /// complete configuration for the remote one. Not "files exist" — see `engine`.
         let modelsReady: Bool
         /// `fluidaudio` or `remote`.
         let engine: String
-        let localModel: String
+        /// One sentence for a human. There is no `localModel` beside it any more: which local model
+        /// runs is not a setting, it is derived from this Mac's language, so a field naming it would
+        /// be reporting a choice nobody made.
         let summary: String
-        let fit: FitRecord?
     }
     struct Calendar: Encodable {
         let source: String

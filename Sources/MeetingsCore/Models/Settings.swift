@@ -40,20 +40,6 @@ public struct SettingKey: RawRepresentable, Hashable, Sendable {
     /// endpoint). Read through ``MeetingStore/transcriptionEngine()``.
     public static let transcribeBatchEngine = SettingKey("transcribe.batchEngine")
 
-    /// Which local model set runs when the engine is `fluidaudio`. One of
-    /// ``LocalTranscriptionOption/all``'s ids; absent means ``LocalTranscriptionOption/fallback``,
-    /// which is what has always shipped, so an existing store reads exactly as it did before.
-    ///
-    /// Kept when the engine is switched to `remote`: switching back must not lose the choice, and a
-    /// cloud user who never picked a local model still has a sensible one waiting.
-    public static let transcribeLocalModel = SettingKey("transcribe.localModel")
-
-    /// What `meetings fit` measured and when, as JSON (``FitRecord``). Settings shows it as the
-    /// reason the current model was chosen, so it is stored rather than recomputed — re-measuring to
-    /// draw a settings pane would download models and spin the ANE to answer a question already
-    /// answered.
-    public static let transcribeFitRecord = SettingKey("transcribe.fit.record")
-
     public static let transcribeRemoteBaseURL = SettingKey("transcribe.remote.baseURL")
     public static let transcribeRemoteModel = SettingKey("transcribe.remote.model")
     public static let transcribeRemoteKeyRef = SettingKey("transcribe.remote.keyRef")
@@ -87,10 +73,15 @@ public struct SettingKey: RawRepresentable, Hashable, Sendable {
         .aiManualPasteCommand: "/meetings {meeting_id}",
         .aiLocalAgentRunCommand: #"claude -p "/meetings {meeting_id}""#,
         .transcribeBatchEngine: "fluidaudio",
-        // The two-model set that has always shipped. An install that never opens the picker, and
-        // every store that predates it, stays on exactly this.
-        .transcribeLocalModel: LocalTranscriptionOption.fallback.id,
-        .calendarLookAheadDays: "7",
+        // No `transcribe.localModel` row: which local model runs is derived from this Mac's
+        // language on every read (``LocalTranscriber/current``) rather than stored, so an install
+        // cannot end up pinned to a model this build no longer ships, and no surface has to decide
+        // what an unrecognised value means.
+        //
+        // Two weeks, not one. A week ahead is shorter than the notice most meetings are booked
+        // with, so the list somebody opens on Monday to see what is coming routinely did not
+        // contain the thing they opened it for.
+        .calendarLookAheadDays: "14",
         .exportMarkdownOnComplete: "false",
         .onboardingCompleted: "false",
         // On, because an update notice nobody switches on protects nobody, and the check reveals

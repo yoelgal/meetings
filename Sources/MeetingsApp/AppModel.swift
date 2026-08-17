@@ -363,6 +363,19 @@ final class AppModel {
         // because `SkillInstall.targets()` never creates an agent tool's config directory — it only
         // writes where one already exists. A tool you do not use sees nothing.
         Task.detached(priority: .utility) { try? SkillInstall.install() }
+        // Warms the PATH the local-agent mode resolves against, which is now the *login shell's*
+        // PATH rather than a hardcoded list — because every agent CLI ships through a different
+        // installer (`omp` arrives in `~/.bun/bin`) and a fixed list is a treadmill. Resolving it
+        // spawns `$SHELL -ilc`, once per process, bounded at two seconds.
+        //
+        // Primed here, off the main actor, for one reason: the first caller pays that cost, and the
+        // first caller is otherwise a *view* — Settings' verify button, or the wizard's agent
+        // detection — so a pathological rc file would stall the window for two seconds at exactly
+        // the moment somebody pressed something. Warmed on the launch path instead, nothing the
+        // user is watching ever waits for a shell.
+        Task.detached(priority: .utility) {
+            _ = EnhancementRunner.searchPath(in: ProcessInfo.processInfo.environment)
+        }
         nudge.start()
         // Detached and unawaited, because this is the one thing on the launch path that touches the
         // network and the window must not wait on a socket to draw. It settles into the

@@ -182,7 +182,7 @@ struct LiveStreamingTests {
 
 /// The one thing the app's live path owes the model: to not be worse than it.
 ///
-/// `meetings fit` measured `accurate-en` at 16.4% word error on a Mac where the same Nemotron 560 ms
+/// A run on a real Mac measured the app's live path at 16.4% word error where the same Nemotron 560 ms
 /// checkpoint benchmarks at 2.9%, and the transcript assembly was the suspect. It was not — driven on
 /// the same audio the two paths agree word for word. What differed was the warm-up: the app fed 700
 /// ms of silence to make Core ML compile, the recogniser slices from the first sample it is ever
@@ -196,8 +196,8 @@ struct LiveStreamingTests {
 ///     MEETINGS_LIVE_STREAM=1 MEETINGS_HOME=$(mktemp -d) swift test --filter LiveStreamingAssembly
 @Suite(.serialized, .enabled(if: ProcessInfo.processInfo.environment["MEETINGS_LIVE_STREAM"] != nil))
 struct LiveStreamingAssemblyTests {
-    /// Long enough for the number to mean something: on the 13 s fixture `fit` uses, two hard proper
-    /// nouns are eight points of word error between them.
+    /// Long enough for the number to mean something: on a 13 s fixture, two hard proper nouns are
+    /// eight points of word error between them.
     static let script = LiveStreamingTests.micLine + " " + """
         The interferometry bench is the one I am worried about, because the last characterization \
         run came back unrepresentative and we shipped it anyway. \

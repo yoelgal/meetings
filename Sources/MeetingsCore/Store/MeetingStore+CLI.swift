@@ -45,7 +45,6 @@ extension SettingKey {
         .aiCloudModel,
         .aiCloudKeyRef,
         .transcribeBatchEngine,
-        .transcribeLocalModel,
         .transcribeRemoteBaseURL,
         .transcribeRemoteModel,
         .transcribeRemoteKeyRef,

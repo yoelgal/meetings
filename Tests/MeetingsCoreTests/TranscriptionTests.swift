@@ -95,6 +95,64 @@ private struct StubEngine: TranscriptionEngine, Sendable {
         TranscriptionService(store: store, engine: engine, audioRoot: audioRoot)
     }
 
+    /// The same service, but reached through the *local* plan rather than an injected engine.
+    ///
+    /// The distinction is the whole of the bug below: an injected engine makes `plan()` report
+    /// `.injected`, which skips the local branch entirely, so every test above proves the file path
+    /// works without proving the local path ever reaches it. `localEngine` stands in for the model
+    /// the local branch would build, leaving the plan reading the store.
+    private func localService(_ engine: TranscriptionEngine) -> TranscriptionService {
+        TranscriptionService(
+            store: store, engine: nil, audioRoot: audioRoot, localEngine: { _ in engine })
+    }
+
+    /// **Importing audio into a meeting with no live rows produces a transcript.** The regression for
+    /// papercut 2662434591.
+    ///
+    /// One local model means the live text is the final text, so the pass promotes the live rows
+    /// instead of re-transcribing — and it did that whether or not there were any live rows to
+    /// promote. An import has none: two WAVs land in the meeting's directory and no live session ever
+    /// ran. So the pass promoted nothing over nothing, cleared the way to `ready`, and left the user
+    /// looking at a finished meeting with an empty transcript and no error anywhere to explain it.
+    @Test func importedAudioWithNoLiveRowsIsTranscribedRatherThanPromotedFromNothing() async throws {
+        let meeting = try store.createMeeting(TestStore.meeting(state: .transcribing))
+        try writeAudio(meetingID: meeting.id, names: ["mic.wav", "system.wav"])
+        #expect(try store.segments(meetingID: meeting.id).isEmpty, "an import starts with no rows")
+
+        let engine = StubEngine(results: [
+            "mic.wav": [EngineSegment(startMs: 0, endMs: 1_500, text: "Is the ptychography rig free?")],
+            "system.wav": [EngineSegment(startMs: 1_800, endMs: 3_000, text: "Thursday onwards, yes.")],
+        ])
+        try await localService(engine).runBatchPass(meetingID: meeting.id, progress: { _ in })
+
+        let segments = try store.segments(meetingID: meeting.id)
+        #expect(!segments.isEmpty, "an import that reaches ready with no transcript is the bug")
+        #expect(segments.map(\.text) == ["Is the ptychography rig free?", "Thursday onwards, yes."])
+        #expect(segments.map(\.channel) == [.mic, .system])
+        #expect(segments.allSatisfy { $0.pass == .final })
+        #expect(try store.meeting(id: meeting.id)?.state == .ready)
+    }
+
+    /// The other half of the same branch: a *recorded* meeting has live rows, and those rows are the
+    /// transcript. The engine must not be reached at all — running it would be the second pass this
+    /// design exists to remove, on a model that would have to be downloaded to run it.
+    @Test func aRecordedMeetingPromotesItsLiveRowsWithoutTouchingTheEngine() async throws {
+        let meeting = try store.createMeeting(TestStore.meeting(state: .recording))
+        try writeAudio(meetingID: meeting.id, names: ["mic.wav"])
+        _ = try store.insertSegment(TestStore.segment(
+            meetingID: meeting.id, from: 0, to: 900, text: "rough live text", pass: .live))
+
+        try await localService(StubEngine(failing: ["mic.wav"]))
+            .runBatchPass(meetingID: meeting.id, progress: { _ in })
+
+        let segments = try store.segments(meetingID: meeting.id)
+        #expect(segments.map(\.text) == ["rough live text"])
+        #expect(segments.allSatisfy { $0.pass == .final })
+        #expect(try store.meeting(id: meeting.id)?.state == .ready)
+        #expect(try store.transcriptIssues(meetingID: meeting.id).isEmpty,
+                "the engine was never asked, so its failure cannot be recorded against a channel")
+    }
+
     @Test func tagsEachChannelAndMergesByOffset() async throws {
         let meeting = try store.createMeeting(TestStore.meeting(state: .recording))
         try writeAudio(meetingID: meeting.id, names: ["mic.wav", "system.wav"])

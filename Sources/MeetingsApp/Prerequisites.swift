@@ -38,7 +38,7 @@ enum Prerequisites {
             missing.append(Prerequisite(
                 id: "mic",
                 title: "Microphone access",
-                detail: "Without it your own side of the conversation is not recorded at all.",
+                detail: "Without it, your own voice is not recorded.",
                 fix: .grant(.microphone)
             ))
         }
@@ -46,8 +46,8 @@ enum Prerequisites {
             missing.append(Prerequisite(
                 id: "system-audio",
                 title: "System audio",
-                detail: "Recording still works, but only your voice is captured. Everyone else "
-                    + "on the call is missing from the transcript.",
+                detail: "Recording works, but only your voice. Everyone else on the call is "
+                    + "missing from the transcript.",
                 fix: .grant(.systemAudio)
             ))
         }
@@ -65,20 +65,20 @@ enum Prerequisites {
         guard store.transcriptionEngine() == .local else {
             return [Prerequisite(
                 id: "remote-endpoint",
-                title: "The transcription endpoint is not set up",
-                detail: "Transcription is set to a remote endpoint, and its address, model or API "
-                    + "key is missing. Recording works; nothing will be transcribed.",
+                title: "Transcription is not set up",
+                detail: "Its address, model or key is missing. Meetings are recorded, and "
+                    + "nothing is transcribed.",
                 fix: .openTranscriptionSettings
             )]
         }
-        let option = store.localTranscriptionOption()
+        // One model, one line. There used to be two — a small live one and a larger one for the
+        // finished recording — and this sentence had to say which parts of the app each of them
+        // cost you, in a notice that appears above a record button somebody is about to press.
         return [Prerequisite(
             id: "models",
-            title: "The transcriber is not downloaded",
-            detail: "\(option.title): about \(option.downloadSizeText), once. Until it is here "
-                + "there is no live transcript"
-                + (option.runsSeparateBatchPass
-                    ? ", and the accurate pass has to fetch it before it can run." : "."),
+            title: "Transcription is not downloaded yet",
+            detail: "\(LocalTranscriber.current.downloadSizeText), once. Until it is here, "
+                + "meetings are recorded but not transcribed.",
             fix: .downloadModels
         )]
     }
@@ -92,7 +92,7 @@ enum Prerequisites {
             return [Prerequisite(
                 id: "cli",
                 title: "The meetings command is not installed",
-                detail: "This command will not be found until the CLI is linked into your PATH.",
+                detail: "Nothing will find this command until the tool is installed.",
                 fix: .installCLI
             )]
         }

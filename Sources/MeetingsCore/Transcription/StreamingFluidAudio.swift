@@ -30,8 +30,8 @@ public actor FluidAudioStreamingTranscriber: StreamingTranscriber {
 
     /// Which streaming checkpoint this instance runs. Everything below that used to be a constant of
     /// the 320 ms EOU model — the cache directory, the decode-progress arithmetic, the wait before a
-    /// word is called finished — is derived from it, so a new tier is a new case in ``Backend`` and
-    /// a row in ``LocalTranscriptionOption/all``, not a fork of this actor.
+    /// word is called finished — is derived from it, so a new tier is a new case in ``Backend`` and a
+    /// new ``LocalTranscriber``, not a fork of this actor.
     private nonisolated let variant: StreamingModelVariant
     private let backend: Backend
     private var started = false
@@ -123,10 +123,11 @@ public actor FluidAudioStreamingTranscriber: StreamingTranscriber {
         // Existence of the *entry* is not completeness. Three of the four required entries are
         // `.mlmodelc` **directories**, and FluidAudio's `ModelHub` downloads their constituent
         // files straight into the final path — so the first file to land makes the directory exist
-        // and this returns true for a download that is a fraction done. `FitRunner.bounded` cancels
-        // downloads mid-flight, so it is reachable rather than theoretical, and what follows is
-        // onboarding completing, `modelsReady()` saying yes, and the first `start(channel:)` either
-        // failing or re-fetching ~600 MB at the moment somebody pressed record.
+        // and this returns true for a download that is a fraction done. A download cancelled
+        // mid-flight leaves exactly that shape, so it is reachable rather than theoretical, and what
+        // follows is onboarding completing, `modelsReady()` saying yes, and the first
+        // `start(channel:)` either failing or re-fetching the whole model at the moment somebody
+        // pressed record.
         //
         // `coremldata.bin` is the marker, and it is FluidAudio's own: `ModelCache
         // .validateCompiledModelLayout` — the check its loader runs before opening a compiled model

@@ -70,20 +70,29 @@ public struct VocabularyBiasingReport: Sendable, Hashable {
     }
 }
 
-/// Custom vocabulary on the batch pass, assembled by hand because FluidAudio does not
-/// expose it as a transcription argument. There is no `transcribe(_:customVocabulary:)`: on the TDT
-/// batch path the caller runs the pipeline itself — CTC keyword spotter → rescorer →
-/// `ctcTokenRescore` — as a post-process over the finished transcript.
+/// Custom vocabulary over a finished transcript, assembled by hand because FluidAudio does not
+/// expose it as a transcription argument. There is no `transcribe(_:customVocabulary:)`: the caller
+/// runs the pipeline itself — CTC keyword spotter → rescorer → `ctcTokenRescore` — as a post-process
+/// over text that has already been recognised.
 ///
-/// It needs a second model, `parakeet-ctc-110m-coreml`, ~97.5 MB on top of the ~600 MB TDT bundle.
-/// That is why nothing here happens until a pass actually has terms in effect: a user who never
-/// added a term must never wait for it, and onboarding must never fetch it.
+/// It needs a second model, `parakeet-ctc-110m-coreml`, ~97.5 MB on top of the transcriber's own
+/// download. That is why nothing here happens until a pass actually has terms in effect: a user who
+/// never added a term must never wait for it, and onboarding must never fetch it.
 ///
-/// The live pass is deliberately left alone. FluidAudio's streaming vocabulary support costs a
-/// second full CTC encoder pass over every confirmed 15-second window and roughly doubles ASR peak
-/// memory, and its own docs call streaming rescoring accuracy "Reduced". This trade was
-/// authorised from the start: live stays approximate, the batch pass fixes it.
+/// The live pass is deliberately left alone — corrections arrive when the meeting stops, not while
+/// it runs. FluidAudio's streaming vocabulary support costs a second full CTC encoder pass over
+/// every confirmed 15-second window and roughly doubles ASR peak memory, and its own docs call
+/// streaming rescoring accuracy "Reduced". This trade was authorised from the start: live stays
+/// approximate, and the pass on stop fixes it.
 actor VocabularyBiasing {
+    /// One per process, because what it holds belongs to the process rather than to a caller: the
+    /// ~97.5 MB CTC model, the tokenizer, the memo of a load that failed, and the rescorer built for
+    /// the current term list. Both callers — ``StreamingFileEngine`` and the promote-the-live-rows
+    /// branch of ``TranscriptionService`` — can run in the same session (import one meeting, stop
+    /// another), and an instance each meant loading the same 97.5 MB twice and re-attempting a
+    /// failed download that the other had already given up on.
+    static let shared = VocabularyBiasing()
+
     /// FluidAudio skips terms below `minTermLength` without a word, and a two-letter term is a false
     /// positive generator anyway. Drop them here so a report never claims a term is in effect when
     /// the library is about to ignore it.
@@ -177,33 +186,50 @@ actor VocabularyBiasing {
 
     /// Rescore a finished transcript against the terms in effect.
     ///
+    /// **Engine-agnostic on purpose.** This used to take FluidAudio's `ASRResult`, which only the
+    /// deleted Parakeet TDT batch engine ever produced — so the moment the app went to one streaming
+    /// model for everything, the whole Vocabulary settings tab silently stopped doing anything at
+    /// all. What it takes now is what every path in this app already has: timed segments, and the
+    /// samples they were recognised from. ``StreamingFileEngine`` hands over what it has just
+    /// recognised; the promote-the-live-rows branch of
+    /// ``TranscriptionService/runBatchPass(meetingID:progress:)`` hands over the rows the live pane
+    /// wrote, which is what keeps a *recorded* meeting getting its jargon corrected.
+    ///
     /// Never throws. Every failure here — no model, no network, a spotter that cannot read the audio
-    /// — comes back as an unbiased result and a reason, because a transcript with mangled jargon
-    /// beats no transcript at all.
+    /// — comes back as the segments it was given plus a reason, because a transcript with mangled
+    /// jargon beats no transcript at all.
+    ///
+    /// Segmentation is preserved rather than rebuilt: only the *text* of a segment changes, and its
+    /// start and end are the ones it arrived with. Regrouping the corrected words through
+    /// ``EngineSegment/grouped(words:silenceGapMs:maxWords:)`` was the alternative and it is worse —
+    /// a correction that merges two heard words into one shortens the word list, so phrase boundaries
+    /// would shift under notes already anchored to them, buying nothing a reader would notice.
     func apply(
-        to result: ASRResult,
+        to segments: [EngineSegment],
         samples: [Float],
         entries: [Entry],
         progress: @Sendable (Double) -> Void
-    ) async -> (result: ASRResult, report: VocabularyBiasingReport) {
+    ) async -> (segments: [EngineSegment], report: VocabularyBiasingReport) {
         var report = VocabularyBiasingReport(terms: entries.map(\.text))
-        guard !entries.isEmpty else { return (result, report) }
+        guard !entries.isEmpty else { return (segments, report) }
+
+        let split = Self.words(in: segments)
+        guard !split.words.isEmpty else {
+            report.unavailable = "the transcript had no words to correct"
+            return (segments, report)
+        }
 
         let ready: Prepared
         do {
             ready = try await prepare(entries, progress: progress)
         } catch {
             report.unavailable = "the vocabulary model could not be loaded (\(error))"
-            return (result, report)
+            return (segments, report)
         }
 
         guard !ready.context.terms.isEmpty else {
             report.unavailable = "none of the terms could be tokenised for the vocabulary model"
-            return (result, report)
-        }
-        guard let tokenTimings = result.tokenTimings, !tokenTimings.isEmpty else {
-            report.unavailable = "the transcript came back without token timings"
-            return (result, report)
+            return (segments, report)
         }
 
         do {
@@ -214,19 +240,22 @@ actor VocabularyBiasing {
             )
             guard !spotted.logProbs.isEmpty else {
                 report.unavailable = "the vocabulary model produced no frames for this audio"
-                return (result, report)
+                return (segments, report)
             }
             // FluidAudio's own tuned numbers, by vocabulary size. `ctcTokenRescore`'s parameter
             // defaults are *not* these — they are the untuned 3.0/0.50 — so they are passed
             // explicitly, exactly as FluidAudio's own CLI does.
             let tuning = ContextBiasingConstants.rescorerConfig(forVocabSize: ready.context.terms.count)
             let output = ready.rescorer.ctcTokenRescore(
-                transcript: result.text,
-                tokenTimings: tokenTimings,
+                transcript: split.words.map(\.text).joined(separator: " "),
+                tokenTimings: split.words.map(Self.tokenTiming),
                 logProbs: spotted.logProbs,
                 frameDuration: spotted.frameDuration,
                 cbw: tuning.cbw,
-                marginSeconds: ContextBiasingConstants.defaultMarginSeconds,
+                // Widened by however far a word's timing can be from the word: see
+                // ``words(in:)``. Left at the 0.10 s default, a term inside a multi-word segment
+                // would be searched for in the wrong tenth of a second and never found.
+                marginSeconds: ContextBiasingConstants.defaultMarginSeconds + split.slackSeconds,
                 minSimilarity: tuning.minSimilarity
             )
             report.detected = unique(spotted.detections.map(\.term.text))
@@ -238,15 +267,116 @@ actor VocabularyBiasing {
                     )
                 }
             }
-            return (
-                result.withRescoring(
-                    text: output.text, detected: report.detected, applied: report.applied
-                ),
-                report
-            )
+            // Nothing to put back on the clock, so the segments are handed back exactly as they
+            // arrived — same rows, same ids downstream, no reassembly to get wrong.
+            guard !report.replacements.isEmpty else { return (segments, report) }
+
+            // What lands is the truth: `applied` is set from the corrections that were actually
+            // placed, never from what the rescorer wished for.
+            let realigned = Self.realign(split.words, applying: report.replacements)
+            report.applied = realigned.applied
+            let lost = report.replacements.count - realigned.placed
+            if lost > 0 {
+                report.unavailable = "\(lost) of \(report.replacements.count) correction(s) could "
+                    + "not be matched to the word timings and were left uncorrected"
+            }
+            return (Self.reassemble(realigned.words, into: segments), report)
         } catch {
             report.unavailable = "the vocabulary pass failed (\(error))"
-            return (result, report)
+            return (segments, report)
+        }
+    }
+
+    /// The segments as one word list, and how far a word's timing can be from the word itself.
+    ///
+    /// A segment is a phrase — "the rig is free on Thursday", one start and one end — and both the
+    /// rescorer and ``realign(_:applying:)`` work in words, so the span has to be shared out. It is
+    /// shared out evenly, which assumes even pacing and is therefore wrong by some amount inside
+    /// every multi-word segment.
+    ///
+    /// That amount is returned rather than shrugged at, because the rescorer only searches the CTC
+    /// frames within `marginSeconds` of a word's timing and the default margin is 0.10 s — narrower
+    /// than the error. The bound is the widest interpolated slice: no word can be further from its
+    /// slice than the slice is wide, under the even-pacing assumption.
+    ///
+    /// A segment that is already one word contributes no slack, because its timing is not
+    /// interpolated at all — it is the recogniser's own. Capped at one second so a pathological
+    /// 60-word segment cannot open a window wide enough for a term to match almost anything.
+    private static func words(
+        in segments: [EngineSegment]
+    ) -> (words: [EngineSegment], slackSeconds: Double) {
+        var words: [EngineSegment] = []
+        var slackMs = 0
+        for segment in segments {
+            let pieces = segment.text.split(separator: " ").map(String.init)
+            guard pieces.count > 1 else {
+                if let only = pieces.first {
+                    words.append(EngineSegment(
+                        startMs: segment.startMs, endMs: segment.endMs, text: only))
+                }
+                continue
+            }
+            let span = max(0, segment.endMs - segment.startMs)
+            slackMs = max(slackMs, span / pieces.count)
+            for (index, piece) in pieces.enumerated() {
+                words.append(EngineSegment(
+                    startMs: segment.startMs + span * index / pieces.count,
+                    endMs: segment.startMs + span * (index + 1) / pieces.count,
+                    text: piece
+                ))
+            }
+        }
+        return (words, min(1, Double(slackMs) / 1000))
+    }
+
+    /// One synthesised `TokenTiming` per word.
+    ///
+    /// Verified against FluidAudio 0.15.5 rather than assumed, because synthesising a library's
+    /// input type is only safe if you know which fields it reads: `ctcTokenRescore` reduces
+    /// `tokenTimings` to `[WordTiming]` through `buildWordTimings(from:)` on its first line and never
+    /// reads `tokenId` or `confidence` at all, and `buildWordTimings` starts a new word on the
+    /// SentencePiece marker `▁`. So one marker-prefixed token per word gives a 1:1 word mapping,
+    /// which is exactly what ``realign(_:applying:)`` needs afterwards to put the corrections back on
+    /// the clock.
+    private static func tokenTiming(_ word: EngineSegment) -> TokenTiming {
+        TokenTiming(
+            token: "\u{2581}" + word.text,
+            tokenId: 0,
+            startTime: Double(word.startMs) / 1000,
+            endTime: Double(word.endMs) / 1000,
+            confidence: 1
+        )
+    }
+
+    /// Put the corrected words back into the segments they came out of.
+    ///
+    /// Every word's timing came from inside exactly one segment, so the segment a word belongs to is
+    /// the last one that starts at or before it. Both lists ascend — one file, one channel, one pass
+    /// — so this is a single walk rather than a search per word.
+    ///
+    /// A replacement that spanned a segment boundary lands wholly in the earlier segment, because
+    /// that is where its span starts. A segment left with no words at all is dropped rather than kept
+    /// as an empty row: it can only happen when every one of its words was eaten by such a
+    /// replacement, and an empty transcript row is noise in every surface that renders one.
+    private static func reassemble(
+        _ words: [EngineSegment], into segments: [EngineSegment]
+    ) -> [EngineSegment] {
+        guard !segments.isEmpty else { return [] }
+        var pieces = [[String]](repeating: [], count: segments.count)
+        var index = 0
+        for word in words {
+            while index + 1 < segments.count, segments[index + 1].startMs <= word.startMs {
+                index += 1
+            }
+            pieces[index].append(word.text)
+        }
+        return segments.indices.compactMap { position in
+            guard !pieces[position].isEmpty else { return nil }
+            return EngineSegment(
+                startMs: segments[position].startMs,
+                endMs: segments[position].endMs,
+                text: pieces[position].joined(separator: " ")
+            )
         }
     }
 

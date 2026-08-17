@@ -5,9 +5,9 @@ import Testing
 
 /// The proof that custom vocabulary is not a no-op, run against the real recogniser on real audio.
 ///
-/// It is off unless `MEETINGS_VOCAB_AB` names a WAV, because it needs the ~600 MB TDT bundle, a
-/// second ~97.5 MB CTC model and several seconds of Neural Engine time — none of which belongs in a
-/// suite that runs on every save. The audio is generated silently:
+/// It is off unless `MEETINGS_VOCAB_AB` names a WAV, because it needs the local transcriber's own
+/// download, a second ~97.5 MB CTC model and several seconds of Neural Engine time — none of which
+/// belongs in a suite that runs on every save. The audio is generated silently:
 ///
 /// ```
 /// say -o /tmp/vocab-ab.wav --data-format=LEI16@16000 "Burst number one about the ptychography plan."
@@ -24,7 +24,7 @@ import Testing
     @Test(.enabled(if: audio != nil))
     func theTermTheRecogniserGetsWrongIsRightOnceItIsInTheVocabulary() async throws {
         let url = URL(fileURLWithPath: try #require(Self.audio))
-        let engine = FluidAudioBatchEngine()
+        let engine = StreamingFileEngine(variant: LocalTranscriber.current.variant)
         try await engine.prepare(progress: { _ in })
 
         let before = try await engine.transcribe(url, vocabulary: [], progress: { _ in })
@@ -74,7 +74,7 @@ import Testing
     func aMultiWordTermLandsAndDoesNotCostTheSingleWordTermBesideIt() async throws {
         let path = try #require(ProcessInfo.processInfo.environment["MEETINGS_VOCAB_AB_MULTIWORD"])
         let url = URL(fileURLWithPath: path)
-        let engine = FluidAudioBatchEngine()
+        let engine = StreamingFileEngine(variant: LocalTranscriber.current.variant)
         try await engine.prepare(progress: { _ in })
 
         let before = try await engine.transcribe(url, vocabulary: [], progress: { _ in })
@@ -118,7 +118,7 @@ import Testing
     func aShortTermDoesNotRewriteAnOrdinaryWordItMerelyRhymesWith() async throws {
         let path = try #require(ProcessInfo.processInfo.environment["MEETINGS_VOCAB_AB_OVERFIRE"])
         let url = URL(fileURLWithPath: path)
-        let engine = FluidAudioBatchEngine()
+        let engine = StreamingFileEngine(variant: LocalTranscriber.current.variant)
         try await engine.prepare(progress: { _ in })
 
         let before = try await engine.transcribe(url, vocabulary: [], progress: { _ in })
@@ -158,7 +158,7 @@ import Testing
     func aVocabularyOfKnownOverFirersDoesNotEatTheTranscript() async throws {
         let path = try #require(ProcessInfo.processInfo.environment["MEETINGS_VOCAB_AB_DISTRACTOR"])
         let url = URL(fileURLWithPath: path)
-        let engine = FluidAudioBatchEngine()
+        let engine = StreamingFileEngine(variant: LocalTranscriber.current.variant)
         try await engine.prepare(progress: { _ in })
 
         let terms = ["Andre", "Snyk", "CRAN", "Wyost"]

@@ -18,7 +18,7 @@ struct RobustProbe {
         process.waitUntilExit()
     }
 
-    /// One meeting, one real mic.wav, a real FluidAudioBatchEngine. Prints the outcome.
+    /// One meeting, one real mic.wav, the real local engine. Prints the outcome.
     @Test func batchPassAgainstWhateverCacheIsOnDisk() async throws {
         let directory = try TestStore.makeDirectory()
         defer { TestStore.remove(directory) }
@@ -69,7 +69,7 @@ struct RobustProbe {
     @Test func pathologicalAudio() async throws {
         let directory = try TestStore.makeDirectory()
         defer { TestStore.remove(directory) }
-        let engine = FluidAudioBatchEngine()
+        let engine = StreamingFileEngine(variant: LocalTranscriber.current.variant)
 
         var cases: [(String, URL)] = []
 
@@ -298,7 +298,7 @@ struct RobustProbe {
     @Test func longAndVanishingAudio() async throws {
         let directory = try TestStore.makeDirectory()
         defer { TestStore.remove(directory) }
-        let engine = FluidAudioBatchEngine()
+        let engine = StreamingFileEngine(variant: LocalTranscriber.current.variant)
         try await engine.prepare(progress: { _ in })
 
         let long = directory.appendingPathComponent("long.wav")
