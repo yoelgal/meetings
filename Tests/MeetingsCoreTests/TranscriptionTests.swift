@@ -200,6 +200,43 @@ private struct StubEngine: TranscriptionEngine, Sendable {
         #expect(try store.meeting(id: meeting.id)?.state == .ready)
     }
 
+    /// **A channel whose every row is a correction is finished, not re-transcribed.**
+    ///
+    /// The recovery branch above keys on "nothing to promote", and the rows it counts are the
+    /// *unedited* ones — so it also matched a channel holding nothing but text the user typed. That
+    /// state is reachable: a batch pass that failed on one channel leaves its `.live` rows in place,
+    /// `meetings transcript edit` is legal at `ready`, and `SKILL.md` hands an agent that surface. The
+    /// channel would then be transcribed from disk and the machine's rows inserted beside the
+    /// corrections, because `replaceLiveSegments` drops a new segment only where a correction
+    /// *wholly* covers it — so any recognised span whose boundaries differ survives and the same
+    /// speech is in the transcript twice.
+    ///
+    /// The recogniser's span deliberately overhangs the correction on both sides (900–2600 against
+    /// 1 000–2 400). `replaceLiveSegments`' rule 4 drops a new segment only where a correction
+    /// *wholly* covers it — `new.start >= edited.start && new.end <= edited.end` — so a span tucked
+    /// inside the correction is dropped anyway and would make this test pass under the very bug it
+    /// exists to catch. An overhanging span is the one that survives, which is what makes the
+    /// duplication observable.
+    @Test func aChannelHoldingOnlyCorrectionsIsNotReTranscribed() async throws {
+        let meeting = try store.createMeeting(TestStore.meeting(state: .recording))
+        try writeAudio(meetingID: meeting.id, names: ["mic.wav", "system.wav"])
+        _ = try store.insertSegment(TestStore.segment(
+            meetingID: meeting.id, from: 0, to: 900, text: "rough live mic text", pass: .live))
+        _ = try store.insertSegment(TestStore.segment(
+            meetingID: meeting.id, channel: .system, from: 1_000, to: 2_400,
+            text: "Thursday onwards, yes.", pass: .live, edited: true))
+
+        let engine = StubEngine(results: [
+            "system.wav": [EngineSegment(startMs: 900, endMs: 2_600, text: "thursday onwards yes")],
+        ])
+        try await localService(engine).runBatchPass(meetingID: meeting.id, progress: { _ in })
+
+        let system = try store.segments(meetingID: meeting.id).filter { $0.channel == .system }
+        #expect(system.map(\.text) == ["Thursday onwards, yes."],
+                "the correction stands alone; the recogniser's version must not be added beside it")
+        #expect(system.allSatisfy { $0.edited }, "and it is still marked as the user's own text")
+    }
+
     /// **A channel with rows and no file is not promoted twice.**
     ///
     /// Purged or manually removed audio leaves a channel with transcript rows and no WAV, and its

@@ -441,6 +441,10 @@ public actor TranscriptionService {
         // `replaceLiveSegments` leaves it in place — a correction somebody typed is the one thing in
         // the transcript that no recogniser gets to overrule.
         let unedited = Dictionary(grouping: stored.filter { !$0.edited }, by: \.channel)
+        // Which channels have *any* row at all, edited or not. The recovery branch below needs this
+        // rather than `unedited`, because "no unedited rows" and "no rows" are not the same channel:
+        // one produced nothing, the other produced nothing but corrections the user typed.
+        let channelsWithRows = Set(stored.map(\.channel))
         let vocabulary = (try? store.vocabularyInEffect(meetingID: meetingID)) ?? []
         let entries = VocabularyBiasing.entries(for: vocabulary)
         progress(0.1)
@@ -480,7 +484,15 @@ public actor TranscriptionService {
             // CLI or an export saying a channel was missing — precisely the silent half-transcript
             // this pass's contract says it will never produce. Transcribing the file is what the
             // retired batch pass did for this case, and it is still the right answer.
-            if rows.isEmpty {
+            // `channelsWithRows`, not just `rows.isEmpty`. Keyed on the unedited rows alone this also
+            // fired for a channel whose every live row is a user correction — a real state: a batch
+            // pass that failed on one channel leaves its `.live` rows in place, and `meetings
+            // transcript edit` is legal at `ready`, so somebody can correct all of them. That channel
+            // would then be re-transcribed and the machine's rows inserted beside the corrections,
+            // because `replaceLiveSegments` drops a new segment only where a correction *wholly*
+            // covers it — so any recognised span whose boundaries differ survives, and the same
+            // speech appears twice. A channel that has said its piece, however edited, is done.
+            if rows.isEmpty, !channelsWithRows.contains(file.channel) {
                 do {
                     let engine = try resolvedEngine()
                     // On a fresh install this is the download, and the promote path is normally the
