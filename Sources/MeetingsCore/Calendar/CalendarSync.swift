@@ -37,9 +37,18 @@ public struct CalendarSync: Sendable {
     ///
     /// Floored at one day. A stored `0` — or a value that is not a number at all — would otherwise
     /// mean an Upcoming list that is empty for a reason nothing on screen explains.
+    ///
+    /// The fallback is ``SettingKey/defaultValue`` parsed, never a literal written out again here.
+    /// It used to read `stored ?? 7`, a second independent number beside the `"14"` that
+    /// ``SettingKey/defaults`` declares. ``MeetingStore/setting(_:)`` already substitutes the
+    /// declared default for an absent row, so the ordinary path resolved 14 and the 7 surfaced only
+    /// for a row that was present but non-numeric — a hand-edited or corrupted store then got a
+    /// seven-day window and a seven-day `meetings upcoming` horizon while Settings, the docs and
+    /// `meetings config get` all said 14, with nothing on screen accounting for the difference.
     public static func lookAheadDays(in store: MeetingStore) -> Int {
         let stored = (try? store.settingInt(.calendarLookAheadDays)) ?? nil
-        return max(1, stored ?? 7)
+        let declared = SettingKey.calendarLookAheadDays.defaultValue.flatMap(Int.init)
+        return max(1, stored ?? declared ?? 1)
     }
 
     /// Returns the events the window covers, which is what a caller needs to show a Join link beside

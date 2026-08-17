@@ -326,6 +326,12 @@ public actor TranscriptionService {
         // nothing, reached `ready`, and showed an empty transcript with no error anywhere. The
         // condition is the presence of live rows, not the engine's identity, because those are the
         // two genuinely different situations the file on disk cannot tell you apart.
+        //
+        // The gate is per *meeting*, and the same question is asked again per *channel* inside
+        // ``promoteLiveSegments(meetingID:stored:files:progress:)``: a meeting can be streamed on one
+        // channel and not the other, because each channel gets its own live transcriber and each one
+        // can fail on its own. Both places answer it by transcribing the file, which is why they
+        // answer it with the same function.
         if case .local = plan() {
             let stored = try store.segments(meetingID: meetingID)
             if stored.contains(where: { $0.pass == .live }) {
@@ -353,32 +359,17 @@ public actor TranscriptionService {
             let base = 0.1 + 0.9 * Double(index) / Double(files.count)
             let span = 0.9 / Double(files.count)
             do {
-                // The launch sweep is the general guarantee; this is the specific one. A WAV whose
-                // header was never finalised reads as zero frames, and a batch pass that read it
-                // that way would "succeed" with an empty transcript and delete the live rows that
-                // were the only record. Repairing the file we are about to open means that cannot
-                // happen even in the session that crashed, with no restart in between. Costs one
-                // header read on a healthy file and writes nothing.
-                try? WAVRepair.repair(at: file.url)
-                let recognised = try await engine.transcribe(
-                    file.url,
+                let outcome = try await transcribeChannelFile(
+                    meetingID: meetingID,
+                    channel: file.channel,
+                    url: file.url,
+                    engine: engine,
                     vocabulary: vocabulary,
-                    progress: { progress(base + span * min(1, max(0, $0))) }
+                    progress: { progress(base + span * $0) }
                 )
-                if let report = await engine.vocabularyReport() {
-                    reports.append((file.channel, report))
-                }
+                if let report = outcome.report { reports.append((file.channel, report)) }
                 transcribed.insert(file.channel)
-                segments += recognised.map {
-                    TranscriptSegment(
-                        meetingID: meetingID,
-                        channel: file.channel,
-                        tStartMs: $0.startMs,
-                        tEndMs: $0.endMs,
-                        text: $0.text,
-                        pass: .final
-                    )
-                }
+                segments += outcome.segments
             } catch {
                 failures.append((file.channel, error))
             }
@@ -450,20 +441,76 @@ public actor TranscriptionService {
         // `replaceLiveSegments` leaves it in place — a correction somebody typed is the one thing in
         // the transcript that no recogniser gets to overrule.
         let unedited = Dictionary(grouping: stored.filter { !$0.edited }, by: \.channel)
-        let entries = VocabularyBiasing.entries(for:
-            (try? store.vocabularyInEffect(meetingID: meetingID)) ?? [])
+        let vocabulary = (try? store.vocabularyInEffect(meetingID: meetingID)) ?? []
+        let entries = VocabularyBiasing.entries(for: vocabulary)
         progress(0.1)
 
         var promoted: [TranscriptSegment] = []
         var reports: [(channel: Channel, report: VocabularyBiasingReport)] = []
+        // Every channel this pass contributes rows for, which is exactly the set
+        // `replaceLiveSegments` has to be handed. It deletes the unedited rows of the channels it is
+        // given and no others, so a channel whose rows are in `promoted` but not in here has its
+        // originals kept *and* the promoted copies inserted beside them — every line of that channel
+        // twice. The set used to be `Set(files.map(\.channel))`, which is the one set that is wrong:
+        // it names the channels with audio rather than the channels being written, and the fileless
+        // branch below writes rows for a channel with no audio by design. Only `AppModel` hid it, by
+        // filtering on `pass == .final`; `meetings show`, `meetings transcript`, the markdown export,
+        // the bundle and the text sent to a cloud summariser all read the rows unfiltered and saw
+        // the whole conversation duplicated.
+        var written: Set<Channel> = []
+        // Channels this pass re-read from disk, so their stale transcription warning comes down.
+        var retranscribed: Set<Channel> = []
+        var failures: [(channel: Channel, error: Error)] = []
         for (index, file) in files.enumerated() {
             // Ascending, because that is what putting the corrections back relies on: a correction
             // is placed by where its span starts, so rows out of order would land a fix in the
             // wrong phrase. The store returns them in order; this does not depend on that.
             let rows = (unedited[file.channel] ?? []).sorted { $0.tStartMs < $1.tStartMs }
-            guard !rows.isEmpty else { continue }
             let base = 0.1 + 0.9 * Double(index) / Double(files.count)
             let span = 0.9 / Double(files.count)
+
+            // A channel with audio on disk and nothing to promote is a channel whose live recogniser
+            // never ran, and its file is the only record of that side of the meeting. This branch
+            // used to `continue`, while the channel was still handed to `replaceLiveSegments` below
+            // — which deleted its unedited rows and inserted nothing. That is reachable per channel:
+            // `RecordingController.attachLive` builds one transcriber per channel and handles each
+            // `start(channel:)` failure independently, reporting only to an in-memory flag that
+            // never reaches the store. So a meeting whose system-audio recogniser failed to load
+            // reached `ready` holding your own voice and nobody else's, with nothing in the app, the
+            // CLI or an export saying a channel was missing — precisely the silent half-transcript
+            // this pass's contract says it will never produce. Transcribing the file is what the
+            // retired batch pass did for this case, and it is still the right answer.
+            if rows.isEmpty {
+                do {
+                    let engine = try resolvedEngine()
+                    // On a fresh install this is the download, and the promote path is normally the
+                    // one path that never pays for it — so it is charged here, inside this channel's
+                    // slice of the bar, rather than up front where a meeting that needs no engine
+                    // would wait for it too.
+                    try await engine.prepare(progress: { progress(base + span * 0.1 * $0) })
+                    let outcome = try await transcribeChannelFile(
+                        meetingID: meetingID,
+                        channel: file.channel,
+                        url: file.url,
+                        engine: engine,
+                        vocabulary: vocabulary,
+                        progress: { progress(base + span * (0.1 + 0.9 * $0)) }
+                    )
+                    if let report = outcome.report { reports.append((file.channel, report)) }
+                    promoted += outcome.segments
+                    written.insert(file.channel)
+                    retranscribed.insert(file.channel)
+                } catch {
+                    // The other half of "never silently". The meeting still reaches `ready` on the
+                    // strength of the channel that did stream, and the reason this one is absent is
+                    // in `transcript_issues`, which is what makes the half transcript legible as a
+                    // half transcript rather than as a finished one.
+                    failures.append((file.channel, error))
+                }
+                progress(base + span)
+                continue
+            }
+
             let outcome = await biased(
                 rows.map { EngineSegment(startMs: $0.tStartMs, endMs: $0.tEndMs, text: $0.text) },
                 against: file.url,
@@ -476,6 +523,7 @@ public actor TranscriptionService {
                     meetingID: meetingID, channel: file.channel, tStartMs: $0.startMs,
                     tEndMs: $0.endMs, text: $0.text, pass: .final)
             }
+            written.insert(file.channel)
             progress(base + span)
         }
         // A channel with rows and no file on disk — purged audio, or a capture that never wrote —
@@ -487,16 +535,28 @@ public actor TranscriptionService {
                     meetingID: meetingID, channel: channel, tStartMs: $0.tStartMs,
                     tEndMs: $0.tEndMs, text: $0.text, pass: .final)
             }
+            written.insert(channel)
         }
         promoted.sort { ($0.tStartMs, $0.channel.rawValue) < ($1.tStartMs, $1.channel.rawValue) }
         lastVocabularyReport = VocabularyBiasingReport.union(reports.map(\.report))
 
-        try store.replaceLiveSegments(
-            meetingID: meetingID, with: promoted, channels: Set(files.map(\.channel)))
+        try store.replaceLiveSegments(meetingID: meetingID, with: promoted, channels: written)
 
-        // Only the vocabulary verdict is this path's to write. A capture failure recorded while the
-        // meeting was being recorded is still true afterwards — nothing here re-read that channel's
-        // audio to find out otherwise.
+        // A capture failure recorded while the meeting was being recorded is still true afterwards,
+        // and promoting a row does not re-read the audio that would say otherwise — so the only
+        // transcription verdicts this path touches are for the channels it actually re-read from
+        // disk. For those it behaves exactly like the file pass: a re-run that finally opens a
+        // repaired file has to take last week's warning down with it.
+        for channel in retranscribed {
+            try store.clearTranscriptIssue(meetingID: meetingID, channel: channel)
+        }
+        for failure in failures {
+            try store.recordTranscriptIssue(TranscriptIssue(
+                meetingID: meetingID,
+                channel: failure.channel,
+                reason: String(describing: failure.error)
+            ))
+        }
         for (channel, report) in reports {
             try store.clearTranscriptIssue(meetingID: meetingID, channel: channel, kind: .vocabulary)
             guard let why = report.unavailable else { continue }
@@ -505,6 +565,53 @@ public actor TranscriptionService {
             ))
         }
         progress(1)
+    }
+
+    /// Transcribe one channel's file and hand back rows the store can take, plus whatever the
+    /// vocabulary pass had to say.
+    ///
+    /// One function, reached from both branches of ``runBatchPass(meetingID:progress:)``, because
+    /// they used to be a branch and half a branch. The file branch transcribed every channel it
+    /// found; the promote branch transcribed none, and simply skipped a channel whose live
+    /// recogniser had produced nothing — while still handing that channel to `replaceLiveSegments`,
+    /// which deleted its rows and inserted nothing. Converging on one function is what stops the two
+    /// drifting again: the header repair, the channel tagging, the vocabulary verdict and the
+    /// `.final` pass label are decided once, so recovery on the promote path cannot quietly become a
+    /// second, weaker version of the same thing.
+    ///
+    /// Throws whatever the engine threw, deliberately: both callers turn that into a
+    /// ``TranscriptIssue`` for the channel rather than failing the whole meeting.
+    private func transcribeChannelFile(
+        meetingID: String,
+        channel: Channel,
+        url: URL,
+        engine: TranscriptionEngine,
+        vocabulary: [VocabularyTerm],
+        progress: @Sendable @escaping (Double) -> Void
+    ) async throws -> (segments: [TranscriptSegment], report: VocabularyBiasingReport?) {
+        // The launch sweep is the general guarantee; this is the specific one. A WAV whose header
+        // was never finalised reads as zero frames, and a batch pass that read it that way would
+        // "succeed" with an empty transcript and delete the live rows that were the only record.
+        // Repairing the file we are about to open means that cannot happen even in the session that
+        // crashed, with no restart in between. Costs one header read on a healthy file and writes
+        // nothing.
+        try? WAVRepair.repair(at: url)
+        let recognised = try await engine.transcribe(
+            url,
+            vocabulary: vocabulary,
+            progress: { progress(min(1, max(0, $0))) }
+        )
+        let rows = recognised.map {
+            TranscriptSegment(
+                meetingID: meetingID,
+                channel: channel,
+                tStartMs: $0.startMs,
+                tEndMs: $0.endMs,
+                text: $0.text,
+                pass: .final
+            )
+        }
+        return (rows, await engine.vocabularyReport())
     }
 
     /// One channel's segments with the vocabulary applied, and what the pass did.

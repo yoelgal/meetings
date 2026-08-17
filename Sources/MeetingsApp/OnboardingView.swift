@@ -593,17 +593,26 @@ private struct ModeStep: View {
     let model: AppModel
 
     @State private var mode = AIMode.localAgent
-    /// The identity of the shared command fields, bumped when ``prefillAgent`` rewrites the rows
-    /// underneath them.
+    /// Bumped when ``prefillAgent`` rewrites the command rows underneath the shared fields, to ask
+    /// them to read the rows again.
     ///
     /// ``LocalAgentCommandFields`` seeds its command text *and* its agent picker from the store in
     /// `onAppear` and does not read them again, which is right for a pane being typed into. It is
-    /// also a race with this step: `mode` starts on `.localAgent`, so the panel is already on screen
-    /// during the same pass that writes the detected agent's commands, and child and parent
-    /// `onAppear` ordering is not something to rely on. A new identity remounts the shared view
-    /// after the write, which re-seeds both — so the picker lands on the agent this Mac has rather
-    /// than on whatever the row said a moment earlier.
-    @State private var commandFields = 0
+    /// also a race with this step: `mode` starts on `.localAgent`, so the panel is already on
+    /// screen during the same pass that writes the detected agent's commands, and child and parent
+    /// `onAppear` ordering is not something to rely on.
+    ///
+    /// This was a `.id()` remount, which is the wrong tool for it. A new identity does not re-seed
+    /// a view, it destroys and rebuilds one — taking the fields' other `@State` with it, including
+    /// the `checking` flag and the `result` of "Check the command". Prefill lands up to two seconds
+    /// after the panel appears, because it awaits a PATH resolution bounded at two seconds, so it
+    /// routinely fell inside a check the user had just started: the spinner disappeared, the button
+    /// re-enabled, and the verdict was written to a discarded copy of the view and never drawn. For
+    /// the one mode that runs unattended, the control that proves the command works read as broken.
+    ///
+    /// A counter re-seeds the two rows in place and leaves everything else standing, which is the
+    /// same seam ``RemoteTranscriptionFields`` already uses for the same problem.
+    @State private var commandFieldsReload = 0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -628,8 +637,7 @@ private struct ModeStep: View {
                 // fills in, so this page and Settings ▸ AI cannot end up with two pickers over one
                 // settings row disagreeing about which agent is configured.
                 ConfigurationPanel {
-                    LocalAgentCommandFields(store: model.store)
-                        .id(commandFields)
+                    LocalAgentCommandFields(store: model.store, reloadRequested: commandFieldsReload)
                 }
             }
 
@@ -736,7 +744,7 @@ private struct ModeStep: View {
     private func write(_ chosen: AgentPreset) {
         try? model.store.setSetting(.aiLocalAgentRunCommand, chosen.runCommand)
         try? model.store.setSetting(.aiManualPasteCommand, chosen.pasteCommand)
-        commandFields += 1
+        commandFieldsReload += 1
     }
 
     private func select(_ new: AIMode) {

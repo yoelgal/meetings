@@ -114,15 +114,45 @@ public actor StreamingFileEngine: TranscriptionEngine {
     /// 1280 samples is 80 ms at 16 kHz, which is the capture tap's buffer size. Feeding the model
     /// the same chunk size a meeting feeds it means the file path exercises the identical code path,
     /// including the dropped-buffer padding arithmetic, rather than a bulk path nothing else uses.
+    ///
+    /// The feed loop is wrapped because `feed` throws — it propagates from the backend's `append`
+    /// and `processBuffered` — and an early exit used to leak the whole apparatus. Nothing but
+    /// `finish()` calls `continuation.finish()`, so the collector's `for await` never ended; the
+    /// collector task strongly retained the transcriber, the transcriber owned the continuation, and
+    /// no one broke the cycle. `backend.cleanup()` lives in `finish()` too, so the loaded Core ML
+    /// checkpoint — the ~600 MB this whole design exists to download only once — stayed resident.
+    /// `runBatchPass` catches the per-channel error and carries on, so nothing crashed and nothing
+    /// was logged: a queue draining a backlog of unreadable files leaked one suspended task and one
+    /// loaded model per channel until the app was jetsammed. Cancelling ends the iteration (the
+    /// `AsyncStream` iterator honours cancellation) and `finish()` finishes the continuation and
+    /// cleans the manager up, which is what actually releases the model.
     private static func recognise(
         _ samples: [Float],
         variant: StreamingModelVariant,
         progress: @Sendable (Double) -> Void
     ) async throws -> [EngineSegment] {
-        let transcriber = FluidAudioStreamingTranscriber(variant: variant)
-        // `channel` is the live path's label for which capture stream this instance belongs to and
-        // plays no part in recognition; a file is one stream, and the service tags the channel back
-        // on from the file name it read.
+        try await recognise(
+            samples,
+            // `channel` is the live path's label for which capture stream this instance belongs to
+            // and plays no part in recognition; a file is one stream, and the service tags the
+            // channel back on from the file name it read.
+            using: FluidAudioStreamingTranscriber(variant: variant),
+            progress: progress
+        )
+    }
+
+    /// The body, over any ``StreamingTranscriber``.
+    ///
+    /// Split from its one production caller purely as a test seam, and it earns it: the leak
+    /// described above is only reachable when `feed` throws, the real transcriber only throws from a
+    /// loaded Core ML backend, and a checkpoint that large is not a unit test. A stub that throws on
+    /// the second chunk is, and it can be asked afterwards whether `finish()` ran — which is the
+    /// observable that says the model was released rather than left resident.
+    static func recognise(
+        _ samples: [Float],
+        using transcriber: some StreamingTranscriber,
+        progress: @Sendable (Double) -> Void
+    ) async throws -> [EngineSegment] {
         try await transcriber.start(channel: .mic)
 
         let collector = Task { () -> [EngineSegment] in
@@ -131,13 +161,19 @@ public actor StreamingFileEngine: TranscriptionEngine {
             return collected
         }
 
-        var offset = 0
-        while offset < samples.count {
-            let end = min(offset + 1_280, samples.count)
-            try await transcriber.feed(
-                Array(samples[offset..<end]), atMs: offset * 1_000 / 16_000)
-            offset = end
-            progress(Double(offset) / Double(samples.count))
+        do {
+            var offset = 0
+            while offset < samples.count {
+                let end = min(offset + 1_280, samples.count)
+                try await transcriber.feed(
+                    Array(samples[offset..<end]), atMs: offset * 1_000 / 16_000)
+                offset = end
+                progress(Double(offset) / Double(samples.count))
+            }
+        } catch {
+            collector.cancel()
+            await transcriber.finish()
+            throw error
         }
         await transcriber.finish()
         return await collector.value

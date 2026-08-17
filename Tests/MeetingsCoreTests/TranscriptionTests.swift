@@ -153,6 +153,81 @@ private struct StubEngine: TranscriptionEngine, Sendable {
                 "the engine was never asked, so its failure cannot be recorded against a channel")
     }
 
+    /// **A channel with audio and no live rows is transcribed, not deleted.**
+    ///
+    /// One transcriber is built per channel and each `start(channel:)` failure is handled on its
+    /// own, so a meeting can stream the mic and not the system audio. The promote branch skipped the
+    /// channel with no rows and still handed it to `replaceLiveSegments`, which deleted its unedited
+    /// rows and inserted nothing in their place: the meeting reached `ready` holding your own voice
+    /// and nobody else's, with nothing in the app, the CLI or an export saying a channel was gone.
+    @Test func aChannelWithAudioAndNoLiveRowsIsTranscribedRatherThanDropped() async throws {
+        let meeting = try store.createMeeting(TestStore.meeting(state: .recording))
+        try writeAudio(meetingID: meeting.id, names: ["mic.wav", "system.wav"])
+        _ = try store.insertSegment(TestStore.segment(
+            meetingID: meeting.id, from: 0, to: 900, text: "rough live mic text", pass: .live))
+
+        // Only the channel that never streamed is handed to the engine; the mic's rows are promoted.
+        let engine = StubEngine(results: [
+            "system.wav": [EngineSegment(startMs: 1_000, endMs: 2_400, text: "Thursday onwards, yes.")],
+        ])
+        try await localService(engine).runBatchPass(meetingID: meeting.id, progress: { _ in })
+
+        let segments = try store.segments(meetingID: meeting.id)
+        #expect(segments.map(\.channel) == [.mic, .system], "both sides of the call are present")
+        #expect(segments.map(\.text) == ["rough live mic text", "Thursday onwards, yes."])
+        #expect(segments.allSatisfy { $0.pass == .final })
+        #expect(try store.transcriptIssues(meetingID: meeting.id).isEmpty)
+        #expect(try store.meeting(id: meeting.id)?.state == .ready)
+    }
+
+    /// The other outcome for the same channel: nothing could be read off disk either, so the meeting
+    /// still finishes on the strength of the channel that streamed — and says which half is missing.
+    /// Reaching `ready` with a channel absent and a recorded reason is honest; reaching it silently
+    /// is the bug.
+    @Test func aChannelThatCouldNeitherStreamNorBeReadIsRecorded() async throws {
+        let meeting = try store.createMeeting(TestStore.meeting(state: .recording))
+        try writeAudio(meetingID: meeting.id, names: ["mic.wav", "system.wav"])
+        _ = try store.insertSegment(TestStore.segment(
+            meetingID: meeting.id, from: 0, to: 900, text: "rough live mic text", pass: .live))
+
+        try await localService(StubEngine(failing: ["system.wav"]))
+            .runBatchPass(meetingID: meeting.id, progress: { _ in })
+
+        #expect(try store.segments(meetingID: meeting.id).map(\.text) == ["rough live mic text"])
+        let issues = try store.transcriptIssues(meetingID: meeting.id)
+        #expect(issues.map(\.channel) == [.system])
+        #expect(issues[0].sentence.hasPrefix("The system channel could not be transcribed:"))
+        #expect(try store.meeting(id: meeting.id)?.state == .ready)
+    }
+
+    /// **A channel with rows and no file is not promoted twice.**
+    ///
+    /// Purged or manually removed audio leaves a channel with transcript rows and no WAV, and its
+    /// rows are promoted untouched — there is nothing to score their words against. But the channel
+    /// set handed to `replaceLiveSegments` was `Set(files.map(\.channel))`, which is exactly the set
+    /// that excludes it: the delete skipped the channel, the insert did not, and every line of it
+    /// ended up in the store twice. Only the app window hid that, by filtering on `pass == .final`;
+    /// `meetings show`, `meetings transcript`, the markdown export, the bundle and the text sent to a
+    /// cloud summariser all read the rows unfiltered.
+    @Test func aChannelWithRowsAndNoFileIsNotPromotedTwice() async throws {
+        let meeting = try store.createMeeting(TestStore.meeting(state: .recording))
+        // system.wav is gone; its rows are all that is left of that side of the meeting.
+        try writeAudio(meetingID: meeting.id, names: ["mic.wav"])
+        _ = try store.insertSegments([
+            TestStore.segment(meetingID: meeting.id, from: 0, to: 900,
+                              text: "mic live text", pass: .live),
+            TestStore.segment(meetingID: meeting.id, channel: .system, from: 1_000, to: 2_000,
+                              text: "system live text", pass: .live),
+        ])
+
+        try await localService(StubEngine()).runBatchPass(meetingID: meeting.id, progress: { _ in })
+
+        let segments = try store.segments(meetingID: meeting.id)
+        #expect(segments.count == 2, "the fileless channel's rows were duplicated")
+        #expect(segments.map(\.text) == ["mic live text", "system live text"])
+        #expect(segments.allSatisfy { $0.pass == .final })
+    }
+
     @Test func tagsEachChannelAndMergesByOffset() async throws {
         let meeting = try store.createMeeting(TestStore.meeting(state: .recording))
         try writeAudio(meetingID: meeting.id, names: ["mic.wav", "system.wav"])
@@ -626,5 +701,89 @@ private final class StubHTTP: URLProtocol {
         #expect(text.contains("filename=\"mic.wav\""))
         #expect(text.contains("RIFFDATA"))
         #expect(text.hasSuffix("--BOUND--\r\n"))
+    }
+}
+
+/// A ``StreamingTranscriber`` with no model behind it, so the file engine's driving loop can be
+/// exercised for real. It counts what it was fed and how often it was finished, because "was
+/// `finish()` reached" is the observable that says the loaded checkpoint was released.
+///
+/// Same shape as `StreamingRecordingTests.Fake`, one actor with a nonisolated stream, so the two
+/// halves of the streaming model — live and over-a-file — are stubbed the same way.
+private actor ScriptedTranscriber: StreamingTranscriber {
+    struct Failure: Error {}
+
+    nonisolated let name = "scripted"
+    nonisolated let segments: AsyncStream<EngineSegment>
+    private nonisolated let continuation: AsyncStream<EngineSegment>.Continuation
+    /// Which fed chunk throws, counting from one. Nil feeds the whole buffer cleanly.
+    private let throwOnChunk: Int?
+    private var fed = 0
+    private var finished = 0
+
+    init(throwOnChunk: Int? = nil) {
+        self.throwOnChunk = throwOnChunk
+        (segments, continuation) = AsyncStream.makeStream()
+    }
+
+    var chunksFed: Int { fed }
+    var finishCount: Int { finished }
+
+    func start(channel: Channel) async throws {}
+
+    func feed(_ samples: [Float], atMs: Int) async throws {
+        fed += 1
+        if fed == throwOnChunk { throw Failure() }
+        continuation.yield(EngineSegment(startMs: atMs, endMs: atMs + 80, text: "chunk\(fed)"))
+    }
+
+    /// Yields a tail before it closes the stream, exactly as the real one flushes its segmenter
+    /// inside `finish()`. That is what makes the collector's ordering testable: a collector awaited
+    /// before `finish()` would never see this row.
+    func finish() async {
+        finished += 1
+        continuation.yield(EngineSegment(startMs: 9_000, endMs: 9_400, text: "tail"))
+        continuation.finish()
+    }
+}
+
+@Suite struct StreamingFileEngineRecogniseTests {
+    /// Three 1280-sample chunks, which is 240 ms at 16 kHz — enough to have a middle chunk to throw
+    /// on and a third the loop must not reach.
+    private let samples = [Float](repeating: 0.01, count: 3_840)
+
+    /// **A feed that throws releases the collector and the model.**
+    ///
+    /// `feed` throws — it propagates from the backend — and the failure path used to walk straight
+    /// out of the function. Nothing but `finish()` finishes the segment stream, so the collector's
+    /// `for await` never ended: the task stayed suspended holding the transcriber, the transcriber
+    /// held the continuation, and `backend.cleanup()` — the call that unloads ~600 MB of Core ML —
+    /// was never reached. `runBatchPass` catches the per-channel error and carries on, so a queue
+    /// draining a backlog of unreadable files leaked one suspended task and one loaded model per
+    /// channel with nothing logged.
+    @Test func aFeedThatThrowsStillFinishesTheTranscriber() async throws {
+        let transcriber = ScriptedTranscriber(throwOnChunk: 2)
+
+        await #expect(throws: ScriptedTranscriber.Failure.self) {
+            _ = try await StreamingFileEngine.recognise(
+                samples, using: transcriber, progress: { _ in })
+        }
+
+        #expect(await transcriber.finishCount == 1,
+                "the model stays loaded for the life of the process unless finish() runs")
+        #expect(await transcriber.chunksFed == 2, "and the loop stopped at the chunk that threw")
+    }
+
+    /// The success ordering is unchanged, which is the part the fix must not have moved: the
+    /// collector starts after `start()` and before the first feed, and is awaited after `finish()` —
+    /// so segments yielded during feeding *and* the tail flushed inside `finish()` both arrive.
+    @Test func aCleanRunCollectsEveryChunkAndFinishesOnce() async throws {
+        let transcriber = ScriptedTranscriber()
+
+        let collected = try await StreamingFileEngine.recognise(
+            samples, using: transcriber, progress: { _ in })
+
+        #expect(collected.map(\.text) == ["chunk1", "chunk2", "chunk3", "tail"])
+        #expect(await transcriber.finishCount == 1)
     }
 }

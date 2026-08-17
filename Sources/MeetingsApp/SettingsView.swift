@@ -468,6 +468,22 @@ struct ManualPasteCommandFields: View {
 /// they were not looking at, for a mode that runs unattended.
 struct LocalAgentCommandFields: View {
     let store: MeetingStore
+    /// A counter the caller bumps to mean "the settings rows changed underneath you — read them
+    /// again". Ignored in Settings, which is the only writer of these rows while it is on screen.
+    ///
+    /// This exists because the wizard's mode step used to say the same thing with `.id()`, and a
+    /// new identity does not re-seed a view, it *destroys and rebuilds* one. Everything below is
+    /// `@State`, including ``checking`` and ``result``, so a remount landing while "Check the
+    /// command" was in flight threw away the view the check was going to answer on: the spinner
+    /// vanished, the button came back enabled, and no verdict ever appeared. That window was not
+    /// hypothetical — the step's prefill awaits a PATH resolution bounded at two seconds while the
+    /// panel is on screen from the first frame, so it is exactly when the button gets pressed, for
+    /// exactly the mode that then runs unattended. A counter re-seeds the two rows in place and
+    /// leaves the check's state alone.
+    ///
+    /// ``RemoteTranscriptionFields`` carries the identical property for the identical reason. One
+    /// idiom for "the rows moved underneath you" is the point; two was the wart.
+    var reloadRequested: Int = 0
 
     /// Nil is "Something else": a command matching no preset, which is a legitimate answer and the
     /// one a hand-written command has to be able to keep.
@@ -486,10 +502,10 @@ struct LocalAgentCommandFields: View {
             }
             Text("Something else").tag(AgentPreset?.none)
         }
-        .onAppear {
-            template = loadSetting(store, .aiLocalAgentRunCommand)
-            preset = AgentPreset.matching(runCommand: template)
-        }
+        .onAppear(perform: load)
+        // Zero is the counter's initial value, so the first bump is 1 and this never fires on
+        // appear, where `load` has already run.
+        .onChange(of: reloadRequested) { _, _ in load() }
 
         TextField("Command to run", text: commandBinding)
             .font(.callout.monospaced())
@@ -514,6 +530,19 @@ struct LocalAgentCommandFields: View {
             .font(.caption)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
+    }
+
+    /// Seeds the field and the chooser from the store: the row is the truth and the picker is
+    /// derived from it, so a hand-written command lands on "Something else" rather than being
+    /// relabelled as a preset it does not match.
+    private func load() {
+        let stored = loadSetting(store, .aiLocalAgentRunCommand)
+        // Only when the row actually moved. A verdict describes one argv, so a re-seed that
+        // replaces the command has to take the verdict with it — but a re-seed that reads back the
+        // same command must not throw away a tick the user just earned.
+        if stored != template { result = nil }
+        template = stored
+        preset = AgentPreset.matching(runCommand: template)
     }
 
     /// Picking an agent fills in **both** command forms from it.

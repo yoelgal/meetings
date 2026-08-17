@@ -78,10 +78,17 @@ public struct LocalTranscriber: Sendable, Hashable {
     /// receives is a BCP-47 tag — `en`, `en-GB`, `zh-Hans-CN` — whose language subtag is the text
     /// before the first separator, and reading it directly means an unexpected or malformed tag
     /// resolves to the multilingual model, which is the safe answer: it transcribes English too.
+    ///
+    /// An *empty* list takes that same path, and the missing primary is spelled `?? ""` rather than
+    /// `?? "en"` to make sure of it. With `?? "en"` a Mac that reported no preferred languages at all
+    /// resolved to English-only: it downloaded the 643 MB English checkpoint instead of the 224 MB
+    /// multilingual one and heard non-English speech as English-shaped nonsense — the one outcome
+    /// this fallback exists to avoid. No information about the speaker means the model that handles
+    /// every language, not a guess dressed up as one.
     public static func resolved(
         preferredLanguages: [String] = Locale.preferredLanguages
     ) -> LocalTranscriber {
-        let primary = preferredLanguages.first ?? "en"
+        let primary = preferredLanguages.first ?? ""
         let language = primary.split(whereSeparator: { $0 == "-" || $0 == "_" }).first ?? ""
         return language.lowercased() == "en" ? .english : .multilingual
     }

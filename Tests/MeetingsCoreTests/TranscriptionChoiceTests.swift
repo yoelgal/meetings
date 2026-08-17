@@ -32,8 +32,11 @@ import Testing
                 "English second is a French install, and it must not be read as an English one")
         #expect(LocalTranscriber.resolved(preferredLanguages: ["en"]) == .english)
         // Nothing to go on, and a malformed tag, both resolve to something that transcribes: the
-        // multilingual model handles English too, so it is the safe end of the guess.
-        #expect(LocalTranscriber.resolved(preferredLanguages: []) == .english)
+        // multilingual model handles English too, so it is the safe end of the guess. The empty list
+        // used to resolve to English-only, against both this comment and the doc comment on
+        // `resolved` — a Mac reporting no preferred languages fetched the 643 MB English checkpoint
+        // and heard non-English speech as English-shaped nonsense.
+        #expect(LocalTranscriber.resolved(preferredLanguages: []) == .multilingual)
         #expect(LocalTranscriber.resolved(preferredLanguages: ["zz"]) == .multilingual)
     }
 
