@@ -79,6 +79,27 @@ jobs:
           MEETINGS_SIGN_ADHOC: "1"
         run: scripts/verify.sh
 
+      # What this job is willing to sign, checked before it holds the key.
+      #
+      # `--verify-tag` at the publish step proves the tag exists; it says nothing about what the tag
+      # points at. A tag can name any object in the repository, including a commit that sits on no
+      # branch and passed no review — so without this, one `git push origin v9.9.9` from anyone with
+      # write access produces a bundle signed with the project's distribution certificate and
+      # published as `--latest`, which every installed copy's update check then offers.
+      #
+      # This is not an approval gate and does not touch the "releasing is pushing a tag" ergonomics:
+      # it narrows the signable surface from "any object in the repository" to "code that reached the
+      # default branch", which is the bar every other change to this repo already clears.
+      - name: the tag points at reviewed code
+        run: |
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || {
+              echo "release: $GITHUB_REF_NAME points at $GITHUB_SHA, which is not on origin/main.
+          A release is signed with a certificate every installed copy trusts, so it is cut from
+          reviewed code only. Merge it first, then tag the merge." >&2
+              exit 1
+          }
+
       # The one distribution certificate, in a keychain that exists only for this job.
       #
       # It is deliberately NOT trusted for code signing in any trust store — there is no Apple
@@ -106,8 +127,12 @@ jobs:
           # timeout the unlock below has expired by the time codesign reaches for the private key.
           security set-keychain-settings -lut 21600 "$KEYCHAIN"
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
-          security import "$P12" -k "$KEYCHAIN" -P "$P12_PASSWORD" -T /usr/bin/codesign -A
-          # The ACL that -T and -A write is only half of the access check. The other half is the key's
+          # -T /usr/bin/codesign names the one binary allowed to use the key. Deliberately without
+          # -A ("allow all applications"): every later step in this job — package-release.sh, the
+          # attestation action, gh — would otherwise be able to sign with the distribution key
+          # silently, and none of them needs to.
+          security import "$P12" -k "$KEYCHAIN" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          # The ACL that -T writes is only half of the access check. The other half is the key's
           # partition list, which an imported key has empty, and an empty one makes codesign ask for
           # the keychain password through the GUI — which on a runner is nobody, so it fails with
           # errSecInternalComponent after the build has already been paid for.
