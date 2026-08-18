@@ -640,8 +640,12 @@ pass "the CLI still resolves and the store is untouched"
 grep -q "signed differently from the one it replaced" "$STAGE/out" \
     || die "upgrading from an ad-hoc copy printed no permission note:
 $(cat "$STAGE/out")"
-grep -q "Only this once" "$STAGE/out" \
-    || die "the migration note lost the sentence that says it will not happen again:
+# The two innocent reasons, which is what the note now offers instead of promising this is the last
+# time. It cannot promise that: a previous copy signed with the user's own certificate and one signed
+# with an EARLIER distribution certificate both read as "not the current pin" here, and only the second
+# is a rotation. Asserting the reasons rather than the promise is asserting what the installer can know.
+grep -q "expected if you built the previous copy yourself" "$STAGE/out" \
+    || die "the permission note lost the sentence that explains why the reset is expected:
 $(cat "$STAGE/out")"
 pass "the migration is announced once, as the migration"
 
@@ -696,9 +700,9 @@ $(cat "$STAGE/out")"
 grep -q "signed differently from the one it replaced" "$STAGE/out" \
     || die "replacing a differently-signed copy said nothing about the signature change:
 $(cat "$STAGE/out")"
-grep -q "Only this once" "$STAGE/out" \
-    || die "a release install over a differently-signed copy was not called the migration, so the
-                      installer and the app now say different things about the same install:
+grep -q "expected if you built the previous copy yourself" "$STAGE/out" \
+    || die "a release install over a differently-signed copy did not explain the reset the way the
+                      migration does, so the installer and the app say different things about one install:
 $(cat "$STAGE/out")"
 # The sentence that used to be printed here, and must not be again: it told users who had followed the
 # old README's advice to wonder where their own app came from.
@@ -774,9 +778,8 @@ $(cat "$STAGE/out")"
 grep -q "was not one of the project's releases" "$STAGE/out" \
     && die "--from-source accused the genuine release it replaced of not being one:
 $(cat "$STAGE/out")"
-grep -q "Only this once" "$STAGE/out" \
-    && die "--from-source promised its own signature would persist across releases, which is the one
-                      thing it cannot do:
+grep -q "expected if you built the previous copy yourself" "$STAGE/out" \
+    && die "--from-source used the release path's explanation, which does not apply to a local build:
 $(cat "$STAGE/out")"
 pass "--from-source names its own certificate, accuses nothing, and asks for no password"
 rm -f "$STAGE/Package.swift" "$STAGE/scripts/build-app.sh" "$STAGE/scripts/make-signing-identity.sh"

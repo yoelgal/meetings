@@ -840,19 +840,29 @@ elif [ "$INSTALLED_REQ" != "$NEW_REQ" ]; then
     # like. On the default path the pin above has already proved the new signature is the one
     # distribution certificate, so whatever the previous copy was signed with — ad hoc, or the named
     # certificate scripts/make-signing-identity.sh creates, which the old README told people to make —
-    # arriving at the release is the one-time migration, and every later release keeps the grants.
+    # arriving at the release is a permission reset worth explaining rather than a substitution worth
+    # warning about.
+    # What it must NOT do is promise this is the last time, and the promise is what the first version
+    # of this got wrong in the other direction. Neither surface can tell the two ways a previous
+    # signature can differ apart: a copy signed with the user's own certificate (the migration) and a
+    # copy signed with a PREVIOUS distribution certificate (a rotation) both read here as "not the
+    # current pin", because the only fingerprint this script knows is the current one. So "every
+    # release from here keeps the grants" was true of the migration and false of a rotation — and the
+    # app, which classifies any changed identity on a downloaded copy as a rotation, was meanwhile
+    # telling the same user on the same install to check where the build came from. One event, two
+    # opposite explanations, which is exactly the shape this note was rewritten to remove.
     #
-    # Classifying by the *previous* requirement said the opposite of that to exactly the users who
-    # followed the old advice: their copy was signed by a real certificate, so the installer called it
-    # a substitution and told them to wonder where their app came from, while the app itself — which
-    # decides by whether it ever recorded an identity — showed them the routine migration notice on
-    # the same install. One event, two contradictory explanations, and the terminal's was the wrong
-    # one.
+    # Saying only what is observable fixes it without either surface having to know more: permissions
+    # reset, here is why, and here are the two innocent reasons it happens. A reader who recognises
+    # neither is the one who should look further, and is not being told there is nothing to see.
     if [ "$FROM_SOURCE" != 1 ]; then
         echo "    This build is signed differently from the one it replaced, and macOS ties"
         echo "    permissions to the signature — so the microphone and Screen & System Audio"
-        echo "    Recording will be asked for once more. Only this once: every release from"
-        echo "    here is signed with the same certificate, so future updates keep the grants."
+        echo "    Recording will be asked for once more."
+        echo
+        echo "    That is expected if you built the previous copy yourself, or if it predates a"
+        echo "    change of signing certificate. If neither is true, check where that copy came"
+        echo "    from before granting anything back."
         echo
     else
         # The case that survives the rule above: the new signature is NOT the pinned certificate,
