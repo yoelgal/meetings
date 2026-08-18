@@ -1,6 +1,7 @@
 import AVFoundation
 import AppKit
 import CoreGraphics
+import CryptoKit
 import Foundation
 import Security
 import MeetingsCore
@@ -24,14 +25,20 @@ enum AppInfo {
     }
 
     /// The one line that updates this install, ready to paste.
-    ///
+    static var updateCommand: String { updateCommand(sourceRoot: sourceRoot) }
+
     /// The update notice used to only link to the release page, which is where a person then stood
-    /// reading what changed with no idea what to type. It is a build-from-source app: the answer is
-    /// always a pull and a rebuild, and the only unknown is the directory — which the bundle knows.
+    /// reading what changed with no idea what to type. A build assembled from a checkout has one
+    /// answer — a pull and a rebuild — and the only unknown is the directory, which the bundle knows.
     ///
-    /// The fallback is the README's own one-liner, which clones or updates in place, so the notice is
-    /// never reduced to a shrug.
-    static var updateCommand: String {
+    /// The fallback is the README's own one-liner, which installs or updates in place, so the notice
+    /// is never reduced to a shrug. It is also the branch **every downloaded copy takes**: a prebuilt
+    /// release carries no `MeetingsSourceRoot`, because it was not assembled from a checkout on this
+    /// Mac. That is why the source root is a parameter rather than read inside here — the branch a
+    /// test needs to pin depends on an Info.plist key belonging to whatever bundle the test process
+    /// happens to be running inside, which no test can change, so the half that most users see was
+    /// the half nothing covered.
+    static func updateCommand(sourceRoot: String?) -> String {
         guard let root = sourceRoot else {
             return "curl -fsSL https://raw.githubusercontent.com/"
                 + "\(UpdateCheck.repository)/main/install.sh | bash"
@@ -42,35 +49,144 @@ enum AppInfo {
     }
 }
 
-/// Whether this build was signed ad hoc, which decides whether the permissions you grant survive
-/// the next update.
+/// What signed this build, which decides whether the permissions you grant survive the next update.
 ///
 /// macOS keys a TCC grant to the app's code signature. An ad-hoc signature *is* a hash of the app's
 /// own code, so the next build is a different app to the permission system and every grant is asked
 /// for again. Nothing in the app said so: you granted the microphone, updated a week later, were
 /// asked again, and the only explanation was in a README section about code signing.
 ///
-/// Read once. A running process cannot change its own signature.
+/// A named certificate keys the grant to the *certificate* instead — the Designated Requirement reads
+/// `identifier "…" and certificate leaf = H"<sha1>"` — so the grants outlive every rebuild signed by
+/// the same identity, and are reset by a build signed by a different one.
+///
+/// Each answer is read once and cached. A running process cannot change its own signature, and the
+/// dictionary the read produces cannot be cached itself — `[String: Any]` is not `Sendable`, so a
+/// shared `static let` holding one is a data race the compiler rejects.
 enum CodeSignature {
     static let isAdHoc: Bool = {
-        var code: SecCode?
-        guard SecCodeCopySelf([], &code) == errSecSuccess, let code else { return false }
-        var staticCode: SecStaticCode?
-        guard SecCodeCopyStaticCode(code, [], &staticCode) == errSecSuccess, let staticCode
-        else { return false }
-        var information: CFDictionary?
-        guard SecCodeCopySigningInformation(
-            staticCode, SecCSFlags(rawValue: kSecCSSigningInformation), &information
-        ) == errSecSuccess, let dictionary = information as? [String: Any] else { return false }
+        // False when the read itself fails, so an unexpected answer from the Security framework
+        // leaves the app quiet rather than telling someone their perfectly-signed build is about to
+        // lose their permissions.
+        guard let dictionary = signingInformation() else { return false }
         // An ad-hoc signature carries no certificate chain. Any named identity, self-signed or a
         // real Developer ID, puts at least one certificate here.
         let certificates = dictionary[kSecCodeInfoCertificates as String] as? [Any]
         return certificates?.isEmpty ?? true
     }()
 
-    // False when the check itself fails, so an unexpected answer from the Security framework leaves
-    // the app quiet rather than telling someone their perfectly-signed build is about to lose their
-    // permissions.
+    /// The identity this build was signed by, as the leaf certificate's SHA-1 in lowercase hex — the
+    /// same string `codesign -s <hash>` takes and the same one `Packaging/distribution-cert.sha1`
+    /// holds, so a recorded value can be read against the release identity by eye.
+    ///
+    /// The fingerprint rather than the subject name because the name is not unique: every Mac that
+    /// ran `scripts/make-signing-identity.sh` minted its own certificate under the same common name,
+    /// and those are different identities to TCC. Nil for an ad-hoc signature, which has no
+    /// certificate to fingerprint, and nil when the signature cannot be read at all.
+    static let signingIdentity: String? = {
+        guard let dictionary = signingInformation(),
+              let chain = dictionary[kSecCodeInfoCertificates as String] as? [SecCertificate],
+              let leaf = chain.first
+        else { return nil }
+        let der = SecCertificateCopyData(leaf) as Data
+        // SHA-1 because that is what the signing tools and the Designated Requirement speak. It is
+        // compared against a value this same code wrote rather than used to authenticate anything, so
+        // the collision weakness that rules SHA-1 out elsewhere does not apply.
+        return Insecure.SHA1.hash(data: der).map { String(format: "%02x", $0) }.joined()
+    }()
+
+    /// Nil when the signature could not be read at all, which is a different answer from a signature
+    /// that carries no certificates, and both callers above depend on the difference.
+    private static func signingInformation() -> [String: Any]? {
+        var code: SecCode?
+        guard SecCodeCopySelf([], &code) == errSecSuccess, let code else { return nil }
+        var staticCode: SecStaticCode?
+        guard SecCodeCopyStaticCode(code, [], &staticCode) == errSecSuccess, let staticCode
+        else { return nil }
+        var information: CFDictionary?
+        guard SecCodeCopySigningInformation(
+            staticCode, SecCSFlags(rawValue: kSecCSSigningInformation), &information
+        ) == errSecSuccess else { return nil }
+        return information as? [String: Any]
+    }
+}
+
+/// The one launch on which macOS forgets every permission you granted, and whether to say so.
+///
+/// Meetings used to be compiled on the machine it runs on and signed by a certificate minted there,
+/// so each install had an identity of its own. A prebuilt release is signed by one shared
+/// distribution certificate, which is what makes the grants survive future updates — but the update
+/// that introduces it changes the signature, so on that one launch TCC's grants are gone and macOS
+/// asks for the microphone and for Screen & System Audio Recording again. An unexplained permission
+/// prompt after an update reads as a bug, or as malware.
+///
+/// So the identity is recorded on every launch and compared against the last one. UserDefaults rather
+/// than the settings table because it is a fact about this bundle on this Mac — nothing the CLI or an
+/// agent has any business reading — which is the same call the notes panel makes for window state.
+enum SigningChange {
+    /// What the last launch was signed by, and whether an explanation is still owed. Two keys rather
+    /// than one because the notice outlives the launch that raised it: by the time somebody reads it
+    /// the new identity has long been recorded, so the flag is the only thing left that remembers.
+    static let identityKey = "MeetingsSigningIdentity"
+    static let noticeKey = "MeetingsSigningChangeNoticePending"
+
+    /// Records the running signature and answers whether the notice is owed.
+    ///
+    /// Recording and comparing are one call because the record has to be written on the launch that
+    /// raises the notice too. Written only when nothing changed, a migrated user would be told again
+    /// every launch forever; and the notice has to survive being quit on rather than dismissed,
+    /// because the permission prompts arrive at the first recording, which may be days later — so the
+    /// answer is a flag that only the notice's own buttons clear, not a fresh comparison each launch.
+    ///
+    /// Two things raise it, and the second exists because the first cannot cover the migration this
+    /// was built for. No shipped build ever recorded an identity, so the launch that introduces the
+    /// prebuilt certificate has nothing to compare against and would pass in silence — the one launch
+    /// where the grants are definitely gone.
+    ///
+    /// 1. A recorded identity that differs. Any later rotation of the distribution certificate, on a
+    ///    downloaded copy or a from-source one, because a rotation resets the grants either way.
+    /// 2. Nothing recorded, but this Mac has finished setup before *and* this copy was downloaded
+    ///    rather than compiled here.
+    ///
+    /// Both halves of (2) are load-bearing. Without `usedBefore` a genuine first launch opens with an
+    /// apology for revoking permissions it was never granted, talking over the setup wizard. Without
+    /// `isPrebuilt` the notice is a lie told to a `--from-source` user, who rebuilt with their own
+    /// local certificate and lost nothing: `MeetingsSourceRoot` is stamped by every build assembled
+    /// from a checkout and stripped by `MEETINGS_RELEASE=1`, so its absence is exactly "this copy was
+    /// downloaded".
+    static func recordAndDetect(
+        identity: String? = CodeSignature.signingIdentity,
+        usedBefore: Bool,
+        isPrebuilt: Bool = AppInfo.sourceRoot == nil,
+        defaults: UserDefaults = .standard
+    ) -> Bool {
+        // No readable identity is no evidence either way, and overwriting the record with nothing
+        // would make the *next* launch of a signed build look like a first launch and swallow the
+        // notice. An already-owed one still shows.
+        guard let identity else { return defaults.bool(forKey: noticeKey) }
+        let previous = defaults.string(forKey: identityKey)
+        defaults.set(identity, forKey: identityKey)
+        if let previous {
+            if previous != identity { defaults.set(true, forKey: noticeKey) }
+        } else if usedBefore, isPrebuilt {
+            defaults.set(true, forKey: noticeKey)
+        }
+        return defaults.bool(forKey: noticeKey)
+    }
+
+    /// One explanation is the whole point, so acting on it counts as having read it.
+    static func dismissNotice(defaults: UserDefaults = .standard) {
+        defaults.set(false, forKey: noticeKey)
+    }
+
+    /// Where the Screen Recording toggle lives. The microphone arrives as a dialog you answer without
+    /// leaving the app; this grant is a checkbox in a pane several levels into System Settings, and
+    /// finding it unaided is the actual friction in the migration.
+    ///
+    /// Resolved through ``Permission`` rather than spelled again, because the permission rows already
+    /// hold the same URL and two copies of a URL scheme nobody can typo-check is how one of them ends
+    /// up opening the wrong pane.
+    static var screenRecordingSettings: URL? { Permission.systemAudio.settingsURL }
 }
 
 /// Said where permissions are, because that is the only place someone is thinking about them.

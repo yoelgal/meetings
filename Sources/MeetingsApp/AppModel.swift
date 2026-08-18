@@ -174,6 +174,10 @@ final class AppModel {
     private(set) var availableUpdate: AvailableUpdate?
     /// Launch check plus the daily tick, held so it dies with the model rather than outliving it.
     private var updateChecks: Task<Void, Never>?
+    /// True when this launch's code signature is not the one the last launch recorded, which means
+    /// macOS has just dropped every permission this app was granted. Set in `start()` and cleared by
+    /// the notice's own buttons — see ``SigningChange``.
+    private(set) var signingChanged = false
 
     private(set) var selectedMeeting: Meeting?
     /// The transcript of the selected meeting. Final segments win over live ones when both exist.
@@ -350,6 +354,18 @@ final class AppModel {
         Retention.sweepOnLaunch(store: store)
         refresh()
         applyLaunchOverrides()
+        // Two UserDefaults reads and one settings row, so it happens inline rather than off the main
+        // actor. It has to run on every launch whether or not the notice is shown, because the launch
+        // that shows it is also the launch that records the new identity.
+        //
+        // `onboarding.completed` is the prior-use marker, because a genuine first launch cannot have
+        // finished the wizard — which is the exact property the second rule needs and the one thing a
+        // fresh install does not fake. Not the wizard's own UserDefaults resume point: that is
+        // *deleted* when the wizard completes, so every long-standing user looks like a first launch
+        // to it. Not the presence of the store either, which a fresh install creates before this runs.
+        signingChanged = SigningChange.recordAndDetect(
+            usedBefore: (try? store.settingBool(.onboardingCompleted)) == true
+        )
         // Anything still at `transcribing` is work this or a previous launch did not finish: a crash
         // mid-pass, or an imported backlog that outlived the session. The store is the queue.
         Task { await transcription.resumePendingOnLaunch() }
@@ -444,6 +460,14 @@ final class AppModel {
         let outcome = await UpdateCheck.run(.manual, store: store, currentVersion: AppInfo.version)
         if let update = outcome.available { availableUpdate = update }
         return outcome
+    }
+
+    /// Both of the notice's buttons end here: the explanation has landed once it has been read or
+    /// acted on, and it must not come back on the next launch. Persisted as well as cleared in
+    /// memory, because a relaunch would otherwise re-raise a notice nobody needs twice.
+    func dismissSigningChangeNotice() {
+        SigningChange.dismissNotice()
+        signingChanged = false
     }
 
     func refresh() {

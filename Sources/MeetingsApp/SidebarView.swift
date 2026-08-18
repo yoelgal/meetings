@@ -82,12 +82,20 @@ struct SidebarView: View {
         // would have to mean something, and a row that scrolls away is a notice you can miss by
         // having enough folders.
         .safeAreaInset(edge: .bottom) {
-            if let update = model.availableUpdate {
-                UpdateNotice(
-                    update: update,
-                    recording: model.isRecording
-                        ? "A meeting is recording. Stop it first: updating quits Meetings." : ""
-                )
+            // Stacked rather than either-or: an update arriving during the launch that changed the
+            // signature is two unrelated pieces of news, and dropping one of them would either hide
+            // the update or hide the only explanation of why the microphone dialog came back.
+            VStack(spacing: 0) {
+                if model.signingChanged {
+                    PermissionsResetNotice { model.dismissSigningChangeNotice() }
+                }
+                if let update = model.availableUpdate {
+                    UpdateNotice(
+                        update: update,
+                        recording: model.isRecording
+                            ? "A meeting is recording. Stop it first: updating quits Meetings." : ""
+                    )
+                }
             }
         }
         .sheet(item: $naming) { naming in
@@ -238,6 +246,83 @@ private struct UpdateNotice: View {
                         .background(.quaternary.opacity(0.4), in: .rect(cornerRadius: 8, style: .continuous))
                         Button("What changed in \(update.version)") { NSWorkspace.shared.open(update.url) }
                             .buttonStyle(.link)
+                    }
+                }
+                .padding(16)
+                .frame(width: 380)
+            }
+        }
+        .background(.bar)
+    }
+}
+
+/// The foot of the sidebar on the one launch where macOS has just revoked the permissions.
+///
+/// Built like ``UpdateNotice`` — a row that opens a popover — for the same reason: a sidebar has room
+/// for a headline, and the explanation this owes somebody is four sentences long. The headline is the
+/// thing they have already noticed (they are being asked for the microphone again) rather than the
+/// cause (a certificate changed), because the cause is not what they came here with.
+///
+/// Unlike the update notice this one can be sent away, and has to be: an update is still available
+/// tomorrow, whereas this describes something that happened once. ``SigningChange`` holds the flag,
+/// so quitting without dismissing keeps the explanation available — the permission prompts arrive at
+/// the next recording, which may be days after this launch.
+private struct PermissionsResetNotice: View {
+    let dismiss: () -> Void
+
+    @State private var showing = false
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Divider()
+            Button { showing = true } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "hand.raised")
+                        .foregroundStyle(Color(nsColor: .systemOrange))
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Permissions need granting again")
+                            .font(.callout)
+                        Text("Once only — here is why")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .contentShape(.rect)
+            }
+            .buttonStyle(.plain)
+            .help("Why macOS is asking for permissions again")
+            .padding(.horizontal, 22)
+            .padding(.vertical, 10)
+            .popover(isPresented: $showing, arrowEdge: .trailing) {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Meetings now ships prebuilt")
+                        .font(.headline)
+                    Text("This version was downloaded ready to run and signed once, rather than "
+                        + "compiled on your Mac. macOS treats a differently signed app as a new "
+                        + "app, so it will ask for the microphone one more time, and Screen & "
+                        + "System Audio Recording has to be switched back on by hand. Every update "
+                        + "after this one keeps both. Your meetings are untouched.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    HStack {
+                        // The microphone comes back as a dialog the next recording raises on its own.
+                        // This grant does not: it is a checkbox in a pane nothing links to, and
+                        // finding it is the whole of the friction, so the button goes straight there.
+                        if let settings = SigningChange.screenRecordingSettings {
+                            Button("Open Screen Recording") {
+                                showing = false
+                                dismiss()
+                                NSWorkspace.shared.open(settings)
+                            }
+                            .buttonStyle(.borderedProminent)
+                        }
+                        Button("Got it") {
+                            showing = false
+                            dismiss()
+                        }
+                        .buttonStyle(.link)
                     }
                 }
                 .padding(16)
