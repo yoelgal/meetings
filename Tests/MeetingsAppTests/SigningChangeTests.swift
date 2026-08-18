@@ -42,7 +42,7 @@ import Testing
         _ identity: String?,
         usedBefore: Bool = false,
         isPrebuilt: Bool = true
-    ) -> Bool {
+    ) -> SigningChange.Cause? {
         SigningChange.recordAndDetect(
             identity: identity, usedBefore: usedBefore, isPrebuilt: isPrebuilt, defaults: defaults
         )
@@ -53,7 +53,7 @@ import Testing
     /// A fresh install of a downloaded copy. Nothing was reset, and the wizard is about to ask for
     /// these permissions properly.
     @Test func aFirstEverLaunchOfADownloadedCopySaysNothing() {
-        #expect(!launch(Self.distribution, usedBefore: false, isPrebuilt: true))
+        #expect(launch(Self.distribution, usedBefore: false, isPrebuilt: true) == nil)
         // Recorded anyway, or the *second* launch would look like the migration.
         #expect(defaults.string(forKey: SigningChange.identityKey) == Self.distribution)
     }
@@ -63,49 +63,98 @@ import Testing
     /// definitely gone, because the shared distribution certificate is not the one their own Mac
     /// minted. Comparison alone answers "no change" here, which is the answer that loses the whole
     /// point of the notice.
-    @Test func aMigratingUserOnADownloadedCopyIsExplainedTo() {
-        #expect(launch(Self.distribution, usedBefore: true, isPrebuilt: true))
+    ///
+    /// An ad-hoc previous copy lands here too, and correctly: an ad-hoc signature has no certificate,
+    /// so nothing was ever recorded for it either.
+    @Test func aMigratingUserOnADownloadedCopyIsToldItIsTheMigration() {
+        #expect(launch(Self.distribution, usedBefore: true, isPrebuilt: true) == .migration)
     }
 
     /// The same shape of launch — prior use, nothing recorded — on a copy the user compiled from their
     /// own checkout with `--from-source`. They signed it with the certificate they have always used,
     /// so nothing was revoked and there is nothing to explain.
     @Test func aRebuildFromSourceWithNothingRecordedSaysNothing() {
-        #expect(!launch(Self.theirOwn, usedBefore: true, isPrebuilt: false))
+        #expect(launch(Self.theirOwn, usedBefore: true, isPrebuilt: false) == nil)
         // And it still records, so if that user later downloads a release the change is caught by the
         // comparison rather than needing the migration rule again.
         #expect(defaults.string(forKey: SigningChange.identityKey) == Self.theirOwn)
-        #expect(launch(Self.distribution, usedBefore: true, isPrebuilt: true))
+        #expect(launch(Self.distribution, usedBefore: true, isPrebuilt: true) == .rotation)
     }
 
-    /// A later rotation of the distribution certificate, which resets the grants for everybody however
-    /// their copy was built — so this one does not care whether the build was downloaded.
-    @Test func aRotatedCertificateIsExplainedOnEveryKindOfBuild() {
-        #expect(!launch(Self.distribution))
-        #expect(launch(Self.theirOwn, usedBefore: true, isPrebuilt: false))
+    /// **The case the migration's wording must not swallow.** Once the migration has shipped, every
+    /// user's recorded identity is the distribution certificate, so a build signed by some other
+    /// certificate arrives on this exact path — and macOS re-asking for permissions is the only signal
+    /// the user gets that the signer was substituted. Reported as a rotation, and it does not care how
+    /// the copy was built, because a rotation resets the grants either way.
+    @Test func aDifferentCertificateIsReportedAsARotationOnEveryKindOfBuild() {
+        #expect(launch(Self.distribution) == nil)
+        #expect(launch(Self.theirOwn, usedBefore: true, isPrebuilt: false) == .rotation)
         #expect(defaults.string(forKey: SigningChange.identityKey) == Self.theirOwn)
     }
 
-    // MARK: - Everything that must stay quiet, and the flag that carries the notice
+    // MARK: - What each cause is allowed to say
+
+    /// The migration is the routine one, so it says so: what changed, what will be asked for, and that
+    /// it is the last time.
+    @Test func theMigrationExplainsItselfAndPromisesItIsTheLastTime() {
+        let text = SigningChange.Cause.migration.explanation
+        #expect(text.contains("downloaded ready to run"))
+        #expect(text.contains("Screen & System Audio Recording"))
+        #expect(text.contains("Every update after this one keeps both"))
+    }
+
+    /// **A rotation must not be handed the migration's story.** The reassurance is true exactly once;
+    /// repeated at a substituted signer it turns the one signal a user gets into a note saying not to
+    /// worry. Behavioural rather than a scan of the source for the phrase: the phrase is *correct* on
+    /// the migration and only wrong when it is unconditional, which a substring search over the file
+    /// cannot tell apart. Asking each cause is what can.
+    @Test func aRotationIsNeverExplainedAwayAsTheRoutineReset() {
+        let text = SigningChange.Cause.rotation.explanation
+        #expect(!text.contains("Every update after this one keeps both"), """
+            a substituted signer is told the reset was routine and will not recur: "\(text)"
+            """)
+        #expect(!text.contains("one more time"), "nor that this is the single expected re-ask")
+        #expect(!text.contains("downloaded ready to run"),
+                "and it must not claim to know where this build came from")
+        // It has to be actionable, or "says nothing reassuring" would be satisfied by saying nothing.
+        #expect(text.contains("different certificate"))
+        #expect(text.contains("where it came from"))
+    }
+
+    /// Neither cause may fall through to the other's headline, and a third case added later cannot
+    /// ship blank.
+    @Test func everyCauseSaysSomethingOfItsOwn() {
+        for cause in SigningChange.Cause.allCases {
+            #expect(!cause.title.isEmpty, "\(cause) has no row title")
+            #expect(!cause.detail.isEmpty, "\(cause) has no row detail")
+            #expect(!cause.headline.isEmpty, "\(cause) has no headline")
+            #expect(!cause.symbol.isEmpty, "\(cause) has no symbol")
+        }
+        #expect(SigningChange.Cause.migration.headline != SigningChange.Cause.rotation.headline)
+        #expect(SigningChange.Cause.migration.title != SigningChange.Cause.rotation.title)
+        #expect(SigningChange.Cause.migration.explanation != SigningChange.Cause.rotation.explanation)
+    }
+
+    // MARK: - Everything that must stay quiet, and the record that carries the notice
 
     @Test func theSameIdentityTwiceSaysNothing() {
         _ = launch(Self.theirOwn)
-        #expect(!launch(Self.theirOwn, usedBefore: true))
+        #expect(launch(Self.theirOwn, usedBefore: true) == nil)
     }
 
     /// Quitting is not dismissing. The permission prompts land at the next recording, which can be
-    /// days after the launch that reset them, so the explanation has to still be there — the
-    /// comparison alone answers no by then, because the new identity is already recorded.
+    /// days after the launch that reset them, so the explanation has to still be there — and still be
+    /// the *same* explanation, since the comparison answers "no change" by then.
     @Test func theNoticeSurvivesARelaunchAndOnlyDismissalEndsIt() {
         _ = launch(Self.theirOwn)
-        #expect(launch(Self.distribution, usedBefore: true))
+        #expect(launch(Self.distribution, usedBefore: true) == .rotation)
         #expect(
-            launch(Self.distribution, usedBefore: true),
+            launch(Self.distribution, usedBefore: true) == .rotation,
             "relaunching before dismissing the notice loses the only explanation of the reset"
         )
 
         SigningChange.dismissNotice(defaults: defaults)
-        #expect(!launch(Self.distribution, usedBefore: true))
+        #expect(launch(Self.distribution, usedBefore: true) == nil)
     }
 
     /// An unreadable signature — an ad-hoc build, or a `swift run` with no bundle around it — is no
@@ -114,17 +163,17 @@ import Testing
     @Test func anUnreadableSignatureNeitherSpeaksNorForgets() {
         _ = launch(Self.theirOwn)
 
-        #expect(!launch(nil, usedBefore: true))
+        #expect(launch(nil, usedBefore: true) == nil)
         #expect(defaults.string(forKey: SigningChange.identityKey) == Self.theirOwn)
-        #expect(launch(Self.distribution, usedBefore: true))
+        #expect(launch(Self.distribution, usedBefore: true) == .rotation)
     }
 
-    /// And an already-owed notice is still owed after such a launch, since it is a flag rather than a
-    /// comparison.
+    /// And an already-owed notice is still owed after such a launch, with its cause intact, since it is
+    /// a stored answer rather than a comparison.
     @Test func anUnreadableSignatureKeepsAnOwedNotice() {
         _ = launch(Self.theirOwn)
         _ = launch(Self.distribution, usedBefore: true)
-        #expect(launch(nil, usedBefore: true))
+        #expect(launch(nil, usedBefore: true) == .rotation)
     }
 
     /// The button the notice offers has to open the Screen Recording pane specifically: that grant is

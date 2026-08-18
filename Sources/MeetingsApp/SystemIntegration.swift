@@ -124,29 +124,48 @@ enum CodeSignature {
 /// than the settings table because it is a fact about this bundle on this Mac — nothing the CLI or an
 /// agent has any business reading — which is the same call the notes panel makes for window state.
 enum SigningChange {
-    /// What the last launch was signed by, and whether an explanation is still owed. Two keys rather
-    /// than one because the notice outlives the launch that raised it: by the time somebody reads it
-    /// the new identity has long been recorded, so the flag is the only thing left that remembers.
-    static let identityKey = "MeetingsSigningIdentity"
-    static let noticeKey = "MeetingsSigningChangeNoticePending"
+    /// Why the grants are gone, because the two causes need opposite sentences.
+    ///
+    /// After the migration release every user's recorded identity *is* the distribution certificate,
+    /// so a build signed by some other certificate lands on the same code path as the migration did.
+    /// Told the migration's story, that user is reassured about the only user-visible signal that a
+    /// release's signer was substituted — macOS asking for permissions again — and the notice becomes
+    /// the attacker's alibi. So the cause is carried through to the words.
+    enum Cause: String, CaseIterable {
+        /// Nothing was recorded before this launch. Every build that predates this code recorded
+        /// nothing, including an ad-hoc one, which has no certificate to record in the first place —
+        /// so "no record" is exactly the population moving from a locally built copy to a downloaded
+        /// one, and this is the routine one-time reset.
+        case migration
+        /// A recorded certificate replaced by a different certificate. Releases are signed by the
+        /// same identity every time, so this is not routine and is not reassured about.
+        case rotation
+    }
 
-    /// Records the running signature and answers whether the notice is owed.
+    /// What the last launch was signed by, and which explanation is still owed. Two keys rather than
+    /// one because the notice outlives the launch that raised it: by the time somebody reads it the new
+    /// identity has long been recorded, so the stored cause is the only thing left that remembers.
+    static let identityKey = "MeetingsSigningIdentity"
+    static let noticeKey = "MeetingsSigningChangeNoticeCause"
+
+    /// Records the running signature and answers which explanation, if any, is owed.
     ///
     /// Recording and comparing are one call because the record has to be written on the launch that
     /// raises the notice too. Written only when nothing changed, a migrated user would be told again
     /// every launch forever; and the notice has to survive being quit on rather than dismissed,
     /// because the permission prompts arrive at the first recording, which may be days later — so the
-    /// answer is a flag that only the notice's own buttons clear, not a fresh comparison each launch.
+    /// answer is a stored cause that only the notice's own buttons clear, not a fresh comparison each
+    /// launch.
     ///
     /// Two things raise it, and the second exists because the first cannot cover the migration this
     /// was built for. No shipped build ever recorded an identity, so the launch that introduces the
     /// prebuilt certificate has nothing to compare against and would pass in silence — the one launch
     /// where the grants are definitely gone.
     ///
-    /// 1. A recorded identity that differs. Any later rotation of the distribution certificate, on a
-    ///    downloaded copy or a from-source one, because a rotation resets the grants either way.
+    /// 1. A recorded identity that differs: ``Cause/rotation``. On a downloaded copy or a from-source
+    ///    one, because a rotation resets the grants either way.
     /// 2. Nothing recorded, but this Mac has finished setup before *and* this copy was downloaded
-    ///    rather than compiled here.
+    ///    rather than compiled here: ``Cause/migration``.
     ///
     /// Both halves of (2) are load-bearing. Without `usedBefore` a genuine first launch opens with an
     /// apology for revoking permissions it was never granted, talking over the setup wizard. Without
@@ -159,24 +178,28 @@ enum SigningChange {
         usedBefore: Bool,
         isPrebuilt: Bool = AppInfo.sourceRoot == nil,
         defaults: UserDefaults = .standard
-    ) -> Bool {
+    ) -> Cause? {
         // No readable identity is no evidence either way, and overwriting the record with nothing
         // would make the *next* launch of a signed build look like a first launch and swallow the
         // notice. An already-owed one still shows.
-        guard let identity else { return defaults.bool(forKey: noticeKey) }
+        guard let identity else { return owed(defaults) }
         let previous = defaults.string(forKey: identityKey)
         defaults.set(identity, forKey: identityKey)
         if let previous {
-            if previous != identity { defaults.set(true, forKey: noticeKey) }
+            if previous != identity { defaults.set(Cause.rotation.rawValue, forKey: noticeKey) }
         } else if usedBefore, isPrebuilt {
-            defaults.set(true, forKey: noticeKey)
+            defaults.set(Cause.migration.rawValue, forKey: noticeKey)
         }
-        return defaults.bool(forKey: noticeKey)
+        return owed(defaults)
     }
 
     /// One explanation is the whole point, so acting on it counts as having read it.
     static func dismissNotice(defaults: UserDefaults = .standard) {
-        defaults.set(false, forKey: noticeKey)
+        defaults.removeObject(forKey: noticeKey)
+    }
+
+    private static func owed(_ defaults: UserDefaults) -> Cause? {
+        defaults.string(forKey: noticeKey).flatMap(Cause.init(rawValue:))
     }
 
     /// Where the Screen Recording toggle lives. The microphone arrives as a dialog you answer without
@@ -187,6 +210,63 @@ enum SigningChange {
     /// hold the same URL and two copies of a URL scheme nobody can typo-check is how one of them ends
     /// up opening the wrong pane.
     static var screenRecordingSettings: URL? { Permission.systemAudio.settingsURL }
+}
+
+/// What the notice actually says, kept out of the view so both stories can be read side by side and
+/// pinned by a test. The migration is routine and says so; the rotation is not, and the difference has
+/// to survive somebody editing one of the two sentences.
+extension SigningChange.Cause {
+    /// The sidebar row. It leads with what the person has already run into rather than the cause,
+    /// except for a rotation, where the cause *is* the news.
+    var title: String {
+        switch self {
+        case .migration: "Permissions need granting again"
+        case .rotation: "This build has a different signature"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .migration: "Once only — here is why"
+        case .rotation: "Worth checking before you grant them back"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .migration: "hand.raised"
+        case .rotation: "exclamationmark.triangle.fill"
+        }
+    }
+
+    var headline: String {
+        switch self {
+        case .migration: "Meetings now ships prebuilt"
+        case .rotation: "Signed by a different certificate"
+        }
+    }
+
+    /// The migration's last two sentences are the reassurance, and they are the reason the two causes
+    /// cannot share wording: said about a rotation they would explain away the only signal a user gets
+    /// that a release's signer was substituted. The rotation text says what is unusual and stops,
+    /// pointing at where the build should have come from rather than at a fix.
+    var explanation: String {
+        switch self {
+        case .migration:
+            "This version was downloaded ready to run and signed once, rather than compiled on your "
+                + "Mac. macOS treats a differently signed app as a new app, so it will ask for the "
+                + "microphone one more time, and Screen & System Audio Recording has to be switched "
+                + "back on by hand. Every update after this one keeps both. Your meetings are "
+                + "untouched."
+        case .rotation:
+            "The copy of Meetings you ran before this one was signed by a different certificate, "
+                + "which is why macOS has forgotten the microphone and Screen & System Audio "
+                + "Recording. Releases are signed by the same certificate every time, so this is not "
+                + "the routine one. If this build did not come from the project's own releases page, "
+                + "or from the install command in its README, find out where it came from before you "
+                + "grant anything back."
+        }
+    }
 }
 
 /// Said where permissions are, because that is the only place someone is thinking about them.
@@ -249,6 +329,26 @@ enum SelfUpdate {
 
     /// The command a person can run by hand, and the one the script runs.
     static var command: String { AppInfo.updateCommand }
+
+    /// The sentence above the command, for the copies that get a command rather than a button.
+    ///
+    /// It used to say "Meetings is built from source" unconditionally, which was true when every copy
+    /// was compiled on the machine it ran on and became a plain falsehood the moment releases shipped
+    /// prebuilt — told, worse, to exactly the population it is wrong about: a downloaded copy has no
+    /// `MeetingsSourceRoot`, so it can never take the self-update path and always lands here.
+    ///
+    /// The two cases need different sentences because they need different actions. A downloaded copy
+    /// runs one line that fetches and swaps the app in seconds. A copy whose checkout has been moved
+    /// or deleted has to be run from wherever that checkout went, and the command it is given still
+    /// names the old path, so saying where to run it is the whole of the help.
+    static func howToUpdate(sourceRoot: String?) -> String {
+        guard sourceRoot != nil else {
+            return "This copy was downloaded ready to run. One line in Terminal fetches the new "
+                + "version and replaces it, in a few seconds:"
+        }
+        return "Meetings was built from a checkout that is no longer where this copy remembers it. "
+            + "Run this wherever the repository is now:"
+    }
 
     static func run() -> String? {
         guard let source = script else { return "Cannot find the folder this copy was built from." }

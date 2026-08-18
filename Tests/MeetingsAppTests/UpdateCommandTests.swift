@@ -41,6 +41,31 @@ import Testing
             == "cd '/Users/someone/Developer/meetings' && git pull && ./install.sh")
     }
 
+    /// **The sentence printed above that command.** The update notice has one branch with a button and
+    /// one with a command, and the command branch is where every downloaded copy lands — it carries no
+    /// `MeetingsSourceRoot`, so it can never self-update. It used to tell that copy "Meetings is built
+    /// from source. Run this where you keep the repository", which is a false statement about how it
+    /// got there and points at a repository the user does not have.
+    @Test func aDownloadedCopyIsNeverToldItWasBuiltFromSource() {
+        let text = SelfUpdate.howToUpdate(sourceRoot: nil)
+        #expect(!text.lowercased().contains("built from"), "\(text)")
+        #expect(!text.lowercased().contains("repository"),
+                "a downloaded copy has no checkout to be sent to: \(text)")
+        // And it says what this copy actually is, or "does not lie" would be satisfied by saying
+        // nothing at all.
+        #expect(text.contains("downloaded"))
+    }
+
+    /// The other copy in that branch: built from a checkout that has since moved or been deleted, so
+    /// the command it is handed still names the old path and the only useful thing to say is where to
+    /// run it instead.
+    @Test func aStrandedCheckoutIsToldWhereToRunIt() {
+        let text = SelfUpdate.howToUpdate(sourceRoot: "/Users/someone/Developer/meetings")
+        #expect(text.contains("no longer where"))
+        #expect(text.contains("repository"))
+        #expect(!text.contains("downloaded"), "this copy was compiled, not fetched: \(text)")
+    }
+
     /// The escaping, proved by handing the command to the shell that would run it.
     ///
     /// A single quote inside the single-quoted path ends the quoting, and the rest of the path becomes

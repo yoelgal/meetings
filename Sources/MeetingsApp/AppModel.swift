@@ -174,10 +174,11 @@ final class AppModel {
     private(set) var availableUpdate: AvailableUpdate?
     /// Launch check plus the daily tick, held so it dies with the model rather than outliving it.
     private var updateChecks: Task<Void, Never>?
-    /// True when this launch's code signature is not the one the last launch recorded, which means
-    /// macOS has just dropped every permission this app was granted. Set in `start()` and cleared by
-    /// the notice's own buttons — see ``SigningChange``.
-    private(set) var signingChanged = false
+    /// Non-nil when this launch's code signature is not the one the last launch recorded, which means
+    /// macOS has just dropped every permission this app was granted. The case says *why*, because the
+    /// routine migration and a substituted signer need opposite sentences. Set in `start()` and cleared
+    /// by the notice's own buttons — see ``SigningChange``.
+    private(set) var signingChange: SigningChange.Cause?
 
     private(set) var selectedMeeting: Meeting?
     /// The transcript of the selected meeting. Final segments win over live ones when both exist.
@@ -363,7 +364,7 @@ final class AppModel {
         // fresh install does not fake. Not the wizard's own UserDefaults resume point: that is
         // *deleted* when the wizard completes, so every long-standing user looks like a first launch
         // to it. Not the presence of the store either, which a fresh install creates before this runs.
-        signingChanged = SigningChange.recordAndDetect(
+        signingChange = SigningChange.recordAndDetect(
             usedBefore: (try? store.settingBool(.onboardingCompleted)) == true
         )
         // Anything still at `transcribing` is work this or a previous launch did not finish: a crash
@@ -467,7 +468,7 @@ final class AppModel {
     /// memory, because a relaunch would otherwise re-raise a notice nobody needs twice.
     func dismissSigningChangeNotice() {
         SigningChange.dismissNotice()
-        signingChanged = false
+        signingChange = nil
     }
 
     func refresh() {
