@@ -10,3 +10,4 @@ granola-screenshots/
 
 # better-dev wiring is per-developer, not part of the project.
 CLAUDE.local.md
+.worktrees/

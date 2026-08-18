@@ -19,12 +19,52 @@
 //
 // deny -> block. ask -> ctx.ui.confirm, and with no UI to ask, block: an unanswerable ask is not an
 // allow. Anything else, including every other tool, returns undefined and stays silent.
+//
+// An ask nobody notices is the same as a hang, so `alert()` below fires before the dialog opens.
+// Measured 2026-08-18: Herdr reports this pane as `agent_status: working` the whole time a confirm
+// is on screen, because `herdr agent list` shows `screen_detection_skipped: true` for omp panes — it
+// does not read the screen, it reads the terminal title, and omp keeps its spinner glyph there while
+// a tool_call hook awaits. So the sidebar dot stays live, the operator has no reason to look, and the
+// session sits blocked until somebody happens to glance at it. Nothing bd-guard can return changes
+// that; the only fix available from inside the hook is to raise the alarm itself.
 
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 
 const TIMEOUT_MS = 5000;
+
+// Raise the alarm before blocking on a dialog nothing else announces.
+//
+// Three channels because they fail in different places and none is reliable alone: the omp status
+// line is the only one that survives in the TUI after the toast fades, `notify` is the in-app toast,
+// and `herdr notification show` is the only one that reaches an operator whose Herdr tab is not the
+// focused one — which is the case this exists for. `--sound request` because a silent notification
+// on an unfocused tab is the problem restated.
+//
+// Every channel is best-effort and none may throw: this runs inside the tool_call handler, and omp
+// blocks every tool call when that handler throws, so a failed notification must never become a
+// wedged session.
+function alert(ctx: HookContext, reason: string): void {
+  try {
+    ctx.ui?.setStatus?.("bd-guard", "waiting for approval");
+  } catch {}
+  try {
+    ctx.ui?.notify?.(`better-dev guard needs approval: ${reason}`, "warn");
+  } catch {}
+  if (process.env.HERDR_ENV === "1") {
+    try {
+      spawnSync("herdr", ["notification", "show", "better-dev guard needs approval",
+        "--body", reason, "--sound", "request"], { timeout: TIMEOUT_MS, stdio: "ignore" });
+    } catch {}
+  }
+}
+
+function alertCleared(ctx: HookContext): void {
+  try {
+    ctx.ui?.setStatus?.("bd-guard", "");
+  } catch {}
+}
 
 interface ToolCallEvent {
   toolName?: string;
@@ -34,7 +74,14 @@ interface ToolCallEvent {
 interface HookContext {
   cwd?: string;
   hasUI?: boolean;
-  ui?: { confirm(title: string, message: string): Promise<boolean> };
+  // Only `confirm` is required. `notify` and `setStatus` are optional because this interface is a
+  // hand-written shape for what omp passes, not an import of its type - a host that does not offer
+  // them must degrade to a silent ask rather than a crashed hook.
+  ui?: {
+    confirm(title: string, message: string): Promise<boolean>;
+    notify?(message: string, type?: string): void;
+    setStatus?(key: string, text: string): void;
+  };
 }
 
 interface BlockResult {
@@ -127,9 +174,23 @@ export default function (pi: HookApi): void {
       const queried = checks.find((c) => c?.decision === "ask");
       if (!queried) return undefined;
 
-      if (!ctx.hasUI || !ctx.ui) return { block: true, reason: `${queried.reason} (no UI to ask - blocked)` };
-      const approved = await ctx.ui.confirm("better-dev guard", queried.reason);
-      return approved ? undefined : { block: true, reason: "[better-dev] declined by the operator" };
+      // The no-UI case alerts too. It is the worse one: a subagent has no dialog to show, so the
+      // call is refused outright, and without this the operator sees only a worker that failed for
+      // reasons buried in its transcript.
+      if (!ctx.hasUI || !ctx.ui) {
+        alert(ctx, `${queried.reason} (no UI to ask - blocked)`);
+        return { block: true, reason: `${queried.reason} (no UI to ask - blocked)` };
+      }
+      alert(ctx, queried.reason);
+      try {
+        const approved = await ctx.ui.confirm("better-dev guard", queried.reason);
+        return approved ? undefined : { block: true, reason: "[better-dev] declined by the operator" };
+      } finally {
+        // In a `finally` so the status line clears on a declined dialog and on an aborted session
+        // too, not only on approval. A "waiting for approval" that outlives the wait is worse than
+        // no status at all: it trains the operator to ignore the one line that means they are needed.
+        alertCleared(ctx);
+      }
     } catch {
       return undefined; // never throw: a throwing tool_call handler blocks every tool omp runs
     }
