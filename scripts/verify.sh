@@ -12,7 +12,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 STEP=0
-step() { STEP=$((STEP + 1)); echo; echo "=== $STEP/8  $*"; }
+step() { STEP=$((STEP + 1)); echo; echo "=== $STEP/9  $*"; }
 
 step "the toolchain gate, and the Command Line Tools staying enough to build this"
 # fix/install-requires-xcode. A stranger's install cloned the repo, spent their login password on a
@@ -180,6 +180,19 @@ fi
 # from is a backup that silently is not one.
 old export 0112-weekly --format md --out "$OLD_HOME/md" >/dev/null
 grep -rq "Send the numbers" "$OLD_HOME/md" || fail "markdown export dropped the migrated actions"
+
+step "the install a user actually does: a prebuilt release, on a Mac with no compiler"
+# Last, because it rebuilds dist/ as a release-shaped bundle and every step above wants the ordinary
+# one. It is its own script rather than inline here because it stages a whole rehearsal — a signed
+# bundle, a zip, a checksum, a throwaway certificate and a file:// release — and needs a cleanup trap
+# of its own for the keychain it creates.
+#
+# What it is guarding is not the happy path. Meetings is not notarized, so Gatekeeper never inspects
+# it: a curl download carries no quarantine attribute and macOS runs that check on nothing else. The
+# checksum and signature refusals in install.sh are therefore the only thing between a user and
+# whatever the network handed them, and this proves all three — an ad-hoc-signed release, a corrupted
+# download, and the certificate pin — refuse without touching the app already installed.
+bash scripts/install-check.sh
 
 echo
 echo "VERIFY OK"
