@@ -51,9 +51,15 @@ esac
 # install.sh carries its own copy of the check, on purpose: it is fetched over curl and runs before
 # this repo exists, so it cannot source one from here. It is also the copy that has to fire before
 # the certificate prompt spends a password, so it is checked the same way rather than grepped for.
+#
+# `--from-source` explicitly, because that is now the only path a toolchain can matter on: the
+# default installs a prebuilt release and never compiles anything, so it must NOT consult the SDK —
+# refusing to install a downloaded binary because the machine cannot build one would be the whole
+# point of the download inverted. A bare `./install.sh` here would therefore reach the network, and
+# the assertion below would fail for the right reason at the wrong door.
 SRC_PROBE="$STUB/should-not-exist"
-OLD="$(PATH="$STUB:$PATH" MEETINGS_SRC="$SRC_PROBE" MEETINGS_NO_OPEN=1 ./install.sh 2>&1 </dev/null)" \
-    && { echo "verify: install.sh accepted a macOS 15 SDK" >&2; exit 1; }
+OLD="$(PATH="$STUB:$PATH" MEETINGS_SRC="$SRC_PROBE" MEETINGS_NO_OPEN=1 ./install.sh --from-source 2>&1 </dev/null)" \
+    && { echo "verify: install.sh --from-source accepted a macOS 15 SDK" >&2; exit 1; }
 case "$OLD" in
     *"macOS 26 SDK"*) echo "install.sh: $(printf '%s' "$OLD" | head -1)" ;;
     *) echo "verify: install.sh failed on a macOS 15 SDK, but not at the gate:
