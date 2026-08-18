@@ -32,15 +32,42 @@ cd "$ROOT"
 
 STAGE=""
 KEYCHAIN=""
+SEARCH_LIST=""
+SLEEPER=""
 cleanup() {
     # The keychain first: it is in the user's search list until it is deleted, and leaving one behind
     # on a developer's Mac is worse litter than a temp directory.
     if [ -n "$KEYCHAIN" ] && [ -f "$KEYCHAIN" ]; then
         security delete-keychain "$KEYCHAIN" 2>/dev/null || true
     fi
+    # And the search list put back to what it was, because deleting a keychain is not the same as
+    # undoing the `security list-keychains -s` that added it. That command REPLACES the list, so the
+    # only way back is to have written the old one down. A run that was killed rather than allowed to
+    # exit skipped this entirely and left an entry pointing at a deleted temp file in the operator's
+    # real user search list — round 2 found one from its own killed run, and they accumulate silently.
+    # `-s` with the saved words rather than the raw string: each entry is a separate argument.
+    if [ -n "$SEARCH_LIST" ]; then
+        security list-keychains -d user -s $SEARCH_LIST 2>/dev/null || true
+    fi
+    # Any process this check started to stand in for a running app. It is a `cat` waiting on a pipe,
+    # so it would otherwise sit there until its `sleep` ran out.
+    if [ -n "$SLEEPER" ]; then
+        pkill -f "^$SLEEPER$" 2>/dev/null || true
+    fi
     if [ -n "$STAGE" ]; then rm -rf "$STAGE"; fi
 }
 trap cleanup EXIT
+
+# What a killed run could not clean up, swept on the way in: entries naming a keychain this check
+# created and then took with it. Matched on the fixed name it always uses, under a temp directory, so
+# nothing else can look like one. Done before the list is captured below, or the stale entry would be
+# saved and faithfully restored.
+stale="$(security list-keychains -d user | tr -d '"' | grep -c 'check\.keychain-db' || true)"
+if [ "${stale:-0}" -gt 0 ]; then
+    echo "note: dropping $stale stale install-check keychain(s) from the user search list" >&2
+    security list-keychains -d user -s \
+        $(security list-keychains -d user | tr -d '"' | grep -v 'check\.keychain-db' || true)
+fi
 
 die()  { echo "install-check: $*" >&2; exit 1; }
 pass() { echo "    ok    $*"; }
@@ -109,6 +136,37 @@ install_run() { # install_run <extra env assignments...> ; echoes exit code, nev
     set -e
 }
 
+install_run_piped() { # same, but as `cat install.sh | bash`, which is the shape the README documents
+    set +e
+    # The difference that matters: with the script on stdin there is no $0 on disk, so install.sh's
+    # $SELF is empty and everything it can only do from a checkout is switched off. That is the shape
+    # every real user takes and the shape the certificate pin was once accidentally excluded from, so
+    # at least one case has to run this way rather than handing bash a path.
+    ( cd "$STAGE" && cat "$STAGE/install.sh" | env -i \
+        PATH="$NOSWIFT" HOME="$STAGE/home" TMPDIR="$STAGE/tmp" MEETINGS_HOME="$STAGE/store" \
+        MEETINGS_ASSET_URL="$ASSET" MEETINGS_APPS="$STAGE/apps" MEETINGS_BIN="$STAGE/bin" \
+        MEETINGS_NO_OPEN=1 "$@" \
+        /bin/bash ) > "$STAGE/out" 2>&1
+    echo $?
+    set -e
+}
+
+install_run_flag() { # install_run_flag <install.sh flag> [env assignments...]
+    # A separate runner because install_run's arguments are env assignments handed to `env`, so a flag
+    # passed there becomes a command name and the run dies with "env: --from-source: No such file or
+    # directory" rather than exercising anything.
+    flag="$1"
+    shift
+    set +e
+    ( cd "$STAGE" && env -i \
+        PATH="$NOSWIFT" HOME="$STAGE/home" TMPDIR="$STAGE/tmp" MEETINGS_HOME="$STAGE/store" \
+        MEETINGS_ASSET_URL="$ASSET" MEETINGS_APPS="$STAGE/apps" MEETINGS_BIN="$STAGE/bin" \
+        MEETINGS_NO_OPEN=1 "$@" \
+        /bin/bash "$STAGE/install.sh" "$flag" ) > "$STAGE/out" 2>&1
+    echo $?
+    set -e
+}
+
 mkdir -p "$STAGE/home" "$STAGE/tmp" "$STAGE/store"
 
 # ---------------------------------------------------------------- an ad-hoc release is refused
@@ -154,8 +212,10 @@ KPASS="install-check"
 security create-keychain -p "$KPASS" "$KEYCHAIN"
 security unlock-keychain -p "$KPASS" "$KEYCHAIN"
 # -s REPLACES the search list, so the current entries are read back in: a bare -s would evict the
-# login keychain and take the rest of this machine's tooling with it.
-security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+# login keychain and take the rest of this machine's tooling with it. Written down first, because
+# putting the list back is the only way to undo this and `security delete-keychain` does not do it.
+SEARCH_LIST="$(security list-keychains -d user | tr -d '"')"
+security list-keychains -d user -s "$KEYCHAIN" $SEARCH_LIST
 
 # Two identities come out of here, not one: the release is signed with the first, and the second is
 # what the upgrade case installs over so that "the copy being replaced was signed by a *different*
@@ -241,6 +301,38 @@ grep -q "does not match the checksum" "$STAGE/out" \
 $(cat "$STAGE/out")"
 [ ! -e "$STAGE/apps/Meetings.app" ] || die "install.sh refused a corrupted download and installed it"
 pass "checksum mismatch refused, nothing installed"
+cp "$STAGE/good.zip" "$STAGE/dist/Meetings-arm64.zip"
+
+# ---------------------------------------------------------------- a broken signature is refused
+# The checksum and the signature are not the same check, and this is the input that tells them apart:
+# a zip whose digest is exactly what it claims and whose bundle does not verify. That is not a
+# contrived shape — it is the `ditto`-vs-`zip` damage package-release.sh exists to avoid, an archiver
+# that flattens a symlink or drops a resource fork, and it arrives with a perfectly good checksum
+# because the checksum is taken of the damaged archive.
+#
+# Until this existed the `codesign --verify --strict` line in install.sh could be replaced with `true`
+# and every case still passed: every staged bundle was validly signed, and the one corrupted download
+# failed at the checksum before the signature was ever looked at.
+echo "==> a download whose checksum matches but whose signature does not is refused"
+BROKEN="$STAGE/broken"
+mkdir -p "$BROKEN"
+ditto -x -k "$STAGE/good.zip" "$BROKEN/unpacked" || die "could not unpack the good zip to damage it"
+# One byte onto a sealed file inside the bundle. `codesign --verify --strict` reports it as
+# "In subcomponent: .../Contents/Helpers/meetings" — measured — so the seal genuinely covers this.
+printf 'x' >> "$BROKEN/unpacked/Meetings.app/Contents/Helpers/meetings"
+( cd "$BROKEN/unpacked" && ditto -c -k --sequesterRsrc --keepParent Meetings.app \
+    "$STAGE/dist/Meetings-arm64.zip" ) || die "could not repack the damaged bundle"
+# Re-hashed, so the checksum step passes and the signature step is the only thing left to refuse.
+# Handed in through MEETINGS_ASSET_SHA256 rather than rewritten beside the asset, because that also
+# rehearses the override a user pinning a digest by hand would use.
+BROKEN_SHA="$(shasum -a 256 "$STAGE/dist/Meetings-arm64.zip" | cut -d' ' -f1)"
+rc="$(install_run MEETINGS_ASSET_SHA256="$BROKEN_SHA")"
+[ "$rc" != 0 ] || die "install.sh installed a bundle whose signature does not verify"
+grep -q "code signature does not verify" "$STAGE/out" \
+    || die "install.sh refused a damaged bundle, but not at the signature:
+$(cat "$STAGE/out")"
+[ ! -e "$STAGE/apps/Meetings.app" ] || die "install.sh refused a damaged bundle and installed it"
+pass "a matching checksum over a broken signature is refused, nothing installed"
 cp "$STAGE/good.zip" "$STAGE/dist/Meetings-arm64.zip"
 
 # ---------------------------------------------------------------- a wrong certificate is refused
@@ -337,6 +429,72 @@ $(cat "$STAGE/out")"
 [ ! -e "$STAGE/apps/Meetings.app" ] || die "install.sh refused a disagreement and installed anyway"
 pass "a stale fingerprint on either side is refused, nothing installed"
 printf '%s\n' "$SHA1" > "$STAGE/Packaging/distribution-cert.sha1"
+
+# ---------------------------------------------------------------- the shape the README documents
+# Everything above hands bash a path, so install.sh's $SELF is a real file on every one of them. The
+# command every user actually runs does not: `curl … | bash` puts the script on stdin, $0 is `bash`,
+# and $SELF is empty. That difference is not cosmetic — it is exactly where the certificate pin used
+# to be switched off, because the pin was gated on a checkout being present, and no case here would
+# have noticed. One case runs the real shape, with the wrong certificate, and asserts the pin still
+# refuses.
+echo "==> piped into bash, a wrong certificate is still refused"
+pin_stage "$WRONG"
+printf '%s\n' "$WRONG" > "$STAGE/Packaging/distribution-cert.sha1"
+rc="$(install_run_piped)"
+[ "$rc" != 0 ] || die "piped into bash, install.sh installed a release it does not pin. That is the
+                      curl | bash path, which is every real install."
+grep -q "not signed by the distribution certificate" "$STAGE/out" \
+    || die "piped into bash, install.sh refused but not at the certificate pin:
+$(cat "$STAGE/out")"
+[ ! -e "$STAGE/apps/Meetings.app" ] || die "piped into bash, install.sh refused and installed anyway"
+pass "the pin holds when the script arrives on stdin"
+pin_stage "$SHA1"
+printf '%s\n' "$SHA1" > "$STAGE/Packaging/distribution-cert.sha1"
+
+# ---------------------------------------------------------------- http is not a download scheme
+# The scheme pin, and it needs no network: curl refuses a disabled protocol before it opens a socket.
+# `-L` without `--proto-redir '=https'` follows a redirect into any protocol curl was built with, and
+# the release URL IS a redirect to a CDN — so the one hop this really makes is exactly the hop that
+# could be answered with a downgrade. A checksum is no defence there, because the checksum comes down
+# the same wire.
+echo "==> an http asset URL is refused before anything is fetched"
+rc="$(install_run MEETINGS_ASSET_URL="http://example.invalid/Meetings-arm64.zip")"
+[ "$rc" != 0 ] || die "install.sh downloaded over http"
+# curl's own words for a protocol it was told not to use, and nothing weaker: "could not download" also
+# matches a DNS failure, so accepting that would let the scheme pin be deleted and still pass — the
+# host in the URL does not exist either.
+grep -qi 'protocol "\{0,1\}http"\{0,1\} disabled' "$STAGE/out" \
+    || die "install.sh refused an http URL, but not because the scheme is disabled:
+$(cat "$STAGE/out")"
+[ ! -e "$STAGE/apps/Meetings.app" ] || die "an http URL installed something anyway"
+pass "http is refused by the scheme pin, with no network involved"
+
+# ---------------------------------------------------------------- one fetch over https
+# Every case above is served over `file://`, which keeps this runnable with no network and no
+# published release — and leaves the entire https half unexercised: the releases/latest/download URL,
+# MEETINGS_VERSION, the sibling .sha256 fetch, and `--proto '=https' --proto-redir '=https'`, which
+# could be deleted without a single assertion noticing. A release asset is a redirect to a CDN, so the
+# scheme pinning is guarding the one hop this really makes.
+#
+# A refusal is enough and needs no published release: a tag that does not exist makes curl fail, and
+# what has to be true is that the run ends without installing anything. Skipped with a printed reason
+# when GitHub is unreachable, so a contributor offline still gets a green gate while CI gets the
+# coverage — a check that cannot run is worth saying out loud, and worth more than one that quietly
+# passes.
+if curl -fsS --proto '=https' --max-time 10 -o /dev/null \
+    https://github.com/yoelgal/meetings/releases 2>/dev/null; then
+    echo "==> a fetch over https, with a tag that does not exist"
+    rc="$(install_run MEETINGS_ASSET_URL="" MEETINGS_VERSION=v0.0.0-install-check)"
+    [ "$rc" != 0 ] || die "install.sh reported success for a release tag that does not exist"
+    grep -q "Could not download https://github.com/yoelgal/meetings/releases/download/v0.0.0-install-check/Meetings-arm64.zip" \
+        "$STAGE/out" \
+        || die "the https URL install.sh built is not the release-download URL:
+$(cat "$STAGE/out")"
+    [ ! -e "$STAGE/apps/Meetings.app" ] || die "a failed https download installed something anyway"
+    pass "https is reachable, the release URL is built correctly, and a missing tag installs nothing"
+else
+    echo "    skip  github.com is unreachable, so the one https case did not run"
+fi
 
 # ---------------------------------------------------------------- the install itself
 echo "==> installing it with no compiler on PATH"
@@ -466,18 +624,20 @@ $leftovers"
 pass "a same-signature upgrade is silent about permissions and leaves nothing behind"
 
 # ---------------------------------------------------------------- replacing a differently-signed copy
-# The other arm of the same branch, and the reason it exists. Once the migration release has shipped,
-# every user's installed copy is signed by a certificate — so "the requirement changed" stops meaning
-# "you built the old one yourself". A copy signed by somebody else's certificate is either a build the
-# user made with their own signing identity, or a build that was substituted for a release, and macOS
-# re-asking for the microphone is the only outward sign either happened. The migration's reassurance —
-# "Only this once: every release from here is signed with the same certificate" — is false in that
-# case and explains away the one signal there is, which is why the two arms say different things.
+# The case that used to be classified as a substitution and is in fact the commonest migration there
+# is. Anyone who followed the old README ran scripts/make-signing-identity.sh, so their installed copy
+# is signed by a real named certificate rather than ad hoc — and installing the release over it is the
+# same one-time event as installing over an ad-hoc build.
+#
+# Which is why install.sh classifies by what was just INSTALLED and not by the shape of the previous
+# requirement: the pin has already proved the new signature is the one distribution certificate, so
+# every later release keeps the grants and "Only this once" is true. Deciding by the previous
+# requirement told exactly those users their app might have been substituted, while the app itself
+# showed them the routine migration notice on the same install — one event explained two contradictory
+# ways, and the terminal's version was the wrong one.
 #
 # Signed with the second throwaway certificate, so the previous requirement genuinely names a
-# different certificate rather than a cdhash. install.sh cannot refuse this and should not: the copy
-# it replaces is what is unproven, the swap has already happened by the time it is reported, and the
-# signer of what was just installed is pinned. Reporting both requirements is the whole job.
+# different certificate rather than a cdhash.
 echo "==> replacing a copy signed by a different certificate"
 rm -rf "$STAGE/apps/Meetings.app"
 cp -R "$ROOT/dist/Meetings.app" "$STAGE/apps/Meetings.app"
@@ -486,7 +646,7 @@ codesign --force --sign "$OTHER_SHA1" --keychain "$KEYCHAIN" --timestamp=none \
     || die "could not plant a copy signed with the second throwaway certificate"
 OLD_REQ="$(codesign -d -r- "$STAGE/apps/Meetings.app" 2>/dev/null | sed -n 's/^# *//; s/^designated => //p')"
 case "$OLD_REQ" in
-    *cdhash*) die "the planted copy is ad-hoc, so this would test the migration arm again: $OLD_REQ" ;;
+    *cdhash*) die "the planted copy is ad-hoc, so this would test the same input as the case above: $OLD_REQ" ;;
     *"H\"$OTHER_SHA1\""*) ;;
     *) die "the planted copy is not signed by the second certificate: $OLD_REQ" ;;
 esac
@@ -494,20 +654,314 @@ esac
 rc="$(install_run)"
 [ "$rc" = 0 ] || die "installing over a differently-signed copy failed (exit $rc):
 $(cat "$STAGE/out")"
-grep -q "was signed by a different certificate" "$STAGE/out" \
+grep -q "signed differently from the one it replaced" "$STAGE/out" \
     || die "replacing a differently-signed copy said nothing about the signature change:
 $(cat "$STAGE/out")"
 grep -q "Only this once" "$STAGE/out" \
-    && die "a substituted or self-signed previous copy was explained away as the one-time migration,
-                      which is the sentence that makes a signer substitution invisible"
-# Both requirements, so the user can see which certificate they had and which they now have. Without
-# them the message names a problem and gives nothing to act on.
-grep -q "was signed by  .*$OTHER_SHA1" "$STAGE/out" \
-    || die "the note does not report the previous requirement:
+    || die "a release install over a differently-signed copy was not called the migration, so the
+                      installer and the app now say different things about the same install:
 $(cat "$STAGE/out")"
-grep -q "now signed by  .*$SHA1" "$STAGE/out" \
-    || die "the note does not report the new requirement:
+# The sentence that used to be printed here, and must not be again: it told users who had followed the
+# old README's advice to wonder where their own app came from.
+grep -q "was not one of the project's releases" "$STAGE/out" \
+    && die "a release install over a self-signed copy still accuses it of not being a release:
 $(cat "$STAGE/out")"
-pass "a differently-signed previous copy is reported, not reassured about"
+pass "a release over any differently-signed copy is the migration, and says so once"
+
+# ---------------------------------------------------------------- --from-source over a release
+# The other half of that branch, and the only path where the newly installed signature is NOT the
+# pinned certificate. A contributor building from source over a release must be told the truth about
+# it — their own identity, permissions asked again, expected — and must not be told the release they
+# just replaced was suspicious, which is what the old wording did to the one bundle here that is
+# actually verified.
+#
+# The build is stubbed. What is under test is install.sh's from-source branch, not build-app.sh, and a
+# real build in here would double the run time to re-prove something verify.sh has already proved. The
+# stub signs ad hoc, which is what a build with no identity in the keychain produces — and `security`
+# is deliberately not on the farm PATH, so install.sh finds no local identity and reaches the offer.
+#
+# That offer is the other thing this case pins down. It runs make-signing-identity.sh — the one step
+# in this file that spends the user's login password and adds a trusted certificate — and it used to
+# run it on a FAILED read from /dev/tty, because `[ -r /dev/tty ]` is true with no controlling
+# terminal and an empty $reply fell into the yes arm. There is no terminal here, so the marker below
+# must not exist afterwards.
+echo "==> --from-source over a release explains itself and asks for nothing"
+touch "$STAGE/Package.swift"
+cat > "$STAGE/scripts/make-signing-identity.sh" <<'STUB'
+#!/bin/bash
+# Stands in for the real thing, which would take a password. Leaves evidence instead.
+printf 'ran\n' > "$(dirname "$0")/../make-signing-identity.ran"
+STUB
+cat > "$STAGE/scripts/build-app.sh" <<'STUB'
+#!/bin/bash
+# Stands in for the real build: the staged release bundle, re-signed ad hoc, which is what a build
+# from source with no identity in the keychain produces.
+set -eu
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+mkdir -p "$ROOT/dist"
+rm -rf "$ROOT/dist/Meetings.app"
+ditto "$ROOT/apps/Meetings.app" "$ROOT/dist/Meetings.app"
+codesign --force --sign - --timestamp=none "$ROOT/dist/Meetings.app" 2>/dev/null
+STUB
+chmod +x "$STAGE/scripts/make-signing-identity.sh" "$STAGE/scripts/build-app.sh"
+# The installed copy is the genuine release from the case above, so this is a from-source build landing
+# on top of a verified one — the exact situation the old text got backwards.
+#
+# This is the one case that runs WITH the compiler on PATH, because building from source is the one
+# path that legitimately needs one: install.sh's toolchain gate asks xcode-select, xcrun and swift for
+# the SDK version and refuses without them. The no-compiler PATH is a claim about the default path
+# only.
+#
+# And `security` is stubbed to find nothing, which is the state the signing offer exists for: a Mac
+# that has not made a local certificate yet. Without the stub this machine's own "Meetings Local
+# Signing" identity is found, the offer never appears, and the assertions below about what it does
+# with no terminal would pass while testing nothing.
+SEC_SHIM="$STAGE/nosecurity"
+mkdir -p "$SEC_SHIM"
+printf '#!/bin/bash\nexit 1\n' > "$SEC_SHIM/security"
+chmod +x "$SEC_SHIM/security"
+rc="$(install_run_flag --from-source PATH="$SEC_SHIM:$NOSWIFT:/usr/bin:/bin")"
+[ "$rc" = 0 ] || die "--from-source over a release failed (exit $rc):
+$(cat "$STAGE/out")"
+[ ! -e "$STAGE/make-signing-identity.ran" ] \
+    || die "the signing offer ran make-signing-identity.sh with no terminal to answer it. That is the
+                      one step here that spends the user's login password, answered on silence."
+grep -q "no terminal to ask on" "$STAGE/out" \
+    || die "the signing offer did not report that it had nobody to ask:
+$(cat "$STAGE/out")"
+grep -q "signed with your own identity rather than the project's" "$STAGE/out" \
+    || die "--from-source did not explain its own signature:
+$(cat "$STAGE/out")"
+grep -q "was not one of the project's releases" "$STAGE/out" \
+    && die "--from-source accused the genuine release it replaced of not being one:
+$(cat "$STAGE/out")"
+grep -q "Only this once" "$STAGE/out" \
+    && die "--from-source promised its own signature would persist across releases, which is the one
+                      thing it cannot do:
+$(cat "$STAGE/out")"
+pass "--from-source names its own certificate, accuses nothing, and asks for no password"
+rm -f "$STAGE/Package.swift" "$STAGE/scripts/build-app.sh" "$STAGE/scripts/make-signing-identity.sh"
+
+# ---------------------------------------------------------------- a running app is not replaced blindly
+# The recording guard and the quit-and-wait, neither of which had a failing input: no case here ever
+# had a process running, so `elif [ "$RUNNING" = 1 ]` could be `elif false` and `pkill` could be `:`
+# and this file still printed OK. What they protect is the worst thing an upgrade can do — end a
+# meeting somebody is recording, mid-sentence, and take the store's open handles with it.
+#
+# The stand-in process is a three-line binary compiled here, blocking in `pause()`, copied to the
+# bundle's Contents/MacOS/Meetings so its argv[0] is exactly the path install.sh anchors its
+# `pgrep -f "^…$"` on. It costs no CPU and it is not the app: launching the real Meetings.app in a
+# check would open windows and ask for the microphone.
+#
+# Compiled rather than symlinked to a system tool that already blocks, which is what this was first.
+# A symlink to /bin/cat made the planted directory an APPLE-SIGNED bundle: `codesign -dv` on it
+# answers `Identifier=com.apple.cat`, and macOS then SIGKILLs anything else executed inside that
+# bundle — including the stub CLI helper these cases probe through (measured, Killed: 9, while
+# `/bin/bash <the same script>` ran it fine). A copy of a system binary is no good either: macOS kills
+# a copied platform binary even re-signed ad hoc (measured, exit 137). A binary of our own leaves the
+# bundle unsigned, which is what a hand-planted bundle should look like.
+printf '#include <unistd.h>\nint main(void){for(;;)pause();return 0;}\n' > "$STAGE/sleeper.c"
+clang -o "$STAGE/sleeper" "$STAGE/sleeper.c" 2>/dev/null \
+    || die "clang could not build the stand-in process for the running-app cases"
+
+plant_running_app() { # plant_running_app <apps dir> [helper script] — a fresh bundle, live process
+    RUN_APPS="$1"
+    helper="${2:-}"
+    rm -rf "$RUN_APPS"
+    mkdir -p "$RUN_APPS/Meetings.app/Contents/MacOS" "$RUN_APPS/Meetings.app/Contents/Helpers"
+    # The CLI helper goes in BEFORE the executable, and that order is not a preference. The moment
+    # Contents/MacOS/Meetings is a real Mach-O the directory IS an app bundle, and macOS's App
+    # Management protection refuses writes inside one: creating the helper afterwards fails with
+    # "Operation not permitted" (measured) even in a temp directory this script owns.
+    if [ -n "$helper" ]; then
+        cp "$helper" "$RUN_APPS/Meetings.app/Contents/Helpers/meetings"
+        chmod +x "$RUN_APPS/Meetings.app/Contents/Helpers/meetings"
+    fi
+    cp "$STAGE/sleeper" "$RUN_APPS/Meetings.app/Contents/MacOS/Meetings"
+    SLEEPER="$RUN_APPS/Meetings.app/Contents/MacOS/Meetings"
+    # Started in a subshell so bash never reports it as a job: killing it otherwise prints
+    # "Terminated: 15" into the middle of this script's output. Every descriptor goes to /dev/null —
+    # its stderr is otherwise this script's stderr, and anything reading our output through a pipe
+    # then blocks on the process instead of seeing the run finish.
+    ( "$SLEEPER" >/dev/null 2>&1 </dev/null & )
+    # Waited for rather than assumed: a case that silently had no process would pass every assertion
+    # below for the wrong reason.
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        if pgrep -f "^$SLEEPER$" >/dev/null 2>&1; then return 0; fi
+        sleep 0.2
+    done
+    die "could not start a stand-in process at $SLEEPER, so the running-app cases prove nothing"
+}
+
+# Each arm plants at its own directory rather than reusing one. A path that has held a validly signed
+# bundle is not a clean slate for a hand-made one — and the arms would otherwise interfere anyway,
+# since the third one installs for real over what the first two left.
+echo "==> a recording in progress refuses the install"
+# A stub helper, because what is under test is install.sh's reaction to the probe's answer. The real
+# CLI's answer is a separate fact, asserted by the `meetings status` cases above.
+printf '#!/bin/bash\necho "m-abc  today  12:04  recording  -  Board review"\n' \
+    > "$STAGE/helper-recording.sh"
+plant_running_app "$STAGE/running-recording" "$STAGE/helper-recording.sh"
+rc="$(install_run MEETINGS_APPS="$RUN_APPS")"
+[ "$rc" != 0 ] || die "install.sh replaced the app while a meeting was being recorded"
+grep -q "recording right now" "$STAGE/out" \
+    || die "install.sh refused, but not because of the recording:
+$(cat "$STAGE/out")"
+grep -q "Board review" "$STAGE/out" \
+    || die "the refusal does not name what would have been lost:
+$(cat "$STAGE/out")"
+pgrep -f "^$SLEEPER$" >/dev/null 2>&1 \
+    || die "install.sh refused and killed the running app anyway, which is the loss it refused to cause"
+pkill -f "^$SLEEPER$" 2>/dev/null || true
+pass "a live recording refuses the install and the running app is left alone"
+
+echo "==> a running app the probe cannot ask about refuses with no terminal"
+# No helper at all: the question cannot be asked, which is not the same as an answer of no. Gating the
+# whole guard on the helper's presence — which it was — sent this case straight into the `pkill` with
+# no prompt at all.
+plant_running_app "$STAGE/running-unanswerable"
+rc="$(install_run MEETINGS_APPS="$RUN_APPS")"
+[ "$rc" != 0 ] || die "install.sh replaced a running app it could not ask about, without asking"
+grep -q "could not check whether it is recording" "$STAGE/out" \
+    || die "install.sh refused, but not at the unanswered-probe prompt:
+$(cat "$STAGE/out")"
+pgrep -f "^$SLEEPER$" >/dev/null 2>&1 || die "install.sh refused and killed the running app anyway"
+pkill -f "^$SLEEPER$" 2>/dev/null || true
+pass "an unanswerable probe with no terminal is a refusal, not a yes"
+
+echo "==> a running app that is not recording is waited for, not raced"
+# The quit-and-wait. `pkill` mutated to `:` left every case green; here the process must be gone by the
+# time the install finishes, and the install must succeed.
+printf '#!/bin/bash\nexit 0\n' > "$STAGE/helper-idle.sh"
+plant_running_app "$STAGE/running-idle" "$STAGE/helper-idle.sh"
+rc="$(install_run MEETINGS_APPS="$RUN_APPS")"
+[ "$rc" = 0 ] || die "install.sh could not replace a running app that was not recording (exit $rc):
+$(cat "$STAGE/out")"
+grep -q "Waiting for the running app to finish and quit" "$STAGE/out" \
+    || die "install.sh replaced a running app without waiting for it:
+$(cat "$STAGE/out")"
+pgrep -f "^$SLEEPER$" >/dev/null 2>&1 \
+    && die "install.sh reported success with the old process still running, which is how a stale
+                      process writes over a migration the new build has already recorded as done"
+[ -d "$RUN_APPS/Meetings.app/Contents/Resources" ] \
+    || die "the planted bundle was not actually replaced by the real one"
+SLEEPER=""
+pass "a running app is quit and waited for before the swap"
+
+# ---------------------------------------------------------------- the undo, when the swap fails
+# The restore path had no failing input either: every refusal above happens BEFORE the move-aside, so
+# the trap's restore could be deleted outright and this file still printed OK. It is the one thing
+# standing between a failed upgrade and a Mac with no Meetings.app at all.
+#
+# The failure is injected where it can really happen — between the two renames — by shadowing `mv` for
+# exactly the commit call. The `sudo` fallback then fails too (no terminal), which is the "refused
+# password" case the code names, and the trap has to put the old bundle back.
+echo "==> a failed swap puts the previous version back"
+SHIM="$STAGE/shim"
+mkdir -p "$SHIM"
+cat > "$SHIM/mv" <<'STUB'
+#!/bin/bash
+# Fails only the commit rename of the freshly unpacked bundle. The move-aside and the restore both go
+# through, so what is under test is the undo and not `mv` in general.
+case "${1:-}" in
+    */unpacked/Meetings.app) echo "mv: injected failure" >&2; exit 1 ;;
+esac
+exec /bin/mv "$@"
+STUB
+chmod +x "$SHIM/mv"
+# A known-good installed copy to lose: the genuine release, planted directly.
+rm -rf "$STAGE/apps/Meetings.app"
+cp -R "$ROOT/dist/Meetings.app" "$STAGE/apps/Meetings.app"
+codesign --force --sign "$SHA1" --keychain "$KEYCHAIN" --timestamp=none \
+    --entitlements Packaging/Meetings.entitlements "$STAGE/apps/Meetings.app" 2>/dev/null \
+    || die "could not plant the copy the failed swap is supposed to give back"
+rc="$(install_run PATH="$SHIM:$NOSWIFT")"
+[ "$rc" != 0 ] || die "install.sh reported success after the commit rename failed"
+[ -d "$STAGE/apps/Meetings.app" ] \
+    || die "the swap failed and the previous version was NOT put back: this Mac now has no
+                      Meetings.app, from a command the README calls safe to re-run"
+codesign --verify --strict "$STAGE/apps/Meetings.app" >/dev/null 2>&1 \
+    || die "the previous version was put back damaged, so the restore is not a restore"
+leftovers="$(ls -d "$STAGE/apps/"Meetings.app.replaced-* 2>/dev/null || true)"
+[ -z "$leftovers" ] || die "the restore left the aside copy behind as well:
+$leftovers"
+grep -q "has been put back" "$STAGE/out" \
+    || die "the failure did not tell the user their app is still there:
+$(cat "$STAGE/out")"
+pass "a failed swap restores the previous version, intact, and says so"
+
+# ---------------------------------------------------------------- the ~/Applications fallback
+# The only path a non-admin account can take, and until this existed nothing here went near it: the
+# fallback fires when MEETINGS_APPS is unset AND /Applications is unwritable, so covering it looks like
+# it would mean installing into the real /Applications.
+#
+# It does not. The staged install.sh is already rewritten for the certificate pin, so the same
+# mechanism moves its hardcoded default to a directory made unwritable on purpose. With MEETINGS_APPS
+# unset the resolution then falls back to $HOME/Applications, and $HOME is inside the staging
+# directory — which is a real rehearsal of the path, not a claim about the source text.
+#
+# What the defect did: $EXEC_PATH, $INSTALLED_CLI and $INSTALLED_REQ were all built from the
+# pre-fallback $APPS, so the recording guard probed a bundle nobody was replacing, `pkill` matched a
+# path nothing was running from, and $INSTALLED_REQ stayed empty — a live app kept running through
+# "Installed." and an upgrade printed the fresh-install text. Both arms below are those two outcomes.
+NOAPPS="$STAGE/unwritable-applications"
+mkdir -p "$NOAPPS"
+chmod 500 "$NOAPPS"
+[ ! -w "$NOAPPS" ] || die "$NOAPPS is still writable, so the fallback would never fire and both arms
+                      below would be testing the ordinary path"
+pin_stage "$SHA1"
+# The one substitution: the default only, leaving MEETINGS_APPS's precedence exactly as shipped.
+sed -i '' "s|^APPS=\"\${MEETINGS_APPS:-/Applications}\"\$|APPS=\"\${MEETINGS_APPS:-$NOAPPS}\"|" \
+    "$STAGE/install.sh"
+grep -q "^APPS=\"\${MEETINGS_APPS:-$NOAPPS}\"\$" "$STAGE/install.sh" \
+    || die "could not point the staged install.sh's default app directory at $NOAPPS — has that line
+                      changed shape? Neither arm below would be exercising the fallback."
+
+echo "==> the fallback location's running app is seen, not sailed past"
+printf '#!/bin/bash\necho "m-xyz  today  09:00  recording  -  Investor call"\n' > "$STAGE/helper-fallback.sh"
+FALLBACK_HOME="$STAGE/home-fallback"
+mkdir -p "$FALLBACK_HOME"
+plant_running_app "$FALLBACK_HOME/Applications" "$STAGE/helper-fallback.sh"
+# MEETINGS_APPS empty rather than absent: install.sh tests `[ -z "${MEETINGS_APPS:-}" ]` and expands
+# `${MEETINGS_APPS:-…}`, so an empty value takes the same branch an unset one does, and `env -i` has no
+# way to unset what install_run sets.
+rc="$(install_run MEETINGS_APPS="" HOME="$FALLBACK_HOME")"
+[ "$rc" != 0 ] || die "installing into the fallback location replaced a recording app without a word.
+                      That is every non-admin account, and the recording guard did not run at all."
+grep -q "the app is going to $FALLBACK_HOME/Applications" "$STAGE/out" \
+    || die "install.sh did not fall back to ~/Applications, so this arm tested the ordinary path:
+$(cat "$STAGE/out")"
+grep -q "Investor call" "$STAGE/out" \
+    || die "the fallback path's refusal does not name the recording it protected:
+$(cat "$STAGE/out")"
+pgrep -f "^$SLEEPER$" >/dev/null 2>&1 \
+    || die "the fallback path killed the running app it had just refused to disturb"
+pkill -f "^$SLEEPER$" 2>/dev/null || true
+SLEEPER=""
+pass "the recording guard reads the fallback location, not the one it fell back from"
+
+echo "==> an upgrade in the fallback location is told about its permissions"
+# The other half: with $INSTALLED_REQ built from the wrong directory it was always empty, so an upgrade
+# in the fallback location printed the first-install text and never mentioned that macOS was about to
+# ask for the microphone again.
+NOTE_HOME="$STAGE/home-fallback-note"
+mkdir -p "$NOTE_HOME/Applications"
+cp -R "$ROOT/dist/Meetings.app" "$NOTE_HOME/Applications/Meetings.app"
+codesign --force --sign - --timestamp=none \
+    --entitlements Packaging/Meetings.entitlements "$NOTE_HOME/Applications/Meetings.app" 2>/dev/null \
+    || die "could not plant an ad-hoc-signed copy in the fallback location"
+rc="$(install_run MEETINGS_APPS="" HOME="$NOTE_HOME")"
+[ "$rc" = 0 ] || die "upgrading in the fallback location failed (exit $rc):
+$(cat "$STAGE/out")"
+[ -d "$NOTE_HOME/Applications/Meetings.app" ] || die "the fallback install went somewhere else entirely"
+grep -q "Screen & System Audio" "$STAGE/out" \
+    || die "an upgrade in the fallback location said nothing about permissions, which means
+                      \$INSTALLED_REQ was read from the wrong directory again:
+$(cat "$STAGE/out")"
+grep -q "Setup will ask for the microphone" "$STAGE/out" \
+    && die "an upgrade in the fallback location was described as a first install:
+$(cat "$STAGE/out")"
+pass "an upgrade in the fallback location is recognised as an upgrade"
+pin_stage "$SHA1"
 
 echo "install-check OK"

@@ -107,6 +107,30 @@ major=$(sw_vers -productVersion | cut -d. -f1)
     Transcription runs its speech models on the Apple Silicon neural engine through CoreML, so
     there is nothing here to fall back to — not a slower build, none."
 
+# ---------------------------------------------------------------- where the app is going
+# Resolved here, before anything at all is derived from it. THE INVARIANT: nothing computed from
+# $APPS may be computed before $APPS is final. This block used to sit down beside the swap, three
+# hundred lines after the recording guard had already built $EXEC_PATH, $INSTALLED_CLI and
+# $INSTALLED_REQ out of the pre-fallback value — so on the fallback path the guard probed a bundle
+# nobody was replacing, `pkill` matched a path nothing was running from, and $INSTALLED_REQ stayed
+# empty, which printed the fresh-install text over somebody's upgrade and no permission note at all.
+# A live app kept running straight through "Installed." That was every standard non-admin account:
+# the exact population the fallback exists for.
+#
+# An unwritable /Applications used to mean a sudo prompt, and this script no longer has a reason to
+# ask for a password: nothing it does needs root except writing there. ~/Applications is a real
+# application directory that Spotlight, Launchpad and `open` all know, so the fallback costs the user
+# nothing but a path.
+#
+# Only when they did not name a directory themselves. An explicit MEETINGS_APPS is an instruction,
+# and installing somewhere else because that one was awkward is ignoring it. The directory itself is
+# created at the swap rather than here, so a run that refuses leaves no directories behind.
+if [ -z "${MEETINGS_APPS:-}" ] && [ ! -w "$APPS" ]; then
+    APPS="$HOME/Applications"
+    say "/Applications needs an administrator and this installer never asks for your password, so
+    the app is going to $APPS instead."
+fi
+
 # Yes unless they say no, and a no when there is nobody to ask — every caller answers that with the
 # exact command to run by hand, which is the right outcome for a CI job or an agent.
 #
@@ -337,13 +361,22 @@ build_from_source() {
     # certificate, so permissions survive every update without anyone creating anything.)
     #
     # build-app.sh offers this too, but only when it can see a terminal on stdin — which it cannot
-    # when this script is piped into bash. So it is asked here, from /dev/tty, and build-app.sh is
+    # when this script is piped into bash. So it is asked here, through `ask`, and build-app.sh is
     # told not to ask again.
+    #
+    # Through `ask` and not a hand-rolled read, which is what this was and what it got wrong. The gate
+    # was `[ -r /dev/tty ]`, which is true with no controlling terminal — the exact trap the comment
+    # above `ask` documents — and the read that then failed left $reply empty, which fell into the
+    # default arm and ran make-signing-identity.sh --yes: the one step here that spends the user's
+    # login password and adds a trusted certificate to their keychain, done on silence, in a job where
+    # nobody could have answered. It also printed "/dev/tty: Device not configured" at them twice,
+    # because the read had no `2>/dev/null` before its redirection. `ask` counts a failed read as a
+    # no and suppresses the device error; both are the reason it exists.
     export MEETINGS_SIGN_ADHOC=1
     LOCAL_IDENTITY="Meetings Local Signing"
     if security find-identity -v -p codesigning 2>/dev/null | grep -qF "$LOCAL_IDENTITY"; then
         say "Signing with the certificate you already have"
-    elif [ -r /dev/tty ]; then
+    else
         cat <<'EXPLAIN'
 
     macOS ties app permissions to a code signature. Signed ad hoc, every rebuild looks
@@ -353,22 +386,15 @@ build_from_source() {
     macOS will ask for your login password once, to trust it.
 
 EXPLAIN
-        printf '    Create it now? [Y/n] '
-        read -r reply < /dev/tty || reply=""
-        case "$reply" in
-            [nN]*)
-                say "Skipped. Run scripts/make-signing-identity.sh whenever you want the re-asking to stop."
-                ;;
-            *)
-                # --yes because the explanation above already asked; the script's own confirmation
-                # would be the same question twice. /dev/tty because macOS prompts for the login
-                # password.
-                bash scripts/make-signing-identity.sh --yes < /dev/tty \
-                    || say "Certificate setup did not finish. Continuing with an ad-hoc signature."
-                ;;
-        esac
-    else
-        say "No terminal to ask on — signing ad hoc. Run scripts/make-signing-identity.sh later."
+        if ask "Create it now?"; then
+            # --yes because the explanation above already asked; the script's own confirmation would
+            # be the same question twice. /dev/tty because macOS prompts for the login password.
+            bash scripts/make-signing-identity.sh --yes < /dev/tty \
+                || say "Certificate setup did not finish. Continuing with an ad-hoc signature."
+        else
+            say "Signing ad hoc. Run scripts/make-signing-identity.sh whenever you want the
+    re-asking to stop."
+        fi
     fi
 
     say "Building (first run fetches packages, so it takes a few minutes)"
@@ -630,21 +656,9 @@ $RECORDING
 fi
 
 # ---------------------------------------------------------------- install the app
-# An unwritable /Applications used to mean a sudo prompt, and this script no longer has a reason to
-# ask for a password: nothing it does needs root except writing there. ~/Applications is a real
-# application directory that Spotlight, Launchpad and `open` all know, so the fallback costs the user
-# nothing but a path.
-#
-# Only when they did not name a directory themselves. An explicit MEETINGS_APPS is an instruction,
-# and installing somewhere else because that one was awkward is ignoring it.
-if [ -z "${MEETINGS_APPS:-}" ] && [ ! -w "$APPS" ]; then
-    APPS="$HOME/Applications"
-    mkdir -p "$APPS"
-    say "/Applications needs an administrator and this installer never asks for your password, so
-    the app is going to $APPS instead."
-fi
-
-# A directory the caller named and has not created yet is created for them: naming it is the whole
+# $APPS was resolved up with the platform gates and has not changed since; see the invariant there.
+# The directory is created only now, so nothing above this line leaves one behind on a refusal. A
+# directory the caller named and has not created yet is created for them: naming it is the whole
 # instruction, and `mv` into a path that does not exist fails with an error about the wrong thing.
 mkdir -p "$APPS" || die "Could not create $APPS. Point MEETINGS_APPS at somewhere writable, or leave
     it unset and the app goes to /Applications."
@@ -775,40 +789,43 @@ elif [ "$INSTALLED_REQ" != "$NEW_REQ" ]; then
     # over. Said only when the requirement actually changed, because "you may be asked again" printed
     # on every update is a line people stop reading before the update it is true for.
     #
-    # Which change it was decides what can honestly be said, and the two are not the same event. The
-    # old requirement being a cdhash means the copy being replaced was ad-hoc signed — a build from
-    # source, which is what every existing user is running — and that is the one-time migration this
-    # release performs. The old requirement naming a *different certificate* is not that: it says the
-    # copy that was installed was signed by somebody's named certificate, and "only this once" is
-    # false there. It is also the only signal a user gets that a build's signer was substituted, and
-    # the sentence below used to explain it away as routine.
-    case "$INSTALLED_REQ" in
-        *cdhash*|"")
-            echo "    This build is signed differently from the one it replaced, and macOS ties"
-            echo "    permissions to the signature — so the microphone and Screen & System Audio"
-            echo "    Recording will be asked for once more. Only this once: every release from"
-            echo "    here is signed with the same certificate, so future updates keep the grants."
-            echo
-            ;;
-        *)
-            # No reassurance, and the fingerprints, because this is the one case where the user is
-            # the only one who can tell which of two very different things happened. Nothing here
-            # can be refused: the app is already installed by now, and the signer of what was just
-            # installed is pinned by DIST_CERT_SHA1 — a forged release cannot reach this line. What
-            # is unproven is the *old* copy, and its own signer is the thing being reported.
-            echo "    The copy this replaced was signed by a different certificate, so macOS will"
-            echo "    ask for the microphone and Screen & System Audio Recording again."
-            echo
-            echo "        was signed by  $INSTALLED_REQ"
-            echo "        now signed by  $NEW_REQ"
-            echo
-            echo "    If you built that copy yourself, or you installed it before the signing"
-            echo "    certificate changed, this is expected. If you did neither, the copy that was"
-            echo "    on this Mac was not one of the project's releases — worth knowing where it"
-            echo "    came from."
-            echo
-            ;;
-    esac
+    # Which event this is turns on what was just INSTALLED, not on what the old requirement looked
+    # like. On the default path the pin above has already proved the new signature is the one
+    # distribution certificate, so whatever the previous copy was signed with — ad hoc, or the named
+    # certificate scripts/make-signing-identity.sh creates, which the old README told people to make —
+    # arriving at the release is the one-time migration, and every later release keeps the grants.
+    #
+    # Classifying by the *previous* requirement said the opposite of that to exactly the users who
+    # followed the old advice: their copy was signed by a real certificate, so the installer called it
+    # a substitution and told them to wonder where their app came from, while the app itself — which
+    # decides by whether it ever recorded an identity — showed them the routine migration notice on
+    # the same install. One event, two contradictory explanations, and the terminal's was the wrong
+    # one.
+    if [ "$FROM_SOURCE" != 1 ]; then
+        echo "    This build is signed differently from the one it replaced, and macOS ties"
+        echo "    permissions to the signature — so the microphone and Screen & System Audio"
+        echo "    Recording will be asked for once more. Only this once: every release from"
+        echo "    here is signed with the same certificate, so future updates keep the grants."
+        echo
+    else
+        # The case that survives the rule above: the new signature is NOT the pinned certificate,
+        # which after the pin's `FROM_SOURCE != 1` gate can only be a build made here. Nothing about
+        # it is suspicious and the reassurance would be a lie — a local build's identity is whatever
+        # this Mac signs with, so the next release install swings the permissions back again.
+        #
+        # The old text aimed the suspicion at the wrong bundle: on this path the *replaced* copy is
+        # the verified one and the new one is the local build, and a contributor running
+        # --from-source over a genuine release was told the release "was not one of the project's
+        # releases".
+        echo "    This build is signed with your own identity rather than the project's, and"
+        echo "    macOS ties permissions to the signature — so the microphone and Screen & System"
+        echo "    Audio Recording will be asked for again. That is expected for a build from"
+        echo "    source, and installing a release again swings them back the same way."
+        echo
+        echo "        was signed by  $INSTALLED_REQ"
+        echo "        now signed by  $NEW_REQ"
+        echo
+    fi
 fi
 
 [ "${MEETINGS_NO_OPEN:-}" = "1" ] || open "$APPS/Meetings.app"
