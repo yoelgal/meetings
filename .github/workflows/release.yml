@@ -152,6 +152,28 @@ jobs:
           MEETINGS_RELEASE=1 MEETINGS_SIGN_IDENTITY="$(cat Packaging/distribution-cert.sha1)" \
               bash scripts/build-app.sh release
 
+      # The bundle's version and the tag it is published under must be the same string, and nothing
+      # else in this job compares them. build-app.sh stamps CFBundleShortVersionString from
+      # `git describe --tags --abbrev=0 --match 'v[0-9]*'`, which returns ONE tag; the release is
+      # published as $GITHUB_REF_NAME. Those diverge the moment a commit carries two version tags,
+      # which is the ordinary recovery from a failed release: tag v0.4.1, the job dies, fix it, tag
+      # v0.5.0 on the same commit. describe then answers v0.4.1, so the release published as v0.5.0
+      # contains a bundle that reports 0.4.1 — and UpdateCheck compares the bundle's version against
+      # the latest release, so every installed copy is told to update, forever, and installing the
+      # update does not clear it because the new copy reports 0.4.1 too. Unrecoverable without another
+      # release, and invisible from inside the job that caused it.
+      - name: the bundle's version is the tag
+        run: |
+          STAMPED="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \
+              dist/Meetings.app/Contents/Info.plist)"
+          EXPECTED="${GITHUB_REF_NAME#v}"
+          [ "$STAMPED" = "$EXPECTED" ] || { echo "release: this tag is $GITHUB_REF_NAME so the bundle
+                     should report $EXPECTED, and it reports $STAMPED. Usually this means the tagged
+                     commit carries more than one version tag and 'git describe' picked the other one:
+                     'git tag --points-at $GITHUB_SHA'. Delete the tag that should not be there and
+                     re-push this one." >&2
+               exit 1; }
+
       # A hard gate, not a warning. macOS keys TCC grants to the code signature's designated
       # requirement, and from a named certificate that requirement reads
       #

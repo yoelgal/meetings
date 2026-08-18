@@ -496,6 +496,45 @@ else
     echo "    skip  github.com is unreachable, so the one https case did not run"
 fi
 
+# ---------------------------------------------------------------- the one line nothing here defends
+# `--proto-redir '=https'` has no case, and this says so out loud rather than leaving the gap to be
+# rediscovered. The case above proves `--proto '=https'` bites, because curl refuses a typed http URL
+# before it opens a socket. The redirect half cannot be proved the same way: the downgrade it guards
+# against arrives as a `Location:` header on an **https** response, so rehearsing it needs a local
+# origin curl will complete a TLS handshake with — a trusted certificate, not a self-signed one, since
+# passing `--insecure` would change the very invocation under test. `nc` can serve the 302 but not the
+# TLS, and `openssl s_server` only gets as far as a certificate curl rejects.
+#
+# So it stays undefended, deliberately and visibly. What holds the line meanwhile is that both flags
+# are set together on both fetches, and the `--proto` half has a case that fails without it — someone
+# deleting the pair breaks that case, and someone deleting only `--proto-redir` does not. If this ever
+# needs closing properly, the shape is a local origin with a certificate in the system trust store.
+echo "    gap   --proto-redir '=https' has no case: proving it needs a local https origin curl trusts"
+
+# ---------------------------------------------------------------- two installs at once
+# Held by somebody else, so this run must stop rather than race. The lock is a directory holding the
+# holder's pid, and a pid with no process behind it is stale and reclaimed — so the live case needs a
+# process that really exists. `$$` is this script, which is alive by definition and outlives the run.
+echo "==> a second install refuses while another holds the lock"
+HELD="$STAGE/tmp/meetings-install.lock"
+mkdir -p "$HELD"
+printf '%s\n' "$$" > "$HELD/pid"
+rc="$(install_run)"
+[ "$rc" != 0 ] || die "install.sh installed while another install held the lock"
+grep -q "Another Meetings install is running" "$STAGE/out" \
+    || die "install.sh refused while the lock was held, but not because of the lock:
+$(cat "$STAGE/out")"
+[ ! -e "$STAGE/apps/Meetings.app" ] || die "a locked-out install installed something anyway"
+pass "a held lock refuses the second install, nothing installed"
+# And a lock whose holder is gone must not wedge every future install. A pid that cannot exist is the
+# cleanest stand-in for a killed run: reclaimed silently, and the install proceeds.
+printf '%s\n' "999999" > "$HELD/pid"
+rc="$(install_run)"
+[ "$rc" = 0 ] || die "a stale lock (no such process) blocked the install instead of being reclaimed:
+$(cat "$STAGE/out")"
+pass "a stale lock is reclaimed, not permanent"
+rm -rf "$STAGE/apps/Meetings.app" "$HELD" 2>/dev/null || true
+
 # ---------------------------------------------------------------- the install itself
 echo "==> installing it with no compiler on PATH"
 START="$(date +%s)"
@@ -847,6 +886,42 @@ pgrep -f "^$SLEEPER$" >/dev/null 2>&1 \
     || die "the planted bundle was not actually replaced by the real one"
 SLEEPER=""
 pass "a running app is quit and waited for before the swap"
+
+# ---------------------------------------------------------------- a bundle is never nested in a bundle
+# The guard behind the lock, and the reason it exists even though the lock makes the race unlikely:
+# `mv src/Meetings.app dest/Meetings.app` with the destination present moves INTO it, silently and
+# with exit 0, producing dest/Meetings.app/Meetings.app. That is unsealed content inside a signed
+# bundle, so the designated requirement stops validating and the permission grants this whole change
+# exists to preserve go with it — and nothing says a word.
+#
+# Staged by shimming the move-aside so it copies instead of moving: the destination is still occupied
+# when the commit rename happens, which is exactly the state a second install racing this one through
+# the quit-and-wait would leave. Reusing the shim mechanism the failed-swap case below already proves.
+echo "==> an occupied destination is refused, not nested into"
+NEST="$STAGE/nestshim"
+mkdir -p "$NEST"
+cat > "$NEST/mv" <<'STUB'
+#!/bin/bash
+# The move-aside becomes a copy, so the destination stays occupied. Everything else is a real mv.
+case "${2:-}" in
+    */Meetings.app.replaced-*) exec /bin/cp -R "$1" "$2" ;;
+esac
+exec /bin/mv "$@"
+STUB
+chmod +x "$NEST/mv"
+rm -rf "$STAGE/apps/Meetings.app"
+cp -R "$ROOT/dist/Meetings.app" "$STAGE/apps/Meetings.app"
+codesign --force --sign "$SHA1" --keychain "$KEYCHAIN" --timestamp=none \
+    --entitlements Packaging/Meetings.entitlements "$STAGE/apps/Meetings.app" 2>/dev/null \
+    || die "could not plant the copy the nesting guard is supposed to protect"
+rc="$(install_run PATH="$NEST:$NOSWIFT")"
+[ "$rc" != 0 ] || die "install.sh installed into an occupied destination"
+[ ! -e "$STAGE/apps/Meetings.app/Meetings.app" ] \
+    || die "install.sh nested a bundle inside the installed one, which breaks its signature silently"
+codesign --verify --strict "$STAGE/apps/Meetings.app" >/dev/null 2>&1 \
+    || die "the installed bundle no longer verifies after the refusal, so something was written into it"
+pass "an occupied destination refuses rather than nesting one bundle inside another"
+rm -rf "$STAGE/apps/"Meetings.app.replaced-* 2>/dev/null || true
 
 # ---------------------------------------------------------------- the undo, when the swap fails
 # The restore path had no failing input either: every refusal above happens BEFORE the move-aside, so

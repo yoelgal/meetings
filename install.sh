@@ -131,6 +131,35 @@ if [ -z "${MEETINGS_APPS:-}" ] && [ ! -w "$APPS" ]; then
     the app is going to $APPS instead."
 fi
 
+# ---------------------------------------------------------------- one install at a time
+# Two of these running at once share every path they touch, and the window is not small: the
+# quit-and-wait below can hold one of them for ten seconds between testing the destination and
+# renaming onto it. The outcomes range from one run deleting the aside copy the other's trap is about
+# to restore, to a bundle nested inside a bundle. The guard at the swap makes the nesting impossible;
+# this makes the collision itself unlikely, and turns it into a sentence instead of a race.
+#
+# `mkdir` is the lock because it is atomic on every filesystem this can land on, needs no flock (which
+# macOS `/usr/bin` does not ship) and leaves something a human can read and delete. The holder's pid
+# goes inside it, so a lock left behind by a killed run is recognisable rather than permanent: no live
+# process behind it means it is stale and gets taken. Compared with a timeout, this has no wrong
+# answer to pick — an install that legitimately takes longer than any timeout would still be running.
+LOCK=""
+LOCK_DIR="${TMPDIR:-/tmp}/meetings-install.lock"
+if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+    HOLDER="$(cat "$LOCK_DIR/pid" 2>/dev/null || true)"
+    if [ -n "$HOLDER" ] && kill -0 "$HOLDER" 2>/dev/null; then
+        die "Another Meetings install is running (process $HOLDER). Two at once can leave this Mac
+    with a broken app, so this one has stopped and changed nothing. Wait for that one to finish."
+    fi
+    # Stale: whoever made it is gone. Reclaimed rather than reported, because the alternative is
+    # telling somebody to delete a directory in TMPDIR to install an app.
+    rm -rf "$LOCK_DIR" 2>/dev/null || true
+    mkdir "$LOCK_DIR" 2>/dev/null \
+        || die "Could not take the install lock at $LOCK_DIR. Remove it and try again."
+fi
+LOCK="$LOCK_DIR"
+printf '%s\n' "$$" > "$LOCK_DIR/pid" 2>/dev/null || true
+
 # Yes unless they say no, and a no when there is nobody to ask — every caller answers that with the
 # exact command to run by hand, which is the right outcome for a CI job or an agent.
 #
@@ -194,6 +223,10 @@ cleanup() {
         fi
     fi
     if [ -n "$WORK" ]; then rm -rf "$WORK"; fi
+    # Last, so it outlives the two undos above: another install must not be able to start while this
+    # one is still putting a bundle back. Only ours is released — $LOCK is empty on the paths that
+    # refused because somebody else held it, so a run that never took the lock cannot free it.
+    if [ -n "$LOCK" ]; then rm -rf "$LOCK" 2>/dev/null || true; fi
     return 0
 }
 # EXIT only: with no handler on INT, Ctrl-C terminates the script the normal way and this runs on the
@@ -713,6 +746,20 @@ if [ -d "$APPS/Meetings.app" ]; then
     }
 fi
 say "Installing to $APPS"
+# `mv` onto an existing directory moves INTO it. So if anything has put a Meetings.app back at the
+# destination since the move-aside above — a second install racing this one through the ten seconds
+# the quit-and-wait can spend, or a restore from a concurrent run's trap — this rename produces
+# $APPS/Meetings.app/Meetings.app, silently, exit 0. That is the worst quiet outcome available here:
+# unsealed content inside a signed bundle, so the designated requirement stops validating, and the
+# permission grants this whole change exists to preserve are lost with it.
+#
+# Measured rather than assumed: `mv src/Meetings.app dest/Meetings.app` with the destination present
+# nests and reports success. The lock below makes the race unlikely; this makes the outcome
+# impossible, which is the half worth having when the failure is invisible.
+[ ! -e "$APPS/Meetings.app" ] || die "Something put an app back at $APPS/Meetings.app while this
+    install was running — most likely a second install at the same time. Installing now would
+    nest one bundle inside the other and break the signature. Nothing has been changed; run this
+    again when the other one has finished."
 # A failure here is the one the restore trap exists for: it has the old bundle one rename from
 # working, and `die` runs it on the way out. Said explicitly, because "exit 1" after a sudo the user
 # declined reads like the app is now gone, and the whole point is that it is not.
