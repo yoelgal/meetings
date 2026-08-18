@@ -190,8 +190,16 @@ step "the install a user actually does: a prebuilt release, on a Mac with no com
 # What it is guarding is not the happy path. Meetings is not notarized, so Gatekeeper never inspects
 # it: a curl download carries no quarantine attribute and macOS runs that check on nothing else. The
 # checksum and signature refusals in install.sh are therefore the only thing between a user and
-# whatever the network handed them, and this proves all three — an ad-hoc-signed release, a corrupted
-# download, and the certificate pin — refuse without touching the app already installed.
+# whatever the network handed them, and each of the four is exercised with an input that would install
+# if the refusal were deleted — an ad-hoc-signed release, a corrupted download, a release signed by a
+# certificate that is not the pinned one, and install.sh's pinned fingerprint disagreeing with
+# Packaging/distribution-cert.sha1. None of them may touch the app already installed. The claim used
+# to be that "the certificate pin" was among them while the run reached it on no input at all.
+#
+# Then the upgrade, which is the other half nothing used to reach: installing over an existing
+# ad-hoc-signed copy has to replace the bundle, keep the CLI resolving, leave the store alone, sweep
+# the aside copy, and say once — and only on that install — that macOS will ask for the microphone
+# again.
 bash scripts/install-check.sh
 
 echo

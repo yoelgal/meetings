@@ -19,8 +19,10 @@
 # membership. It does not need to be: Gatekeeper runs its notarization check on files carrying the
 # com.apple.quarantine attribute, and that attribute is written by browsers and by Archive Utility,
 # not by curl. Downloaded here the app launches with no dialog; the same zip fetched in Safari and
-# double-clicked would be refused. So the checks Apple would have done are done here instead, on the
-# checksum and on the signature, and both happen before anything on disk is touched.
+# double-clicked would be refused. So the checks Apple would have done are done here instead: the
+# download is checked against its published checksum, and the unpacked bundle against the signing
+# certificate this file names. Nothing installed is touched until both have passed — the unpacking in
+# between happens in a temp directory that is deleted on the way out.
 #
 # Overrides, all optional:
 #   MEETINGS_ASSET_URL=url     download this instead of the GitHub release (file:// works)
@@ -30,12 +32,28 @@
 #   MEETINGS_BIN=/path         where the CLI symlink goes         (default /usr/local/bin)
 #   MEETINGS_SRC=/path         where --from-source clones to      (default ./meetings)
 #   MEETINGS_NO_OPEN=1         install, do not launch
+#
+# On the piped command at the top they go on `bash`, on the right of the pipe:
+#
+#   curl -fsSL …/install.sh | MEETINGS_VERSION=v0.3.0 bash
+#
+# In front of `curl` they end up in the downloader's environment and this script never sees them, so
+# the install silently does the default thing — which for MEETINGS_VERSION means reinstalling the
+# release you were trying to get away from.
 set -euo pipefail
 
 APPS="${MEETINGS_APPS:-/Applications}"
 REPO="https://github.com/yoelgal/meetings.git"
 RELEASES="https://github.com/yoelgal/meetings/releases"
 ASSET="Meetings-arm64.zip"
+# The SHA-1 of the one certificate every release is signed with, and the only thing here that decides
+# whether a download is genuinely ours. A literal rather than a file read, because this script is
+# normally piped straight out of `main` into bash with no checkout anywhere near it, and a check that
+# needs a file it cannot have is a check that never runs.
+#
+# It is the value in Packaging/distribution-cert.sha1, and the two are cross-checked below whenever a
+# checkout is present. Rotating the certificate means changing both, in the same commit.
+DIST_CERT_SHA1="f5568c5d976fef4de1f44da76d6df5498a4fe882"
 
 say()  { printf '\033[1m==>\033[0m %s\n' "$1"; }
 die()  { printf '\033[1;31mmeetings:\033[0m %s\n' "$1" >&2; exit 1; }
@@ -105,17 +123,47 @@ ask() {
 # `trap` statements would mean the second silently replacing the first, and the `trap - EXIT` that
 # used to mark the swap as committed would take the download cleanup with it.
 #
-# So each half is armed by setting its variable and disarmed by clearing it, and "the old bundle is
-# committed" is `OLD_BUNDLE=""` rather than uninstalling a handler the other half still needs.
+# The old bundle has exactly one owner — this function — and one question decides its fate on every
+# path out: is there a working app at the destination? That replaces a commit step that cleared
+# `OLD_BUNDLE` and then deleted the aside copy itself, which was wrong twice over. An interrupt
+# between the rename and the clearing orphaned a `Meetings.app.replaced-<pid>` nobody would ever
+# recognise, and the delete ran unguarded under `set -e`: a root-owned old bundle routes the
+# move-aside through `sudo`, which makes the aside copy root-owned too, so a declined password ended
+# the script *after* the new app was in place — skipping the CLI symlink, the skill install, the
+# version summary, the permission note and `open`, and exiting 1 from a command the README calls safe
+# to re-run.
 WORK=""
 OLD_BUNDLE=""
 cleanup() {
-    # Anything that went wrong between moving the old app aside and putting the new one in place
-    # leaves the old one a single rename from working, so put it back rather than leaving the user
-    # with neither.
-    if [ -n "$OLD_BUNDLE" ] && [ -d "$OLD_BUNDLE" ] && [ ! -d "$APPS/Meetings.app" ]; then
-        mv "$OLD_BUNDLE" "$APPS/Meetings.app" 2>/dev/null \
-            || sudo mv "$OLD_BUNDLE" "$APPS/Meetings.app" 2>/dev/null || true
+    if [ -n "$OLD_BUNDLE" ] && [ -d "$OLD_BUNDLE" ]; then
+        # A directory at the destination is not the same thing as an app: a cross-device `mv` copies,
+        # and one that fails halfway leaves a bundle with no executable in it. `[ -d ]` alone read
+        # that wreck as a finished install and suppressed the undo, leaving the user with half an app
+        # and a good one parked under a name they would never think to look at.
+        if [ -x "$APPS/Meetings.app/Contents/MacOS/Meetings" ]; then
+            # Committed, so the old copy is litter. Failing to sweep litter is not a failed install,
+            # so it is said and never raised.
+            rm -rf "$OLD_BUNDLE" 2>/dev/null || sudo rm -rf "$OLD_BUNDLE" 2>/dev/null \
+                || printf '\033[1mnote:\033[0m the install is complete; the previous version is still
+    at %s and needs an administrator to remove:  sudo rm -rf "%s"\n' "$OLD_BUNDLE" "$OLD_BUNDLE"
+        else
+            # The wreck has to go before the rename or `mv` puts the old bundle *inside* it. Safe to
+            # delete because it is a copy this run made and never finished; the app it was replacing
+            # is the one being put back on the next line.
+            if [ -e "$APPS/Meetings.app" ]; then
+                rm -rf "$APPS/Meetings.app" 2>/dev/null \
+                    || sudo rm -rf "$APPS/Meetings.app" 2>/dev/null || true
+            fi
+            # A restore that fails has to contradict what the user has already read: `die` prints its
+            # "the app that was there has been put back" before exiting, and the trap runs after that
+            # text is on the screen. Silence here left them believing an app they no longer have is
+            # installed.
+            mv "$OLD_BUNDLE" "$APPS/Meetings.app" 2>/dev/null \
+                || sudo mv "$OLD_BUNDLE" "$APPS/Meetings.app" 2>/dev/null \
+                || printf '\033[1;31mmeetings:\033[0m the previous version could NOT be put back, so
+    disregard any message above saying it was. It is on disk and unharmed, one command away:
+        sudo mv "%s" "%s"\n' "$OLD_BUNDLE" "$APPS/Meetings.app" >&2
+        fi
     fi
     if [ -n "$WORK" ]; then rm -rf "$WORK"; fi
     return 0
@@ -344,6 +392,19 @@ download_release() {
         URL="$RELEASES/latest/download/$ASSET"
     fi
 
+    # The protocol allowlist for both fetches. `=https` is exact — no http, and `--proto-redir` says
+    # a redirect cannot leave https either, which matters because the release URL is a redirect by
+    # design.
+    #
+    # file:// is allowed only when the caller named a file:// URL themselves, never as a redirect
+    # target. scripts/install-check.sh serves a staged release that way so the whole install can be
+    # rehearsed with no network and no published release, and that one caller is the entire reason
+    # this is not a flat https-only rule.
+    PROTO="--proto =https --proto-redir =https"
+    case "$URL" in
+        file://*) PROTO="--proto =file" ;;
+    esac
+
     WORK="$(mktemp -d)"   # removed by the EXIT trap, on every path out of here
 
     if [ -n "${MEETINGS_ASSET_URL:-}" ]; then
@@ -355,7 +416,13 @@ download_release() {
     # always has one name to check. --retry because a release asset is a redirect to a CDN and a
     # cold one occasionally answers 5xx on the first ask. The progress bar stays on: this is 90 MB
     # over a redirect, and silence for a minute is indistinguishable from a hang.
-    curl -fL --retry 3 --progress-bar -o "$WORK/$ASSET" "$URL" \
+    #
+    # $PROTO pins the scheme on both the asset and its checksum. Without it `-L` will follow a
+    # redirect out of https into any protocol curl was built with, and a release asset IS a redirect
+    # to a CDN — so the one hop this has to make is exactly the hop an attacker who can answer it
+    # would use to downgrade to something with no certificate to check. Downloading the app over
+    # plain http is not made safe by the checksum, because the checksum comes down the same wire.
+    curl -fL $PROTO --retry 3 --progress-bar -o "$WORK/$ASSET" "$URL" \
         || die "Could not download $URL
     Check your network, or download the zip from $RELEASES/latest and unzip it into /Applications."
 
@@ -369,7 +436,7 @@ download_release() {
     DIGEST_FROM="MEETINGS_ASSET_SHA256"
     if [ -z "$EXPECTED" ]; then
         DIGEST_FROM="$URL.sha256"
-        curl -fsSL --retry 3 -o "$WORK/$ASSET.sha256" "$DIGEST_FROM" \
+        curl -fsSL $PROTO --retry 3 -o "$WORK/$ASSET.sha256" "$DIGEST_FROM" \
             || die "The download has no published checksum at $DIGEST_FROM, so there is nothing to
     check it against. Refusing to install an app this script cannot verify."
         EXPECTED="$(cut -d' ' -f1 < "$WORK/$ASSET.sha256")"
@@ -465,19 +532,34 @@ if [ "$FROM_SOURCE" != 1 ]; then
     LEAF="$(printf '%s\n' "$NEW_REQ" \
         | sed -nE 's/.*certificate (leaf|root) = H"([0-9a-fA-F]*)".*/\2/p' | tr 'A-F' 'a-f')"
 
-    # Pinned against the certificate this repo publishes with, when that file is here to pin against.
-    # It is not, under `curl | bash` — there is no checkout then, only this script — and the checks
-    # above still hold in that case: what cannot be proved there is *which* certificate, only that
-    # there is one.
-    CERT_FILE=""
-    if [ -n "$SELF" ]; then CERT_FILE="$(dirname "$SELF")/Packaging/distribution-cert.sha1"; fi
-    if [ -n "$CERT_FILE" ] && [ -r "$CERT_FILE" ]; then
-        WANT="$(tr -d '[:space:]' < "$CERT_FILE" | tr 'A-F' 'a-f')"
-        [ "$LEAF" = "$WANT" ] || die "The downloaded app is signed by a certificate this checkout does not know:
+    # Pinned against DIST_CERT_SHA1, always. This used to be conditional on a readable
+    # Packaging/distribution-cert.sha1, which meant it never ran on the only path anyone takes:
+    # `curl … | bash` has no checkout, so there was no file, so the pin was skipped and all that was
+    # left was "the requirement names some certificate" — which any self-signed certificate satisfies
+    # in the thirty seconds it takes to mint one. The actor that stops is real and specific: someone
+    # who can write a release asset but cannot reach the signing key, which is what a leaked
+    # `contents: write` token is. Inlining the fingerprint moves the thing they would have to forge
+    # from a release asset to this file on `main`, fetched over TLS, where a change is loud.
+    [ "$LEAF" = "$DIST_CERT_SHA1" ] || die "The downloaded app is signed by a certificate this installer does not know:
     signed by  $LEAF
-    expected   $WANT  (Packaging/distribution-cert.sha1)
-    Nothing has been installed. Either the asset is not from this project's release pipeline, or
-    the signing certificate changed — in which case that file is what has to change with it."
+    expected   $DIST_CERT_SHA1
+    Nothing has been installed. Either this asset did not come from the project's release
+    pipeline, or the signing certificate was rotated without updating install.sh — in which case
+    install it by hand from $RELEASES after checking why."
+
+    # The checkout's copy of the same fingerprint, when there is a checkout, as a cross-check on the
+    # two staying in step. A rotation has to touch both, and the failure mode of touching one is
+    # silent: the release workflow signs with the file's fingerprint, so a stale literal here would
+    # refuse every install of a correctly signed release, and a stale file would have CI sign with a
+    # certificate this script rejects. Either way the disagreement is the bug, and it is worth saying
+    # so rather than letting the pin above report it as a bad download.
+    if [ -n "$SELF" ] && [ -r "$(dirname "$SELF")/Packaging/distribution-cert.sha1" ]; then
+        FILED="$(tr -d '[:space:]' < "$(dirname "$SELF")/Packaging/distribution-cert.sha1" | tr 'A-F' 'a-f')"
+        [ "$FILED" = "$DIST_CERT_SHA1" ] || die "This checkout disagrees with itself about the signing certificate:
+    install.sh                          $DIST_CERT_SHA1
+    Packaging/distribution-cert.sha1    $FILED
+    The release workflow signs with the second and this script pins the first, so one of them is
+    stale. Fix that before installing anything."
     fi
 fi
 
@@ -487,25 +569,34 @@ fi
 # a meeting somebody is in the middle of recording ends here, mid-sentence, with whatever audio has
 # been written so far.
 #
-# Probed through the *installed* CLI, which reads the same store the running app writes. No installed
-# app, or no CLI inside it, means there is nothing to lose and nothing to say.
+# Probed through the *installed* CLI, which reads the same store the running app writes. Only "there
+# is no installed app at all" is genuinely nothing to lose. A bundle with no CLI helper inside it can
+# be recording exactly as well as one with — the app holds the microphone, not the helper — so the
+# helper's absence is an unanswered question and is handled as one. It used to skip the whole guard,
+# prompt included, and fall through to the `pkill` below, which ends a live recording without asking.
 #
 # `list --state recording` is the probe, and its stdout is the whole answer: matching rows go to
 # stdout and "No meetings match." goes to stderr (Out.note), so empty stdout means nothing is
 # recording and there is no JSON to parse to find that out. Non-zero exit means the question was not
 # answered — which is a different thing from "no" and is treated as one below.
 INSTALLED_REQ=""
-if [ -d "$APPS/Meetings.app" ]; then
-    # Captured now because the swap below destroys it, and the permission note at the end needs to
-    # compare it against the new one.
-    INSTALLED_REQ="$(designated_requirement "$APPS/Meetings.app")"
-fi
 EXEC_PATH="$APPS/Meetings.app/Contents/MacOS/Meetings"
 INSTALLED_CLI="$APPS/Meetings.app/Contents/Helpers/meetings"
-if [ -x "$INSTALLED_CLI" ]; then
+if [ -d "$APPS/Meetings.app" ]; then
+    # The requirement is captured now because the swap below destroys it, and the permission note at
+    # the end needs to compare it against the new one.
+    INSTALLED_REQ="$(designated_requirement "$APPS/Meetings.app")"
     RUNNING=0
     if pgrep -f "^$EXEC_PATH$" >/dev/null 2>&1; then RUNNING=1; fi
-    if RECORDING="$("$INSTALLED_CLI" list --state recording 2>/dev/null)"; then
+    # Two separate facts: whether the question was answered, and what the answer was. Collapsing them
+    # into "empty output" is what made a missing helper look like a quiet no.
+    RECORDING=""
+    ANSWERED=0
+    if [ -x "$INSTALLED_CLI" ] \
+        && RECORDING="$("$INSTALLED_CLI" list --state recording 2>/dev/null)"; then
+        ANSWERED=1
+    fi
+    if [ "$ANSWERED" = 1 ]; then
         # A `recording` row with no process behind it is an interrupted recording, not a live one:
         # RecordingRecovery closes those out the next time the app launches. Refusing on one would
         # mean an install nobody can complete without first launching the app they are replacing.
@@ -517,10 +608,11 @@ $RECORDING
     Stop the recording in the app, then run this again."
         fi
     elif [ "$RUNNING" = 1 ]; then
-        # The probe could not answer — an older CLI, a store it cannot open — and the app is running,
-        # so this cannot tell a live meeting from an idle window. Asked with the default the other way
-        # round from every other prompt here: `ask` answers yes to silence because its questions are
-        # all "shall I fix this for you", and the cost of a wrong yes here is somebody's meeting.
+        # The question was not answered — no helper to ask, an older CLI, a store it cannot open — and
+        # the app is running, so this cannot tell a live meeting from an idle window. Asked with the
+        # default the other way round from every other prompt here: `ask` answers yes to silence
+        # because its questions are all "shall I fix this for you", and the cost of a wrong yes here
+        # is somebody's meeting.
         echo
         echo "    Meetings is running and this could not check whether it is recording."
         echo "    Installing quits it, and a recording in progress would end where it is."
@@ -614,12 +706,10 @@ mv "$STAGED" "$APPS/Meetings.app" 2>/dev/null || {
     still has a working Meetings.app. MEETINGS_APPS=$HOME/Applications installs without a
     password if you would rather not give one."
 }
-# Committed. The old one goes now, and the restore half of the trap with it — clearing the variable
-# rather than removing the handler, which still owns the download directory.
-if [ -n "$OLD_BUNDLE" ]; then
-    rm -rf "$OLD_BUNDLE" 2>/dev/null || sudo rm -rf "$OLD_BUNDLE" < /dev/tty
-    OLD_BUNDLE=""
-fi
+# Nothing to commit here. The new bundle is in place, so `cleanup` now reads the destination as a
+# working app and sweeps the aside copy on the way out — the same test it uses to decide to put it
+# back. Doing it here instead meant this line could fail on a root-owned aside copy and abandon the
+# install between the app and the CLI symlink.
 
 # ---------------------------------------------------------------- install the CLI
 # No sudo anywhere in here. /usr/local/bin is the conventional place and is writable by the admin
@@ -677,16 +767,45 @@ if [ -z "$INSTALLED_REQ" ]; then
     echo "    It then downloads about 1 GB of speech models, once."
     echo
 elif [ "$INSTALLED_REQ" != "$NEW_REQ" ]; then
-    # The one update this happens on. macOS keys permission grants to the Designated Requirement, so
-    # a build signed by a different certificate is a different app to the permission system and its
-    # grants do not carry over. Said only when the requirement actually changed, because "you may be
-    # asked again" printed on every update is a line people stop reading before the update it is
-    # true for — which is this one, the switch from a locally built app to the signed release.
-    echo "    This build is signed differently from the one it replaced, and macOS ties"
-    echo "    permissions to the signature — so the microphone and Screen & System Audio"
-    echo "    Recording will be asked for once more. Only this once: every release from"
-    echo "    here is signed with the same certificate, so future updates keep the grants."
-    echo
+    # macOS keys permission grants to the Designated Requirement, so a build signed differently from
+    # the one it replaced is a different app to the permission system and the grants do not carry
+    # over. Said only when the requirement actually changed, because "you may be asked again" printed
+    # on every update is a line people stop reading before the update it is true for.
+    #
+    # Which change it was decides what can honestly be said, and the two are not the same event. The
+    # old requirement being a cdhash means the copy being replaced was ad-hoc signed — a build from
+    # source, which is what every existing user is running — and that is the one-time migration this
+    # release performs. The old requirement naming a *different certificate* is not that: it says the
+    # copy that was installed was signed by somebody's named certificate, and "only this once" is
+    # false there. It is also the only signal a user gets that a build's signer was substituted, and
+    # the sentence below used to explain it away as routine.
+    case "$INSTALLED_REQ" in
+        *cdhash*|"")
+            echo "    This build is signed differently from the one it replaced, and macOS ties"
+            echo "    permissions to the signature — so the microphone and Screen & System Audio"
+            echo "    Recording will be asked for once more. Only this once: every release from"
+            echo "    here is signed with the same certificate, so future updates keep the grants."
+            echo
+            ;;
+        *)
+            # No reassurance, and the fingerprints, because this is the one case where the user is
+            # the only one who can tell which of two very different things happened. Nothing here
+            # can be refused: the app is already installed by now, and the signer of what was just
+            # installed is pinned by DIST_CERT_SHA1 — a forged release cannot reach this line. What
+            # is unproven is the *old* copy, and its own signer is the thing being reported.
+            echo "    The copy this replaced was signed by a different certificate, so macOS will"
+            echo "    ask for the microphone and Screen & System Audio Recording again."
+            echo
+            echo "        was signed by  $INSTALLED_REQ"
+            echo "        now signed by  $NEW_REQ"
+            echo
+            echo "    If you built that copy yourself, or you installed it before the signing"
+            echo "    certificate changed, this is expected. If you did neither, the copy that was"
+            echo "    on this Mac was not one of the project's releases — worth knowing where it"
+            echo "    came from."
+            echo
+            ;;
+    esac
 fi
 
 [ "${MEETINGS_NO_OPEN:-}" = "1" ] || open "$APPS/Meetings.app"

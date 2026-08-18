@@ -10,9 +10,10 @@
 curl -fsSL https://raw.githubusercontent.com/yoelgal/meetings/main/install.sh | bash
 ```
 
-That downloads the latest release, checks it against its published checksum, installs the app and the
-`meetings` command line tool, installs the agent skill, and opens the app. About twenty seconds, and
-it never asks for your password. Re-run it any time to update.
+That downloads the latest release, checks it against its published checksum and against the one
+certificate every release is signed with, installs the app and the `meetings` command line tool,
+installs the agent skill, and opens the app. About twenty seconds, and it never asks for your
+password. Re-run it any time to update.
 
 It needs macOS 26 on Apple Silicon and nothing else — no Xcode, no developer tools, no compiler. Read
 it first if you would rather ([install.sh](install.sh)).
@@ -21,9 +22,11 @@ Meetings is not notarized, because notarization needs a paid Apple Developer acc
 you to click past a security warning either: macOS only runs that check on files a *browser*
 downloaded, and `curl` does not mark them. The app is signed with one certificate that never changes,
 which is what lets macOS keep the microphone and Screen Recording permissions you grant it across
-every future update. What you can check, if you want to: the checksum published beside the download,
-and the build provenance attestation on each release, which ties the binary to the commit and the
-workflow run that produced it.
+every future update. The installer checks that certificate itself, by a fingerprint written into
+install.sh, so a release signed by anything else is refused rather than installed. What you can check
+by hand, if you want to: the checksum published beside the download, and the build provenance
+attestation on each release, which ties the binary to the commit and the workflow run that produced
+it.
 
 To build it from source instead — which is the same thing the installer used to do, and needs the
 command line developer tools:
@@ -106,8 +109,12 @@ again — unless you build from source, which signs with your certificate rather
 To pin an older release, or to go back after a bad one:
 
 ```sh
-MEETINGS_VERSION=v0.3.0 curl -fsSL https://raw.githubusercontent.com/yoelgal/meetings/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/yoelgal/meetings/main/install.sh | MEETINGS_VERSION=v0.3.0 bash
 ```
+
+The variable goes on the right of the pipe, on `bash`. Put it in front of `curl` and it lands in the
+downloader's environment, where the installer never sees it — the command then reinstalls the latest
+release, which is the one you were trying to get away from.
 
 Releases are tagged `vMAJOR.MINOR.PATCH` and published as GitHub Releases; the tag alone is not a
 release, because the update check reads `/releases/latest`. A build off an untagged branch reports
