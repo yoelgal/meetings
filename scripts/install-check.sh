@@ -262,11 +262,61 @@ pin_stage "$WRONG"
 printf '%s\n' "$WRONG" > "$STAGE/Packaging/distribution-cert.sha1"
 rc="$(install_run)"
 [ "$rc" != 0 ] || die "install.sh installed a release signed by a certificate it does not pin"
-grep -q "certificate this installer does not know" "$STAGE/out" \
+grep -q "not signed by the distribution certificate" "$STAGE/out" \
     || die "install.sh refused, but not at the certificate pin:
 $(cat "$STAGE/out")"
 [ ! -e "$STAGE/apps/Meetings.app" ] || die "install.sh refused a wrong certificate and installed anyway"
 pass "a certificate that is not the pinned one is refused, nothing installed"
+
+# ---------------------------------------------------------------- a forged designated requirement
+# The attack that got through, and the reason the pin no longer parses codesign's output at all.
+#
+# A designated requirement is not a fact about the signer. It is a string the signer chooses, and
+# `codesign -r` sets it. So an attacker signs with their own certificate and names OURS as an
+# alternative in their own requirement:
+#
+#     designated => certificate leaf = H"<theirs>" or certificate leaf = H"<ours>"
+#
+# Their signature satisfies that (the left branch is true of it), so `codesign --verify --strict`
+# passes. The requirement names certificates, so the ad-hoc arm is not hit. And the previous pin
+# extracted the hash with a greedy `.*certificate (leaf|root) = H"([0-9a-f]*)"`, which captured the
+# LAST one — ours — out of their app. It installed with exit 0 and no warning.
+#
+# The fix was to stop reading their string and start asking codesign whether the code satisfies
+# OURS (`--verify -R`), which no clause they add can widen. This case is what keeps it that way: it
+# is the only assertion here that fails if anyone reintroduces string parsing.
+echo "==> a bundle whose own requirement names our fingerprint after an 'or' is refused"
+FORGER_SHA1="$(mint_identity "Meetings Install Check Forger")"
+[ "$FORGER_SHA1" != "$SHA1" ] || die "the forger certificate came out identical to the pinned one"
+printf 'designated => certificate leaf = H"%s" or certificate leaf = H"%s"\n' "$FORGER_SHA1" "$SHA1" \
+    > "$STAGE/forged.rq"
+codesign --force --sign "$FORGER_SHA1" --keychain "$KEYCHAIN" --timestamp=none \
+    -r "$STAGE/forged.rq" --entitlements "$ROOT/Packaging/Meetings.entitlements" \
+    "$STAGE/dist/Meetings.app" 2>/dev/null \
+    || die "could not sign the staged bundle with the forger certificate and a forged requirement"
+# Proof the forgery is a real one before it is used as evidence, because a case built on a bundle
+# codesign already rejects would pass for the wrong reason forever. Two properties: their requirement
+# must actually name our fingerprint, and the bundle must actually verify.
+codesign -d -r- "$STAGE/dist/Meetings.app" 2>/dev/null | grep -q "$SHA1" \
+    || die "the forged requirement does not name the pinned fingerprint, so this case proves nothing"
+codesign --verify --strict "$STAGE/dist/Meetings.app" >/dev/null 2>&1 \
+    || die "the forged bundle does not pass codesign --verify, so this case proves nothing"
+( cd "$STAGE" && bash scripts/package-release.sh >/dev/null ) || die "packaging the forged bundle failed"
+pin_stage "$SHA1"
+printf '%s\n' "$SHA1" > "$STAGE/Packaging/distribution-cert.sha1"
+rc="$(install_run)"
+[ "$rc" != 0 ] || die "install.sh ACCEPTED a bundle signed by a stranger whose own requirement named
+                      our fingerprint. That is the forged-requirement hole, reopened."
+grep -q "not signed by the distribution certificate" "$STAGE/out" \
+    || die "install.sh refused the forgery, but not at the certificate check:
+$(cat "$STAGE/out")"
+[ ! -e "$STAGE/apps/Meetings.app" ] || die "install.sh refused the forgery and installed it anyway"
+pass "a forged requirement naming our fingerprint is refused, nothing installed"
+# Back to a genuinely signed bundle for everything below.
+codesign --force --sign "$SHA1" --keychain "$KEYCHAIN" --timestamp=none \
+    --entitlements "$ROOT/Packaging/Meetings.entitlements" "$STAGE/dist/Meetings.app" 2>/dev/null \
+    || die "could not re-sign the staged bundle after the forgery case"
+( cd "$STAGE" && bash scripts/package-release.sh >/dev/null ) || die "repackaging after the forgery case failed"
 
 # ---------------------------------------------------------------- install.sh and the repo disagreeing
 # The cross-check the pin is paired with. Rotating the certificate means editing two places, and the

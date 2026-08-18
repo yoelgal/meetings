@@ -180,19 +180,23 @@ jobs:
                              it searched." >&2
                         exit 1 ;;
           esac
-          # Either wording, because the choice is not ours: measured on two self-signed certificates
-          # with byte-identical extensions and one-certificate chains, `CN=…` alone generates
-          # `certificate leaf` and `CN=…, O=Meetings` generates `certificate root`. A self-signed
-          # certificate is its own anchor, so both name the same certificate and both are equally
-          # stable across releases. Ours currently generates `root`; asserting the word rather than
-          # the hash would fail the release for a difference that means nothing.
-          case "$REQUIREMENT" in
-              *"certificate leaf = H\"$EXPECTED\""*|*"certificate root = H\"$EXPECTED\""*) ;;
-              *) echo "release: dist/Meetings.app is not signed by the distribution certificate
-                       ($EXPECTED). Shipping it would reset every user's microphone and
-                       screen-recording grants." >&2
-                 exit 1 ;;
-          esac
+          # Asked of codesign as a requirement rather than matched as a substring, for the same reason
+          # install.sh does: a designated requirement is a string the signer chooses, not a fact about
+          # the signer, so a substring test can be satisfied by a requirement that merely MENTIONS our
+          # fingerprint alongside somebody else's. `--verify -R` evaluates the code against the
+          # requirement written here, which no clause added elsewhere can widen. Both wordings are
+          # asked because a self-signed certificate is its own anchor and either can appear; a genuine
+          # bundle satisfies both, and neither is satisfied by a bundle signed with another key.
+          codesign --verify \
+              -R "=identifier \"com.yoelgal.Meetings\" and certificate leaf = H\"$EXPECTED\"" \
+              dist/Meetings.app >/dev/null 2>&1 \
+          || codesign --verify \
+              -R "=identifier \"com.yoelgal.Meetings\" and certificate root = H\"$EXPECTED\"" \
+              dist/Meetings.app >/dev/null 2>&1 \
+          || { echo "release: dist/Meetings.app is not signed by the distribution certificate
+                     ($EXPECTED). Shipping it would reset every user's microphone and
+                     screen-recording grants." >&2
+               exit 1; }
 
       # ditto, not zip, and the version read from the bundle — see scripts/package-release.sh.
       - name: package

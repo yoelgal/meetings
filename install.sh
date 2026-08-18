@@ -55,6 +55,10 @@ ASSET="Meetings-arm64.zip"
 # checkout is present. Rotating the certificate means changing both, in the same commit.
 DIST_CERT_SHA1="f5568c5d976fef4de1f44da76d6df5498a4fe882"
 
+# Pinned alongside the certificate, because a requirement naming only a certificate would accept any
+# app that certificate ever signed. Both halves together are what "this is Meetings, from us" means.
+BUNDLE_ID="com.yoelgal.Meetings"
+
 say()  { printf '\033[1m==>\033[0m %s\n' "$1"; }
 die()  { printf '\033[1;31mmeetings:\033[0m %s\n' "$1" >&2; exit 1; }
 
@@ -508,41 +512,40 @@ if [ "$FROM_SOURCE" != 1 ]; then
     # That is worth failing an install over: it cannot be noticed from the outside and it cannot be
     # fixed after the fact.
     #
-    # Either `certificate leaf` or `certificate root`, and the choice is not ours. Measured on two
-    # self-signed certificates whose extensions are byte-identical and whose chains are both one
-    # certificate long: the one whose subject is `CN=…` alone generates `certificate leaf`, and the
-    # one that also carries `O=Meetings` generates `certificate root`. A self-signed certificate is
-    # its own anchor, so both forms name the same certificate and both are equally stable across
-    # releases — which is the property that matters here. Matching only `leaf` rejected our own
-    # release, so the word is what we do not assert on.
+    # Asked of codesign as a requirement, not scraped out of its printed one. That distinction is the
+    # whole of this block, and it was learned the hard way: the previous version extracted the hash
+    # with `sed -nE 's/.*certificate (leaf|root) = H"([0-9a-fA-F]*)".*/\2/'` and compared it. The
+    # leading `.*` is greedy, so it captured the LAST certificate hash in the requirement — and a
+    # designated requirement is not a fact about the signer, it is a string the signer chooses. An
+    # attacker signs with their own certificate and sets `-r` to
+    #
+    #     designated => certificate leaf = H"<theirs>" or certificate leaf = H"<ours>"
+    #
+    # which their own signature satisfies, so `codesign --verify --strict` passes; the cdhash arm is
+    # not hit because the requirement does name certificates; and the greedy regex hands the pin our
+    # own fingerprint out of their app. Proven end-to-end against this installer, twice, as a file and
+    # piped into bash: a bundle signed by a stranger installed with exit 0 and no warning.
+    #
+    # `--verify -R` evaluates the code against the requirement WE wrote, so no clause the signer adds
+    # can satisfy it: an `or` only ever widens what their requirement accepts, never what ours does.
+    # Both `leaf` and `root` are asked because a self-signed certificate is its own anchor and either
+    # word can appear; measured that a genuine bundle satisfies both forms and the forged one neither.
     case "$NEW_REQ" in
         *cdhash*)
             die "The downloaded app is signed ad hoc, not with the distribution certificate:
     $NEW_REQ
     macOS keys permissions to that requirement, so installing this would re-ask for the
     microphone and for Screen Recording after every future update. Refusing." ;;
-        *'certificate leaf = H"'*|*'certificate root = H"'*) : ;;
-        *)
-            die "The downloaded app's signature names no certificate:
-    ${NEW_REQ:-(unsigned)}
-    A release is signed with the distribution certificate; this is not one. Refusing." ;;
     esac
-    # -E because BSD sed has no `\|` alternation in a basic regular expression, and this has to run
-    # on a stock Mac with nothing installed.
-    LEAF="$(printf '%s\n' "$NEW_REQ" \
-        | sed -nE 's/.*certificate (leaf|root) = H"([0-9a-fA-F]*)".*/\2/p' | tr 'A-F' 'a-f')"
-
-    # Pinned against DIST_CERT_SHA1, always. This used to be conditional on a readable
-    # Packaging/distribution-cert.sha1, which meant it never ran on the only path anyone takes:
-    # `curl … | bash` has no checkout, so there was no file, so the pin was skipped and all that was
-    # left was "the requirement names some certificate" — which any self-signed certificate satisfies
-    # in the thirty seconds it takes to mint one. The actor that stops is real and specific: someone
-    # who can write a release asset but cannot reach the signing key, which is what a leaked
-    # `contents: write` token is. Inlining the fingerprint moves the thing they would have to forge
-    # from a release asset to this file on `main`, fetched over TLS, where a change is loud.
-    [ "$LEAF" = "$DIST_CERT_SHA1" ] || die "The downloaded app is signed by a certificate this installer does not know:
-    signed by  $LEAF
-    expected   $DIST_CERT_SHA1
+    codesign --verify \
+        -R "=identifier \"$BUNDLE_ID\" and certificate leaf = H\"$DIST_CERT_SHA1\"" "$STAGED" \
+        >/dev/null 2>&1 \
+    || codesign --verify \
+        -R "=identifier \"$BUNDLE_ID\" and certificate root = H\"$DIST_CERT_SHA1\"" "$STAGED" \
+        >/dev/null 2>&1 \
+    || die "The downloaded app is not signed by the distribution certificate.
+    its requirement  ${NEW_REQ:-(unsigned)}
+    expected         identifier \"$BUNDLE_ID\" signed by $DIST_CERT_SHA1
     Nothing has been installed. Either this asset did not come from the project's release
     pipeline, or the signing certificate was rotated without updating install.sh — in which case
     install it by hand from $RELEASES after checking why."
