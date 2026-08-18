@@ -84,12 +84,21 @@ import Testing
     /// **The case the migration's wording must not swallow.** Once the migration has shipped, every
     /// user's recorded identity is the distribution certificate, so a build signed by some other
     /// certificate arrives on this exact path — and macOS re-asking for permissions is the only signal
-    /// the user gets that the signer was substituted. Reported as a rotation, and it does not care how
-    /// the copy was built, because a rotation resets the grants either way.
-    @Test func aDifferentCertificateIsReportedAsARotationOnEveryKindOfBuild() {
+    /// the user gets that the signer was substituted. A *downloaded* copy has no business carrying an
+    /// unfamiliar certificate, so this is the one that is not reassured about.
+    @Test func anUnfamiliarCertificateOnADownloadedCopyIsAReportedRotation() {
         #expect(launch(Self.distribution) == nil)
-        #expect(launch(Self.theirOwn, usedBefore: true, isPrebuilt: false) == .rotation)
+        #expect(launch(Self.theirOwn, usedBefore: true, isPrebuilt: true) == .rotation)
         #expect(defaults.string(forKey: SigningChange.identityKey) == Self.theirOwn)
+    }
+
+    /// The same change of certificate on a copy assembled from a checkout, which is a contributor who
+    /// just built and installed their own. The grants really are gone, so the notice still appears —
+    /// but nothing about their own certificate is suspicious, and the rotation's "find out where it
+    /// came from" sends them looking for themselves.
+    @Test func aLocallyBuiltCopyIsReportedAsALocalBuildRatherThanARotation() {
+        #expect(launch(Self.distribution) == nil)
+        #expect(launch(Self.theirOwn, usedBefore: true, isPrebuilt: false) == .localBuild)
     }
 
     // MARK: - What each cause is allowed to say
@@ -121,18 +130,38 @@ import Testing
         #expect(text.contains("where it came from"))
     }
 
-    /// Neither cause may fall through to the other's headline, and a third case added later cannot
-    /// ship blank.
+    /// **And a local build gets neither story.** Sent the rotation's, a contributor is told to
+    /// investigate a certificate they minted themselves; sent the migration's, they are told this copy
+    /// was downloaded ready to run when they compiled it ten minutes ago. What is true is only that they
+    /// signed it, and that a rebuild at the same certificate keeps the grants.
+    @Test func aLocalBuildIsNeitherSuspectedNorPromisedAPrebuiltRelease() {
+        let text = SigningChange.Cause.localBuild.explanation
+        #expect(!text.contains("where it came from"), """
+            a contributor is sent to investigate their own build: "\(text)"
+            """)
+        #expect(!text.contains("downloaded ready to run"), "they compiled this copy, they did not fetch it")
+        #expect(text.contains("built this copy from a checkout"))
+        #expect(text.contains("certificate on this Mac"))
+        #expect(text.contains("Screen & System Audio Recording"))
+    }
+
+    /// No cause may fall through to another's words, and a fourth case added later cannot ship blank.
     @Test func everyCauseSaysSomethingOfItsOwn() {
-        for cause in SigningChange.Cause.allCases {
+        let causes = SigningChange.Cause.allCases
+        for cause in causes {
             #expect(!cause.title.isEmpty, "\(cause) has no row title")
             #expect(!cause.detail.isEmpty, "\(cause) has no row detail")
             #expect(!cause.headline.isEmpty, "\(cause) has no headline")
             #expect(!cause.symbol.isEmpty, "\(cause) has no symbol")
         }
-        #expect(SigningChange.Cause.migration.headline != SigningChange.Cause.rotation.headline)
-        #expect(SigningChange.Cause.migration.title != SigningChange.Cause.rotation.title)
-        #expect(SigningChange.Cause.migration.explanation != SigningChange.Cause.rotation.explanation)
+        for (index, cause) in causes.enumerated() {
+            for other in causes[(index + 1)...] {
+                #expect(cause.title != other.title, "\(cause) and \(other) share a row title")
+                #expect(cause.headline != other.headline, "\(cause) and \(other) share a headline")
+                #expect(cause.explanation != other.explanation,
+                        "\(cause) and \(other) share an explanation")
+            }
+        }
     }
 
     // MARK: - Everything that must stay quiet, and the record that carries the notice

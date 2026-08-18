@@ -124,22 +124,29 @@ enum CodeSignature {
 /// than the settings table because it is a fact about this bundle on this Mac — nothing the CLI or an
 /// agent has any business reading — which is the same call the notes panel makes for window state.
 enum SigningChange {
-    /// Why the grants are gone, because the two causes need opposite sentences.
+    /// Why the grants are gone. Three causes, because the same reset means three different things and
+    /// the wrong sentence about it is worse than none.
     ///
-    /// After the migration release every user's recorded identity *is* the distribution certificate,
-    /// so a build signed by some other certificate lands on the same code path as the migration did.
-    /// Told the migration's story, that user is reassured about the only user-visible signal that a
-    /// release's signer was substituted — macOS asking for permissions again — and the notice becomes
-    /// the attacker's alibi. So the cause is carried through to the words.
+    /// After the migration release every user's recorded identity *is* the distribution certificate, so
+    /// a build signed by some other certificate lands on the same code path as the migration did. Told
+    /// the migration's story, that user is reassured about the only user-visible signal that a release's
+    /// signer was substituted — macOS asking for permissions again — and the notice becomes the
+    /// attacker's alibi. Told the *suspicious* story, a contributor who just built their own copy is
+    /// asked to investigate their own certificate. So the cause is carried through to the words.
     enum Cause: String, CaseIterable {
         /// Nothing was recorded before this launch. Every build that predates this code recorded
         /// nothing, including an ad-hoc one, which has no certificate to record in the first place —
         /// so "no record" is exactly the population moving from a locally built copy to a downloaded
         /// one, and this is the routine one-time reset.
         case migration
-        /// A recorded certificate replaced by a different certificate. Releases are signed by the
-        /// same identity every time, so this is not routine and is not reassured about.
+        /// A recorded certificate replaced by a different one on a copy that was *downloaded*. A
+        /// release is signed by the same identity every time, so this is not routine and is not
+        /// reassured about.
         case rotation
+        /// A recorded certificate replaced by a different one on a copy assembled from a checkout on
+        /// this Mac, which is a contributor's own signing identity and entirely expected. Same reset,
+        /// no mystery: told plainly rather than apologised for or treated as suspicious.
+        case localBuild
     }
 
     /// What the last launch was signed by, and which explanation is still owed. Two keys rather than
@@ -162,17 +169,18 @@ enum SigningChange {
     /// prebuilt certificate has nothing to compare against and would pass in silence — the one launch
     /// where the grants are definitely gone.
     ///
-    /// 1. A recorded identity that differs: ``Cause/rotation``. On a downloaded copy or a from-source
-    ///    one, because a rotation resets the grants either way.
+    /// 1. A recorded identity that differs, on either kind of build, because the grants are reset
+    ///    either way. Which story it is depends on where this copy came from: a downloaded copy has no
+    ///    business being signed by an unfamiliar certificate (``Cause/rotation``), while one assembled
+    ///    from a checkout is signed by the contributor's own (``Cause/localBuild``).
     /// 2. Nothing recorded, but this Mac has finished setup before *and* this copy was downloaded
     ///    rather than compiled here: ``Cause/migration``.
     ///
     /// Both halves of (2) are load-bearing. Without `usedBefore` a genuine first launch opens with an
     /// apology for revoking permissions it was never granted, talking over the setup wizard. Without
-    /// `isPrebuilt` the notice is a lie told to a `--from-source` user, who rebuilt with their own
-    /// local certificate and lost nothing: `MeetingsSourceRoot` is stamped by every build assembled
-    /// from a checkout and stripped by `MEETINGS_RELEASE=1`, so its absence is exactly "this copy was
-    /// downloaded".
+    /// `isPrebuilt` the notice tells a `--from-source` user their permissions were reset when nothing
+    /// changed at all: `MeetingsSourceRoot` is stamped by every build assembled from a checkout and
+    /// stripped by `MEETINGS_RELEASE=1`, so its absence is exactly "this copy was downloaded".
     static func recordAndDetect(
         identity: String? = CodeSignature.signingIdentity,
         usedBefore: Bool,
@@ -186,7 +194,10 @@ enum SigningChange {
         let previous = defaults.string(forKey: identityKey)
         defaults.set(identity, forKey: identityKey)
         if let previous {
-            if previous != identity { defaults.set(Cause.rotation.rawValue, forKey: noticeKey) }
+            if previous != identity {
+                let cause: Cause = isPrebuilt ? .rotation : .localBuild
+                defaults.set(cause.rawValue, forKey: noticeKey)
+            }
         } else if usedBefore, isPrebuilt {
             defaults.set(Cause.migration.rawValue, forKey: noticeKey)
         }
@@ -212,16 +223,17 @@ enum SigningChange {
     static var screenRecordingSettings: URL? { Permission.systemAudio.settingsURL }
 }
 
-/// What the notice actually says, kept out of the view so both stories can be read side by side and
-/// pinned by a test. The migration is routine and says so; the rotation is not, and the difference has
-/// to survive somebody editing one of the two sentences.
+/// What the notice actually says, kept out of the view so the three stories can be read side by side
+/// and pinned by a test. The migration is routine and says so, a local build is expected and says so,
+/// and the rotation is neither — the difference has to survive somebody editing one of them.
 extension SigningChange.Cause {
-    /// The sidebar row. It leads with what the person has already run into rather than the cause,
-    /// except for a rotation, where the cause *is* the news.
+    /// The sidebar row. It leads with what the person has already run into, except where the signature
+    /// itself is the news: a rotation nobody expected, or a build the person made themselves.
     var title: String {
         switch self {
         case .migration: "Permissions need granting again"
         case .rotation: "This build has a different signature"
+        case .localBuild: "Your own build needs the permissions again"
         }
     }
 
@@ -229,6 +241,7 @@ extension SigningChange.Cause {
         switch self {
         case .migration: "Once only — here is why"
         case .rotation: "Worth checking before you grant them back"
+        case .localBuild: "Expected when you build it yourself"
         }
     }
 
@@ -236,6 +249,7 @@ extension SigningChange.Cause {
         switch self {
         case .migration: "hand.raised"
         case .rotation: "exclamationmark.triangle.fill"
+        case .localBuild: "hammer"
         }
     }
 
@@ -243,13 +257,19 @@ extension SigningChange.Cause {
         switch self {
         case .migration: "Meetings now ships prebuilt"
         case .rotation: "Signed by a different certificate"
+        case .localBuild: "Signed with your own certificate"
         }
     }
 
-    /// The migration's last two sentences are the reassurance, and they are the reason the two causes
-    /// cannot share wording: said about a rotation they would explain away the only signal a user gets
-    /// that a release's signer was substituted. The rotation text says what is unusual and stops,
-    /// pointing at where the build should have come from rather than at a fix.
+    /// The migration's last two sentences are the reassurance, and they are why these cannot share
+    /// wording: said about a rotation they would explain away the only signal a user gets that a
+    /// release's signer was substituted. The rotation text says what is unusual and stops, pointing at
+    /// where the build should have come from rather than at a fix.
+    ///
+    /// And the local build gets neither. Told the rotation's story, a contributor who has just built and
+    /// installed their own copy is sent to find out where their own certificate came from; told the
+    /// migration's, they are promised a prebuilt release they did not install. What is true of them is
+    /// simply that they signed it themselves.
     var explanation: String {
         switch self {
         case .migration:
@@ -265,6 +285,11 @@ extension SigningChange.Cause {
                 + "the routine one. If this build did not come from the project's own releases page, "
                 + "or from the install command in its README, find out where it came from before you "
                 + "grant anything back."
+        case .localBuild:
+            "You built this copy from a checkout, so it is signed with the certificate on this Mac "
+                + "rather than the one the releases carry. macOS keys permissions to the signature, so "
+                + "the microphone and Screen & System Audio Recording have to be granted once for this "
+                + "build. Every rebuild signed with the same local certificate keeps them."
         }
     }
 }
