@@ -125,10 +125,27 @@ major=$(sw_vers -productVersion | cut -d. -f1)
 # Only when they did not name a directory themselves. An explicit MEETINGS_APPS is an instruction,
 # and installing somewhere else because that one was awkward is ignoring it. The directory itself is
 # created at the swap rather than here, so a run that refuses leaves no directories behind.
+#
+# And only when there is nothing already installed here. Measured, on the population that exists
+# because the OLD installer used `sudo mv` to write /Applications: a non-admin user upgrading got a
+# SECOND copy in ~/Applications, the previous one left sitting in /Applications, their
+# /usr/local/bin/meetings still pointing into the old bundle, and the fresh-install text printed over
+# an upgrade — because $INSTALLED_REQ was read from the fallback location, which was empty. Two
+# Meetings in Spotlight and the CLI on the old one.
+#
+# So an app already here outranks the no-password rule. Upgrading the copy somebody has beats
+# installing a rival beside it, even at the cost of the one `sudo` this script otherwise avoids: the
+# swap below already asks for it when the bundle is not ours to move, and it says why.
 if [ -z "${MEETINGS_APPS:-}" ] && [ ! -w "$APPS" ]; then
-    APPS="$HOME/Applications"
-    say "/Applications needs an administrator and this installer never asks for your password, so
+    if [ -e "$APPS/Meetings.app" ]; then
+        say "$APPS needs an administrator to write to, and Meetings is already installed there, so
+    this upgrades that copy rather than leaving it behind and installing a second one somewhere
+    else. macOS will ask for your password once."
+    else
+        APPS="$HOME/Applications"
+        say "/Applications needs an administrator and this installer never asks for your password, so
     the app is going to $APPS instead."
+    fi
 fi
 
 # ---------------------------------------------------------------- one install at a time
@@ -145,6 +162,11 @@ fi
 # answer to pick — an install that legitimately takes longer than any timeout would still be running.
 LOCK=""
 LOCK_DIR="${TMPDIR:-/tmp}/meetings-install.lock"
+# TMPDIR is normally there, and when it is not this used to refuse the whole install: `mkdir` fails on
+# a missing parent, the stale-reclaim path below fails the same way, and the run died on "could not
+# take the install lock" — a lock protecting nothing, blocking everything. Measured with TMPDIR
+# pointed at a directory that did not exist.
+mkdir -p "${TMPDIR:-/tmp}" 2>/dev/null || true
 if ! mkdir "$LOCK_DIR" 2>/dev/null; then
     HOLDER="$(cat "$LOCK_DIR/pid" 2>/dev/null || true)"
     if [ -n "$HOLDER" ] && kill -0 "$HOLDER" 2>/dev/null; then

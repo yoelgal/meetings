@@ -54,7 +54,15 @@ cleanup() {
     if [ -n "$SLEEPER" ]; then
         pkill -f "^$SLEEPER$" 2>/dev/null || true
     fi
-    if [ -n "$STAGE" ]; then rm -rf "$STAGE"; fi
+    # Writable before removable: the fallback cases deliberately chmod a staging directory to 500 to
+    # make it unwritable, and `rm -rf` cannot delete a directory's contents through that. On a failing
+    # run the trap fired before those cases restored the mode, so a real failure came with three
+    # "Permission denied" lines that looked like part of the defect. Restoring the mode first is the
+    # difference between a clear failure and a confusing one.
+    if [ -n "$STAGE" ]; then
+        chmod -R u+w "$STAGE" 2>/dev/null || true
+        rm -rf "$STAGE"
+    fi
 }
 trap cleanup EXIT
 
@@ -1040,6 +1048,42 @@ grep -q "Setup will ask for the microphone" "$STAGE/out" \
     && die "an upgrade in the fallback location was described as a first install:
 $(cat "$STAGE/out")"
 pass "an upgrade in the fallback location is recognised as an upgrade"
+
+# ---------------------------------------------------------------- and never a second copy beside it
+# The case the fallback's own rule got wrong, and the one that reaches every existing non-admin user.
+# The old installer wrote /Applications with `sudo mv`, so that population exists: an account that
+# cannot write /Applications but has Meetings sitting in it. Falling back on "not writable" alone put a
+# SECOND copy in ~/Applications, left the previous one where it was, and printed the fresh-install text
+# over an upgrade because $INSTALLED_REQ was read from the empty fallback location. Two Meetings in
+# Spotlight, and /usr/local/bin/meetings still pointing into the old bundle.
+#
+# Measured before the fix: two copies. So an app already at the unwritable location outranks the
+# never-ask-for-a-password rule — upgrading the copy somebody has beats installing a rival beside it.
+# With no terminal to ask on, the correct outcome is a refusal that changes nothing, which is what this
+# asserts: the existing copy still there, and nothing in the fallback location.
+echo "==> an existing install at an unwritable location is not left beside a second copy"
+mkdir -p "$STAGE/home-second/Applications"
+chmod u+w "$NOAPPS"
+cp -R "$ROOT/dist/Meetings.app" "$NOAPPS/Meetings.app"
+chmod 500 "$NOAPPS"
+# MEETINGS_APPS empty, for the reason the arm above records: install_run always sets it, and an empty
+# value takes the same branch an unset one does. Without this the fallback logic is never reached and
+# the case passes on the ordinary path.
+rc="$(install_run MEETINGS_APPS="" HOME="$STAGE/home-second")"
+[ "$rc" != 0 ] || die "install.sh reported success while it could neither write the existing location
+                      nor legitimately fall back"
+[ ! -e "$STAGE/home-second/Applications/Meetings.app" ] \
+    || die "install.sh installed a second copy in the fallback location while one was already
+                      installed at $NOAPPS — the two-copies defect, reopened"
+chmod u+w "$NOAPPS"
+[ -d "$NOAPPS/Meetings.app" ] || die "the existing install was removed rather than left alone"
+grep -q "already installed there" "$STAGE/out" \
+    || die "install.sh did not say it was upgrading the existing copy rather than falling back:
+$(cat "$STAGE/out")"
+pass "an existing install is upgraded in place, never duplicated into the fallback location"
+chmod u+w "$NOAPPS"
+rm -rf "$NOAPPS/Meetings.app"
+chmod 500 "$NOAPPS"
 pin_stage "$SHA1"
 
 echo "install-check OK"
