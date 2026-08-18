@@ -524,7 +524,9 @@ echo "    gap   --proto-redir '=https' has no case: proving it needs a local htt
 # holder's pid, and a pid with no process behind it is stale and reclaimed — so the live case needs a
 # process that really exists. `$$` is this script, which is alive by definition and outlives the run.
 echo "==> a second install refuses while another holds the lock"
-HELD="$STAGE/tmp/meetings-install.lock"
+# Under $HOME rather than TMPDIR, which is where install.sh moved it: /tmp is world-writable and
+# sticky, so a lock pre-seeded there by any local process could neither be trusted nor reclaimed.
+HELD="$STAGE/home/Library/Caches/com.yoelgal.Meetings/install.lock"
 mkdir -p "$HELD"
 printf '%s\n' "$$" > "$HELD/pid"
 rc="$(install_run)"
@@ -534,13 +536,22 @@ grep -q "Another Meetings install is running" "$STAGE/out" \
 $(cat "$STAGE/out")"
 [ ! -e "$STAGE/apps/Meetings.app" ] || die "a locked-out install installed something anyway"
 pass "a held lock refuses the second install, nothing installed"
-# And a lock whose holder is gone must not wedge every future install. A pid that cannot exist is the
-# cleanest stand-in for a killed run: reclaimed silently, and the install proceeds.
-printf '%s\n' "999999" > "$HELD/pid"
-rc="$(install_run)"
-[ "$rc" = 0 ] || die "a stale lock (no such process) blocked the install instead of being reclaimed:
+# And a lock whose holder is gone must not wedge every future install. Four pid files, because
+# `kill -0` answers yes to more than "this process exists": 0 and -1 both mean "signal a process
+# group", and 1 is launchd, which is always alive and is never this installer. Each of these used to
+# make the lock permanent — never stale, so never reclaimed, so every later install died on a
+# directory nobody would think to look for. An empty file and a non-numeric one are the killed-run
+# and corrupted cases.
+for held_pid in 999999 0 -1 1 "" "not-a-pid"; do
+    printf '%s\n' "$held_pid" > "$HELD/pid"
+    rc="$(install_run)"
+    [ "$rc" = 0 ] || die "a lock holding pid '$held_pid' blocked the install instead of being
+                      reclaimed as stale:
 $(cat "$STAGE/out")"
-pass "a stale lock is reclaimed, not permanent"
+    rm -rf "$STAGE/apps/Meetings.app" 2>/dev/null || true
+    mkdir -p "$HELD"
+done
+pass "a lock with no believable live holder is reclaimed, not permanent"
 rm -rf "$STAGE/apps/Meetings.app" "$HELD" 2>/dev/null || true
 
 # ---------------------------------------------------------------- the install itself
@@ -682,7 +693,7 @@ pass "a same-signature upgrade is silent about permissions and leaves nothing be
 #
 # Which is why install.sh classifies by what was just INSTALLED and not by the shape of the previous
 # requirement: the pin has already proved the new signature is the one distribution certificate, so
-# every later release keeps the grants and "Only this once" is true. Deciding by the previous
+# every later release keeps the grants. Deciding by the previous
 # requirement told exactly those users their app might have been substituted, while the app itself
 # showed them the routine migration notice on the same install — one event explained two contradictory
 # ways, and the terminal's version was the wrong one.
@@ -1049,19 +1060,24 @@ grep -q "Setup will ask for the microphone" "$STAGE/out" \
 $(cat "$STAGE/out")"
 pass "an upgrade in the fallback location is recognised as an upgrade"
 
-# ---------------------------------------------------------------- and never a second copy beside it
-# The case the fallback's own rule got wrong, and the one that reaches every existing non-admin user.
-# The old installer wrote /Applications with `sudo mv`, so that population exists: an account that
-# cannot write /Applications but has Meetings sitting in it. Falling back on "not writable" alone put a
-# SECOND copy in ~/Applications, left the previous one where it was, and printed the fresh-install text
-# over an upgrade because $INSTALLED_REQ was read from the empty fallback location. Two Meetings in
-# Spotlight, and /usr/local/bin/meetings still pointing into the old bundle.
+# ---------------------------------------------------------------- an install it cannot replace
+# The case that reaches every existing non-admin user, and the one where the first fix was worse than
+# the defect. The old installer wrote /Applications with `sudo mv`, so this population exists: an
+# account that cannot write /Applications but has Meetings sitting in it.
 #
-# Measured before the fix: two copies. So an app already at the unwritable location outranks the
-# never-ask-for-a-password rule — upgrading the copy somebody has beats installing a rival beside it.
-# With no terminal to ask on, the correct outcome is a refusal that changes nothing, which is what this
-# asserts: the existing copy still there, and nothing in the fallback location.
-echo "==> an existing install at an unwritable location is not left beside a second copy"
+# Falling back on "not writable" alone gave them a SECOND copy in ~/Applications, the previous one left
+# where it was, /usr/local/bin/meetings still pointing into it, and the fresh-install text over an
+# upgrade. Measured: two copies. But refusing instead — insisting on the in-place upgrade and its
+# password — strands exactly the same people, because /Applications is drwxrwxr-x root:admin, so an
+# unwritable one means the account is outside group admin, which is the same group sudo is granted to.
+# Measured too: nothing installed, non-zero exit, after two messages promising a password would work.
+# Worse than two copies, because at least those left a running app.
+#
+# So: preferred, not mandatory. `can_replace` decides, and when it says no the run falls back and NAMES
+# what it left behind. That is what this asserts — a working app installed, the old one untouched, and
+# the user told where it is and how to remove it. There is no terminal here and this account is not
+# being asked for a password, so `can_replace` takes its no branch.
+echo "==> an install it cannot replace is left alone, and named"
 mkdir -p "$STAGE/home-second/Applications"
 chmod u+w "$NOAPPS"
 cp -R "$ROOT/dist/Meetings.app" "$NOAPPS/Meetings.app"
@@ -1070,19 +1086,23 @@ chmod 500 "$NOAPPS"
 # value takes the same branch an unset one does. Without this the fallback logic is never reached and
 # the case passes on the ordinary path.
 rc="$(install_run MEETINGS_APPS="" HOME="$STAGE/home-second")"
-[ "$rc" != 0 ] || die "install.sh reported success while it could neither write the existing location
-                      nor legitimately fall back"
-[ ! -e "$STAGE/home-second/Applications/Meetings.app" ] \
-    || die "install.sh installed a second copy in the fallback location while one was already
-                      installed at $NOAPPS — the two-copies defect, reopened"
+[ "$rc" = 0 ] || die "install.sh refused rather than falling back, which strands an account that
+                      cannot write the existing location and cannot sudo either:
+$(cat "$STAGE/out")"
+[ -x "$STAGE/home-second/Applications/Meetings.app/Contents/MacOS/Meetings" ] \
+    || die "install.sh reported success without leaving a usable app in the fallback location"
 chmod u+w "$NOAPPS"
 [ -d "$NOAPPS/Meetings.app" ] || die "the existing install was removed rather than left alone"
-grep -q "already installed there" "$STAGE/out" \
-    || die "install.sh did not say it was upgrading the existing copy rather than falling back:
+grep -q "An older Meetings is still at $NOAPPS/Meetings.app" "$STAGE/out" \
+    || die "install.sh left a copy behind without naming it, which is the silent two-copies outcome
+                      wearing a different exit code:
 $(cat "$STAGE/out")"
-pass "an existing install is upgraded in place, never duplicated into the fallback location"
+grep -q "sudo rm -rf" "$STAGE/out" \
+    || die "install.sh named the copy it left behind without saying how to remove it:
+$(cat "$STAGE/out")"
+pass "an unreplaceable install is left alone, named, and never silently duplicated"
 chmod u+w "$NOAPPS"
-rm -rf "$NOAPPS/Meetings.app"
+rm -rf "$NOAPPS/Meetings.app" "$STAGE/home-second"
 chmod 500 "$NOAPPS"
 pin_stage "$SHA1"
 

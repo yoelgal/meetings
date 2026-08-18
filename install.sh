@@ -107,6 +107,27 @@ major=$(sw_vers -productVersion | cut -d. -f1)
     Transcription runs its speech models on the Apple Silicon neural engine through CoreML, so
     there is nothing here to fall back to — not a slower build, none."
 
+# Can this bundle actually be taken out of the way? Asked BEFORE promising a password prompt will
+# work, because promising one that cannot is how a run ends with nothing installed.
+#
+# A writable parent needs no sudo at all. Otherwise sudo is the only route, and it only leads anywhere
+# for a member of group `admin` with a terminal to type into. That group is not a guess: /Applications
+# is drwxrwxr-x root:admin, so an unwritable one means this account is outside admin — which is the
+# same group macOS sudoers grants sudo to. `sudo -n true` is deliberately not the test: it answers no
+# for every admin who simply has not typed their password recently, which is nearly all of them.
+#
+# The terminal is opened rather than tested with `[ -r /dev/tty ]`, which is true even when there is no
+# controlling terminal — the trap `ask()` documents a few lines down.
+can_replace() {
+    [ -w "$(dirname "$1")" ] && return 0
+    case " $(id -Gn 2>/dev/null) " in *" admin "*) ;; *) return 1 ;; esac
+    ( exec 3</dev/tty ) 2>/dev/null || return 1
+    return 0
+}
+
+# Set when an old copy is left somewhere this run could not replace, so the end of the install can say
+# so rather than leaving two Meetings on the Mac silently.
+STRANDED=""
 # ---------------------------------------------------------------- where the app is going
 # Resolved here, before anything at all is derived from it. THE INVARIANT: nothing computed from
 # $APPS may be computed before $APPS is final. This block used to sit down beside the swap, three
@@ -133,18 +154,33 @@ major=$(sw_vers -productVersion | cut -d. -f1)
 # an upgrade — because $INSTALLED_REQ was read from the fallback location, which was empty. Two
 # Meetings in Spotlight and the CLI on the old one.
 #
-# So an app already here outranks the no-password rule. Upgrading the copy somebody has beats
-# installing a rival beside it, even at the cost of the one `sudo` this script otherwise avoids: the
-# swap below already asks for it when the bundle is not ours to move, and it says why.
+# So an app already here outranks the no-password rule — but only as a PREFERENCE, never as the only
+# way out. `sudo` cannot be the sole exit, and the reason is a permission bit: /Applications is
+# drwxrwxr-x root:admin, so it is unwritable exactly when the account is outside group admin, which is
+# the same group macOS grants sudo to. Insisting on the in-place upgrade therefore strands precisely
+# the population it was meant to serve — measured: nothing installed, non-zero exit, after two
+# messages promising a password prompt would work. Worse than the two copies it replaced, because at
+# least those left the user with a running app.
+#
+# Preferred, then, and abandoned on failure: try to take the existing bundle out of the way, and if
+# that cannot be done, fall back and say plainly what is left behind. Nobody who runs this ends up
+# without an app they can use.
 if [ -z "${MEETINGS_APPS:-}" ] && [ ! -w "$APPS" ]; then
-    if [ -e "$APPS/Meetings.app" ]; then
-        say "$APPS needs an administrator to write to, and Meetings is already installed there, so
-    this upgrades that copy rather than leaving it behind and installing a second one somewhere
-    else. macOS will ask for your password once."
+    if [ -e "$APPS/Meetings.app" ] && can_replace "$APPS/Meetings.app"; then
+        say "$APPS needs an administrator, and Meetings is already installed there, so this upgrades
+    that copy rather than leaving it behind. macOS will ask for your password."
     else
+        STRANDED=""
+        [ -e "$APPS/Meetings.app" ] && STRANDED="$APPS/Meetings.app"
         APPS="$HOME/Applications"
-        say "/Applications needs an administrator and this installer never asks for your password, so
-    the app is going to $APPS instead."
+        if [ -n "$STRANDED" ]; then
+            say "$STRANDED needs an administrator to replace and this Mac will not give one, so the
+    new version is going to $APPS instead. The old copy stays where it is — see the note at the
+    end of this install."
+        else
+            say "/Applications needs an administrator and this installer never asks for your password,
+    so the app is going to $APPS instead."
+        fi
     fi
 fi
 
@@ -161,23 +197,38 @@ fi
 # process behind it means it is stale and gets taken. Compared with a timeout, this has no wrong
 # answer to pick — an install that legitimately takes longer than any timeout would still be running.
 LOCK=""
-LOCK_DIR="${TMPDIR:-/tmp}/meetings-install.lock"
-# TMPDIR is normally there, and when it is not this used to refuse the whole install: `mkdir` fails on
-# a missing parent, the stale-reclaim path below fails the same way, and the run died on "could not
-# take the install lock" — a lock protecting nothing, blocking everything. Measured with TMPDIR
-# pointed at a directory that did not exist.
-mkdir -p "${TMPDIR:-/tmp}" 2>/dev/null || true
+# Under $HOME, not TMPDIR. With TMPDIR unset the lock lands in /tmp, which is drwxrwxrwt — any local
+# process can create the directory first and, because the sticky bit stops this run deleting a file it
+# does not own, the reclaim below cannot heal it. That turns a mutex into a way to stop anyone on the
+# machine installing. $HOME is per-user, which is the only scope this lock needs: it serialises one
+# user's installs, and two users installing at once are writing to two different app directories.
+LOCK_HOME="$HOME/Library/Caches/com.yoelgal.Meetings"
+LOCK_DIR="$LOCK_HOME/install.lock"
+# The parent, because a missing one used to refuse the whole install: `mkdir` failed on it, the
+# reclaim failed the same way, and the run died on "could not take the install lock" — a lock
+# protecting nothing and blocking everything. Measured with TMPDIR pointed at a directory that did
+# not exist, back when this lived there.
+mkdir -p "$LOCK_HOME" 2>/dev/null || true
 if ! mkdir "$LOCK_DIR" 2>/dev/null; then
     HOLDER="$(cat "$LOCK_DIR/pid" 2>/dev/null || true)"
+    # A pid is believed only if it could be one. `kill -0` is true for 0 and for -1 — both mean
+    # "signal a process group", not "this process exists" — so an empty, non-numeric, 0, -1 or 1 pid
+    # file used to make the lock permanent: never stale, so never reclaimed, so every later install
+    # died on it with nothing to do about it but find a directory nobody would think to look for.
+    # 2 is the floor because 1 is launchd, which is always alive and never this installer.
+    case "$HOLDER" in
+        ''|*[!0-9]*) HOLDER="" ;;
+        *) [ "$HOLDER" -ge 2 ] 2>/dev/null || HOLDER="" ;;
+    esac
     if [ -n "$HOLDER" ] && kill -0 "$HOLDER" 2>/dev/null; then
         die "Another Meetings install is running (process $HOLDER). Two at once can leave this Mac
     with a broken app, so this one has stopped and changed nothing. Wait for that one to finish."
     fi
-    # Stale: whoever made it is gone. Reclaimed rather than reported, because the alternative is
-    # telling somebody to delete a directory in TMPDIR to install an app.
+    # Stale: no believable live holder. Reclaimed rather than reported, because the alternative is
+    # telling somebody to delete a cache directory to install an app.
     rm -rf "$LOCK_DIR" 2>/dev/null || true
     mkdir "$LOCK_DIR" 2>/dev/null \
-        || die "Could not take the install lock at $LOCK_DIR. Remove it and try again."
+        || die "Could not take the install lock at $LOCK_DIR. Remove that directory and run this again."
 fi
 LOCK="$LOCK_DIR"
 printf '%s\n' "$$" > "$LOCK_DIR/pid" 2>/dev/null || true
@@ -756,12 +807,14 @@ if [ -d "$APPS/Meetings.app" ]; then
         fi
     fi
     OLD_BUNDLE="$APPS/Meetings.app.replaced-$$"
-    # The sudo fallbacks here are all that is left of the password prompts, and they are only
-    # reachable when the directory is writable but the bundle inside it is not — a Meetings.app that
-    # some earlier install left owned by root. Handed /dev/tty because under `curl | bash` stdin is
-    # the script, and sudo reading a password from that would read this file's own text.
+    # The sudo fallbacks here are all that is left of the password prompts. Two ways to reach them: a
+    # Meetings.app some earlier install left owned by root inside a directory this account can write,
+    # and the resolution above choosing to upgrade in place at a directory it cannot — which it only
+    # does when `can_replace` said a password could actually work. Handed /dev/tty because under
+    # `curl | bash` stdin is the script, and sudo reading a password from that would read this file's
+    # own text.
     mv "$APPS/Meetings.app" "$OLD_BUNDLE" 2>/dev/null || {
-        say "$APPS/Meetings.app is owned by another user; macOS will ask for your password"
+        say "Replacing $APPS/Meetings.app needs an administrator; macOS will ask for your password"
         sudo mv "$APPS/Meetings.app" "$OLD_BUNDLE" < /dev/tty \
             || die "Could not move $APPS/Meetings.app out of the way, so nothing has been changed.
     The app that is installed is still the one that was there."
@@ -846,6 +899,19 @@ echo "    Meetings.app   $APPS/Meetings.app${VERSION:+  (version $VERSION)}"
 # command of an `&&` list is a non-zero status, and under `set -e` that ends the script one line
 # before `open`.
 if [ -L "$BIN/meetings" ]; then echo "    meetings       $BIN/meetings"; fi
+# The copy this run could not replace, if there was one. Said here rather than left to Spotlight: two
+# Meetings on one Mac is confusing on its own, and the older of them may still be what `meetings`
+# resolves to, because that symlink was made by an install that could write where this one could not.
+if [ -n "$STRANDED" ]; then
+    echo
+    echo "    An older Meetings is still at $STRANDED. This account cannot replace it,"
+    echo "    so it was left alone rather than half-removed. To get rid of it:"
+    echo
+    printf '      sudo rm -rf "%s"\n' "$STRANDED"
+    echo
+    echo "    Until it goes, Spotlight will offer both, and the meetings command may still"
+    echo "    point at the old one — check with:  readlink \"\$(command -v meetings)\""
+fi
 echo
 if [ -z "$INSTALLED_REQ" ]; then
     echo "    Setup will ask for the microphone and for Screen Recording — macOS files"

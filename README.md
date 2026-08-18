@@ -12,8 +12,14 @@ curl -fsSL https://raw.githubusercontent.com/yoelgal/meetings/main/install.sh | 
 
 That downloads the latest release, checks it against its published checksum and against the one
 certificate every release is signed with, installs the app and the `meetings` command line tool,
-installs the agent skill, and opens the app. About twenty seconds, and it never asks for your
-password. Re-run it any time to update.
+installs the agent skill, and opens the app. About twenty seconds, and on a normal Mac it never asks
+for your password. Re-run it any time to update.
+
+The one exception: if Meetings is already in `/Applications` and your account cannot write there —
+an account outside the `admin` group, where an earlier version was installed for you — replacing that
+copy needs a password. It asks once, and if the answer is no it installs into `~/Applications`
+instead and tells you the old copy is still there and how to remove it. It never leaves you without a
+working app.
 
 It needs macOS 26 on Apple Silicon and nothing else — no Xcode, no developer tools, no compiler. Read
 it first if you would rather ([install.sh](install.sh)).
