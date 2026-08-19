@@ -163,9 +163,18 @@ APP_NAME="${MEETINGS_APP_NAME:-Meetings}"
 #
 # Without this the update notice could only link to the release page, and a release page says what
 # changed, not what to type. The answer is `cd <this directory> && git pull && ./install.sh`, and
-# this is the only place that directory is known. Legitimate to record because the app is only ever
-# built from source on the machine it runs on: there is no build server whose path this could be.
-/usr/libexec/PlistBuddy -c "Add :MeetingsSourceRoot string $ROOT" "$CONTENTS/Info.plist" >/dev/null
+# this is the only place that directory is known.
+#
+# Skipped for a release build, and that exception is the whole reason MEETINGS_RELEASE exists. The
+# line above used to end "the app is only ever built from source on the machine it runs on: there is
+# no build server whose path this could be" — and now there is one. A release built on a CI runner
+# would stamp the runner's checkout and hand every user `cd '/Users/runner/work/meetings/meetings'
+# && git pull && ./install.sh`, a command that cannot work on their Mac and names a directory they
+# have never had. With no stamp, AppInfo.updateCommand falls back to the curl one-liner, which is
+# the right answer for a build nobody compiled.
+if [ "${MEETINGS_RELEASE:-0}" != "1" ]; then
+    /usr/libexec/PlistBuddy -c "Add :MeetingsSourceRoot string $ROOT" "$CONTENTS/Info.plist" >/dev/null
+fi
 echo "    version $VERSION (build $BUILD)"
 
 printf 'APPL????' > "$CONTENTS/PkgInfo"

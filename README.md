@@ -10,17 +10,35 @@
 curl -fsSL https://raw.githubusercontent.com/yoelgal/meetings/main/install.sh | bash
 ```
 
-That clones the repo, sets up code signing, builds, installs the app and the `meetings` command line
-tool, installs the agent skill, and opens the app. A few minutes, mostly compiling. Re-run it any
-time to update.
+That downloads the latest release, checks it against its published checksum and against the one
+certificate every release is signed with, installs the app and the `meetings` command line tool,
+installs the agent skill, and opens the app. About twenty seconds, and on a normal Mac it never asks
+for your password. Re-run it any time to update.
 
-It needs macOS 26 and Apple's command line developer tools — not the full Xcode — and it asks one
-question, about the signing certificate. Say yes: it is what stops macOS re-asking for the
-microphone after every update. Read it first if you would rather ([install.sh](install.sh)), or do it
-by hand:
+The one exception: if Meetings is already in `/Applications` and your account cannot write there —
+an account outside the `admin` group, where an earlier version was installed for you — replacing that
+copy needs a password. It asks once, and if the answer is no it installs into `~/Applications`
+instead and tells you the old copy is still there and how to remove it. It never leaves you without a
+working app.
+
+It needs macOS 26 on Apple Silicon and nothing else — no Xcode, no developer tools, no compiler. Read
+it first if you would rather ([install.sh](install.sh)).
+
+Meetings is not notarized, because notarization needs a paid Apple Developer account. Nothing asks
+you to click past a security warning either: macOS only runs that check on files a *browser*
+downloaded, and `curl` does not mark them. The app is signed with one certificate that never changes,
+which is what lets macOS keep the microphone and Screen Recording permissions you grant it across
+every future update. The installer checks that certificate itself, by a fingerprint written into
+install.sh, so a release signed by anything else is refused rather than installed. What you can check
+by hand, if you want to: the checksum published beside the download, and the build provenance
+attestation on each release, which ties the binary to the commit and the workflow run that produced
+it.
+
+To build it from source instead — which is the same thing the installer used to do, and needs the
+command line developer tools:
 
 ```sh
-git clone https://github.com/yoelgal/meetings.git && cd meetings && ./install.sh
+git clone https://github.com/yoelgal/meetings.git && cd meetings && ./install.sh --from-source
 ```
 
 A local-first meeting recorder and note-taker for macOS. It records your microphone and your Mac's
@@ -35,51 +53,78 @@ notes you took, not by someone else's template.
 
 ## Requirements
 
-- macOS 26 or later. The app is built against APIs that do not exist earlier.
-- Apple's command line developer tools, with the macOS 26 SDK — `xcode-select --install`, about
-  1.5 GB, no Apple ID and no Xcode. `swift --version` should report 6.2 or later. A full Xcode works
-  too, and if neither is installed `install.sh` offers to do it for you.
+- macOS 26 or later, on Apple Silicon. The app is built against APIs that do not exist earlier, and
+  the speech models are CoreML; there is no Intel build and the installer refuses one rather than
+  pretending.
 - About 640 MB of disk for the speech model. It downloads the first time transcription runs, into
   `~/Library/Application Support/FluidAudio/Models`. Nothing is bundled in the app.
+
+Only if you build it yourself (`--from-source`, or the scripts below):
+
+- Apple's command line developer tools, with the macOS 26 SDK — `xcode-select --install`, about
+  1.5 GB, no Apple ID and no Xcode. `swift --version` should report 6.2 or later. A full Xcode works
+  too, and if neither is installed `install.sh --from-source` offers to do it for you.
 - About 2 GB for the build itself, in `.build/`. Delete it any time.
 
 ## Building it yourself
 
-`install.sh` is a wrapper around these. Use them directly if you are working on the code.
+`install.sh --from-source` is a wrapper around these. Use them directly if you are working on the
+code.
 
 ```sh
-./scripts/build-app.sh        # build and assemble dist/Meetings.app
-swift build                   # just the binaries, faster while iterating
-scripts/verify.sh             # build, tests, assembly, CLI smoke run
+./scripts/build-app.sh          # build and assemble dist/Meetings.app
+swift build                     # just the binaries, faster while iterating
+scripts/verify.sh               # build, tests, assembly, CLI smoke run, install check
+scripts/package-release.sh      # zip an assembled bundle into the release artifact
 ```
 
 `build-app.sh` fetches three dependencies (GRDB, swift-argument-parser, FluidAudio), builds in
 release mode, assembles the bundle and signs it. A few minutes the first time, under a minute after
 that. It stamps the version from the git tag, so a build off an untagged branch reports `0.0.0`.
 
+Nothing here is how a release is actually cut. That happens in `.github/workflows/release.yml` when a
+`v*` tag is pushed: it runs `verify.sh`, signs with the project's distribution certificate, refuses
+to continue if the result is not signed by exactly that certificate, packages, attests, and publishes
+the GitHub Release the installer downloads from. The private key is not in this repo.
+
 ## Updating
 
-Meetings asks GitHub once a day whether a newer release is tagged. If there is one, the foot of the
-sidebar says so and links to the release notes. Turn it off in Settings › General.
+Meetings asks GitHub once a day whether a newer release is published. If there is one, the foot of
+the sidebar says so and hands you the command. Turn it off in Settings › General.
 
-It tells you rather than installing it, because there is no binary to install. You built this copy
-from source and signed it with a certificate from your own keychain, so a downloaded replacement
-would be a different app as far as macOS is concerned. To update, re-run the install command at the
-top of this file, or from a checkout:
+Updating is the install command again:
 
 ```sh
-git pull && ./install.sh
+curl -fsSL https://raw.githubusercontent.com/yoelgal/meetings/main/install.sh | bash
 ```
 
-Your meetings are untouched by any of this. They live in a separate directory, described below.
+It replaces the app in place and puts the old one back untouched if anything fails, so there is no
+moment where the Mac has no Meetings. It refuses outright while a meeting is recording, and waits for
+a running copy to quit before it swaps anything. Your meetings live in a separate directory and are
+untouched by any of this.
 
-Updating does not re-ask for the microphone and screen recording, as long as you have a stable
-signing certificate. The installer offers to create one. If you declined, run
-`scripts/make-signing-identity.sh` and you will re-grant once more and then never again. The next
-section explains why.
+Updating does not re-ask for the microphone or for Screen Recording. Every release is signed with the
+same certificate, and macOS ties permissions to the signature rather than to the app's contents.
 
-Releases are tagged `vMAJOR.MINOR.PATCH`. `build-app.sh` stamps the version into the bundle from the
-tag, so a build off an untagged branch reports `0.0.0` and will always see a release as newer.
+One exception, once: if you installed Meetings before it shipped as a prebuilt binary, your copy was
+signed by a certificate created on your own Mac. The first prebuilt update is therefore a different
+app to the permission system and both permissions are asked for again. The app explains this itself
+when it happens and links straight to the right pane in System Settings. After that it never happens
+again — unless you build from source, which signs with your certificate rather than the project's.
+
+To pin an older release, or to go back after a bad one:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/yoelgal/meetings/main/install.sh | MEETINGS_VERSION=v0.3.0 bash
+```
+
+The variable goes on the right of the pipe, on `bash`. Put it in front of `curl` and it lands in the
+downloader's environment, where the installer never sees it — the command then reinstalls the latest
+release, which is the one you were trying to get away from.
+
+Releases are tagged `vMAJOR.MINOR.PATCH` and published as GitHub Releases; the tag alone is not a
+release, because the update check reads `/releases/latest`. A build off an untagged branch reports
+`0.0.0` and will always see a release as newer.
 
 ## The `meetings` command line tool
 

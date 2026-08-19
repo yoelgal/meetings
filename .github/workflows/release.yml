@@ -1,0 +1,266 @@
+# Cutting a release: push a `v*` tag, and everything a user downloads is produced here.
+#
+# The bar this was built to is that releasing is as easy as pushing to main with a new version tag —
+# so there is no approval gate and no manual follow-up step. The gate that says the build works, the
+# distribution signature the user's microphone and screen-recording grants are keyed to, the checksum
+# and the attestation that stand in for notarization, and the published Release the installer's
+# `releases/latest/download/...` URLs resolve to all come out of this one job.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+# Keyed on the tag, and deliberately WITHOUT cancel-in-progress. verify.yml cancels a superseded run
+# because a newer push makes the older one worthless; here a cancelled run may have already created
+# the temporary keychain, or the Release, or one of its two assets, and nothing re-runs to reconcile
+# that. A queued second release is cheaper than a Release with half its assets attached.
+concurrency:
+  group: release-${{ github.ref }}
+
+permissions:
+  contents: write # creating the Release and uploading its assets
+  id-token: write # the OIDC token actions/attest-build-provenance signs the provenance with
+  attestations: write # writing that attestation back to the repository
+
+jobs:
+  release:
+    # arm64, the same label verify.yml uses (`macos-26` is Apple Silicon; `macos-26-intel` is x64).
+    # It is not only a matter of matching the gate: this is the machine that compiles the binary
+    # people download, so it is the only place the `arm64` in Meetings-arm64.zip becomes true.
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # scripts/build-app.sh stamps CFBundleShortVersionString from `git describe --tags`, and a
+          # shallow clone carries no tags at all: the release would be stamped 0.0.0, which the
+          # shipped update check reads as "older than every release". Every installed copy would
+          # then report an update forever, and nothing about that is visible while building.
+          fetch-depth: 0
+
+      - name: toolchain
+        # Printed rather than pinned, as in verify.yml — and here it is also the provenance of a
+        # binary somebody else runs: which Swift and which SDK built this tag is otherwise unrecorded.
+        run: |
+          swift --version
+          sw_vers
+          xcodebuild -version
+
+      # verify.sh's upgrade step loads scripts/fixtures/store-0.1.2.sql through the sqlite3 CLI, and
+      # that fixture still creates an FTS5 virtual table (meetings_fts). The runner image's sqlite3 is
+      # built without FTS5, so the load fails with "no such module: fts5" and takes the migration
+      # check with it. Homebrew's sqlite has FTS5 and is keg-only, so its bin needs PATH explicitly.
+      - name: sqlite3 with FTS5
+        run: |
+          brew install sqlite
+          echo "$(brew --prefix sqlite)/bin" >> "$GITHUB_PATH"
+
+      - name: FTS5 is actually there
+        run: |
+          command -v sqlite3
+          sqlite3 --version
+          sqlite3 :memory: 'CREATE VIRTUAL TABLE probe USING fts5(x);'
+
+      # The supply-chain half of the gate, and it matters more here than in verify.yml: this is the
+      # one build nobody who runs it can compile for themselves, so a resolve that quietly changed
+      # the pinned graph would ship dependencies nobody chose, to people with no way to look.
+      - name: dependencies match Package.resolved
+        run: swift package resolve --force-resolved-versions
+
+      # The gate, verbatim and before anything is signed. A release that skips it is how a broken
+      # build reaches people who can no longer compile the app themselves and have no way back to the
+      # previous version. Running it ahead of the signing identity also means a red gate fails the job
+      # before the signing secret has been decoded onto the runner's disk at all.
+      - name: verify
+        env:
+          # verify.sh assembles the app twice, and neither copy is shipped. Ad-hoc is what a runner
+          # takes anyway with no tty and no identity in the keychain; set explicitly for the same
+          # reason verify.yml sets it, so the run does not depend on that staying true.
+          MEETINGS_SIGN_ADHOC: "1"
+        run: scripts/verify.sh
+
+      # What this job is willing to sign, checked before it holds the key.
+      #
+      # `--verify-tag` at the publish step proves the tag exists; it says nothing about what the tag
+      # points at. A tag can name any object in the repository, including a commit that sits on no
+      # branch and passed no review — so without this, one `git push origin v9.9.9` from anyone with
+      # write access produces a bundle signed with the project's distribution certificate and
+      # published as `--latest`, which every installed copy's update check then offers.
+      #
+      # This is not an approval gate and does not touch the "releasing is pushing a tag" ergonomics:
+      # it narrows the signable surface from "any object in the repository" to "code that reached the
+      # default branch", which is the bar every other change to this repo already clears.
+      - name: the tag points at reviewed code
+        run: |
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || {
+              echo "release: $GITHUB_REF_NAME points at $GITHUB_SHA, which is not on origin/main.
+          A release is signed with a certificate every installed copy trusts, so it is cut from
+          reviewed code only. Merge it first, then tag the merge." >&2
+              exit 1
+          }
+
+      # The one distribution certificate, in a keychain that exists only for this job.
+      #
+      # It is deliberately NOT trusted for code signing in any trust store — there is no Apple
+      # Developer Program membership behind it, and trusting it would buy nothing, because the app is
+      # not notarized and Gatekeeper is not what lets it launch. That is why the build signs by the
+      # certificate's SHA-1 rather than by its name: `codesign --sign <name>` only resolves a name to
+      # an identity macOS already considers valid for code signing, while `--sign <sha1>` names the
+      # identity directly and never asks the question. Adding trust has no non-interactive form, so
+      # signing by hash is what makes this job possible at all rather than merely tidier.
+      - name: signing identity
+        env:
+          P12_BASE64: ${{ secrets.MEETINGS_SIGNING_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.MEETINGS_SIGNING_P12_PASSWORD }}
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/release.keychain-db"
+          P12="$RUNNER_TEMP/distribution.p12"
+          # The keychain is destroyed in the cleanup step below, so this password only has to be
+          # unguessable for the length of one job.
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+
+          printf '%s' "$P12_BASE64" | base64 --decode > "$P12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          # A freshly created keychain comes back with "lock-on-sleep timeout=300s" (measured), and
+          # the build after this step takes longer than five minutes on its own. Without a longer
+          # timeout the unlock below has expired by the time codesign reaches for the private key.
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          # -T /usr/bin/codesign names the one binary allowed to use the key. Deliberately without
+          # -A ("allow all applications"): every later step in this job — package-release.sh, the
+          # attestation action, gh — would otherwise be able to sign with the distribution key
+          # silently, and none of them needs to.
+          security import "$P12" -k "$KEYCHAIN" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          # The ACL that -T writes is only half of the access check. The other half is the key's
+          # partition list, which an imported key has empty, and an empty one makes codesign ask for
+          # the keychain password through the GUI — which on a runner is nobody, so it fails with
+          # errSecInternalComponent after the build has already been paid for.
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+              -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+          # codesign searches the user keychain list rather than a keychain it is handed, so the new
+          # one has to join that list. `-s` REPLACES the list, hence reading the current entries and
+          # passing them straight back: a bare `-s "$KEYCHAIN"` would evict login.keychain-db and take
+          # the rest of the runner's tooling with it. The substitution runs before the list is
+          # rewritten, so it sees the pre-change value.
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+
+      # MEETINGS_RELEASE=1 skips the MeetingsSourceRoot stamp: that path is where the app tells you to
+      # `git pull && ./install.sh`, and it is a path on this runner, which exists on nobody's machine.
+      - name: build
+        run: |
+          MEETINGS_RELEASE=1 MEETINGS_SIGN_IDENTITY="$(cat Packaging/distribution-cert.sha1)" \
+              bash scripts/build-app.sh release
+
+      # The bundle's version and the tag it is published under must be the same string, and nothing
+      # else in this job compares them. build-app.sh stamps CFBundleShortVersionString from
+      # `git describe --tags --abbrev=0 --match 'v[0-9]*'`, which returns ONE tag; the release is
+      # published as $GITHUB_REF_NAME. Those diverge the moment a commit carries two version tags,
+      # which is the ordinary recovery from a failed release: tag v0.4.1, the job dies, fix it, tag
+      # v0.5.0 on the same commit. describe then answers v0.4.1, so the release published as v0.5.0
+      # contains a bundle that reports 0.4.1 — and UpdateCheck compares the bundle's version against
+      # the latest release, so every installed copy is told to update, forever, and installing the
+      # update does not clear it because the new copy reports 0.4.1 too. Unrecoverable without another
+      # release, and invisible from inside the job that caused it.
+      - name: the bundle's version is the tag
+        run: |
+          STAMPED="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \
+              dist/Meetings.app/Contents/Info.plist)"
+          EXPECTED="${GITHUB_REF_NAME#v}"
+          [ "$STAMPED" = "$EXPECTED" ] || { echo "release: this tag is $GITHUB_REF_NAME so the bundle
+                     should report $EXPECTED, and it reports $STAMPED. Usually this means the tagged
+                     commit carries more than one version tag and 'git describe' picked the other one:
+                     'git tag --points-at $GITHUB_SHA'. Delete the tag that should not be there and
+                     re-push this one." >&2
+               exit 1; }
+
+      # A hard gate, not a warning. macOS keys TCC grants to the code signature's designated
+      # requirement, and from a named certificate that requirement reads
+      #
+      #     identifier "com.yoelgal.Meetings" and certificate leaf = H"<cert sha1>"
+      #
+      # keyed to the certificate, so microphone and screen recording survive every future update. An
+      # ad-hoc signature keys the requirement to the code hash instead (`designated => cdhash H"..."`)
+      # and every user re-grants both permissions — silently, with the app looking entirely normal
+      # until it cannot hear anything. build-app.sh falls back to ad-hoc whenever it cannot find the
+      # identity, which is exactly the failure this catches.
+      - name: the signature is the distribution certificate's
+        run: |
+          EXPECTED="$(cat Packaging/distribution-cert.sha1)"
+          # The requirement is printed on stdout; `Executable=...` goes to stderr and is dropped, so a
+          # match can only have come from the requirement itself. `|| true` because an unsigned bundle
+          # exits non-zero, and a failing command substitution in an assignment would take the shell
+          # down before the case below can say what was actually wrong.
+          REQUIREMENT="$(codesign -d -r- dist/Meetings.app 2>/dev/null || true)"
+          echo "$REQUIREMENT"
+          # cdhash first, because an ad-hoc signature also fails the certificate check below and the
+          # precise diagnosis is worth more than the general one: the fix is a keychain that did not
+          # hold the identity, not a wrong certificate.
+          case "$REQUIREMENT" in
+              *cdhash*) echo "release: the designated requirement names a cdhash, so build-app.sh
+                             signed this ad-hoc — the distribution identity was not in the keychain
+                             it searched." >&2
+                        exit 1 ;;
+          esac
+          # Asked of codesign as a requirement rather than matched as a substring, for the same reason
+          # install.sh does: a designated requirement is a string the signer chooses, not a fact about
+          # the signer, so a substring test can be satisfied by a requirement that merely MENTIONS our
+          # fingerprint alongside somebody else's. `--verify -R` evaluates the code against the
+          # requirement written here, which no clause added elsewhere can widen. Both wordings are
+          # asked because a self-signed certificate is its own anchor and either can appear; a genuine
+          # bundle satisfies both, and neither is satisfied by a bundle signed with another key.
+          codesign --verify \
+              -R "=identifier \"com.yoelgal.Meetings\" and certificate leaf = H\"$EXPECTED\"" \
+              dist/Meetings.app >/dev/null 2>&1 \
+          || codesign --verify \
+              -R "=identifier \"com.yoelgal.Meetings\" and certificate root = H\"$EXPECTED\"" \
+              dist/Meetings.app >/dev/null 2>&1 \
+          || { echo "release: dist/Meetings.app is not signed by the distribution certificate
+                     ($EXPECTED). Shipping it would reset every user's microphone and
+                     screen-recording grants." >&2
+               exit 1; }
+
+      # ditto, not zip, and the version read from the bundle — see scripts/package-release.sh.
+      - name: package
+        run: bash scripts/package-release.sh
+
+      # The app is not notarized, so this attestation and the .sha256 beside the zip are the only two
+      # things a user can check a download against. Over the zip rather than the .app because the zip
+      # is the byte-for-byte artifact they fetch.
+      - uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: dist/Meetings-arm64.zip
+
+      # Publishing a Release, not merely pushing a tag, is the step that matters: the shipped app's
+      # update check queries /releases/latest, and the installer's stable download URLs are
+      # /releases/latest/download/<asset>. A tag with no published Release leaves every installed copy
+      # believing it is up to date and the installer with a 404. That was missed once, on v0.3.0.
+      - name: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="$GITHUB_REF_NAME"
+          # A tag with a hyphen is a pre-release (v0.4.0-rc1), and must not become /releases/latest —
+          # that URL is what every installed copy and every fresh install resolves against.
+          case "$TAG" in
+              *-*) CHANNEL="--prerelease" ;;
+              *)   CHANNEL="--latest" ;;
+          esac
+          # --verify-tag: without it gh happily creates the tag it cannot find, so a typo in a pushed
+          # tag would publish a Release off whatever the default branch points at.
+          gh release create "$TAG" --verify-tag --generate-notes $CHANNEL \
+              dist/Meetings-arm64.zip dist/Meetings-arm64.zip.sha256
+
+      # Even when something above failed: the decoded .p12 and an unlocked keychain holding the one
+      # distribution key must not outlive the job. The runner is ephemeral, but a cached or reused one
+      # would otherwise carry the signing identity into an unrelated workflow.
+      - name: clean up the signing identity
+        if: always()
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/release.keychain-db"
+          P12="$RUNNER_TEMP/distribution.p12"
+          # Both may be absent — the gate above fails before either is created — and this step must
+          # not turn somebody else's failure into a second, more confusing one. Deleting the keychain
+          # also drops it from the user search list, so nothing else has to be undone.
+          if [ -f "$KEYCHAIN" ]; then security delete-keychain "$KEYCHAIN"; fi
+          rm -f "$P12"

@@ -82,12 +82,20 @@ struct SidebarView: View {
         // would have to mean something, and a row that scrolls away is a notice you can miss by
         // having enough folders.
         .safeAreaInset(edge: .bottom) {
-            if let update = model.availableUpdate {
-                UpdateNotice(
-                    update: update,
-                    recording: model.isRecording
-                        ? "A meeting is recording. Stop it first: updating quits Meetings." : ""
-                )
+            // Stacked rather than either-or: an update arriving during the launch that changed the
+            // signature is two unrelated pieces of news, and dropping one of them would either hide
+            // the update or hide the only explanation of why the microphone dialog came back.
+            VStack(spacing: 0) {
+                if let cause = model.signingChange {
+                    PermissionsResetNotice(cause: cause) { model.dismissSigningChangeNotice() }
+                }
+                if let update = model.availableUpdate {
+                    UpdateNotice(
+                        update: update,
+                        recording: model.isRecording
+                            ? "A meeting is recording. Stop it first: updating quits Meetings." : ""
+                    )
+                }
             }
         }
         .sheet(item: $naming) { naming in
@@ -215,9 +223,11 @@ private struct UpdateNotice: View {
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                     } else {
-                        // No checkout to update, so the honest offer is the command, not a button
-                        // that cannot work.
-                        Text("Meetings is built from source. Run this where you keep the repository:")
+                        // No checkout to rebuild, so the honest offer is the command, not a button
+                        // that cannot work. Which command, and why, depends on how this copy got
+                        // here — a downloaded release is *always* in this branch, since it carries no
+                        // source root and so can never self-update.
+                        Text(SelfUpdate.howToUpdate(sourceRoot: AppInfo.sourceRoot))
                             .font(.callout)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -238,6 +248,83 @@ private struct UpdateNotice: View {
                         .background(.quaternary.opacity(0.4), in: .rect(cornerRadius: 8, style: .continuous))
                         Button("What changed in \(update.version)") { NSWorkspace.shared.open(update.url) }
                             .buttonStyle(.link)
+                    }
+                }
+                .padding(16)
+                .frame(width: 380)
+            }
+        }
+        .background(.bar)
+    }
+}
+
+/// The foot of the sidebar on a launch where macOS has just revoked the permissions.
+///
+/// Built like ``UpdateNotice`` — a row that opens a popover — for the same reason: a sidebar has room
+/// for a headline, and the explanation this owes somebody is several sentences long.
+///
+/// Every word comes from ``SigningChange/Cause``, because there are two stories and only one of them
+/// is reassuring. The routine migration leads with what the person has already run into — they are
+/// being asked for the microphone again — while a rotation leads with the cause, since an unexpected
+/// signature is itself the news and is the one thing they should be looking at.
+///
+/// Unlike the update notice this one can be sent away, and has to be: an update is still available
+/// tomorrow, whereas this describes something that happened once. ``SigningChange`` stores the cause,
+/// so quitting without dismissing keeps the explanation available — the permission prompts arrive at
+/// the next recording, which may be days after this launch.
+private struct PermissionsResetNotice: View {
+    let cause: SigningChange.Cause
+    let dismiss: () -> Void
+
+    @State private var showing = false
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Divider()
+            Button { showing = true } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: cause.symbol)
+                        .foregroundStyle(Color(nsColor: .systemOrange))
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(cause.title)
+                            .font(.callout)
+                        Text(cause.detail)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .contentShape(.rect)
+            }
+            .buttonStyle(.plain)
+            .help("Why macOS is asking for permissions again")
+            .padding(.horizontal, 22)
+            .padding(.vertical, 10)
+            .popover(isPresented: $showing, arrowEdge: .trailing) {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text(cause.headline)
+                        .font(.headline)
+                    Text(cause.explanation)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    HStack {
+                        // The microphone comes back as a dialog the next recording raises on its own.
+                        // This grant does not: it is a checkbox in a pane nothing links to, and
+                        // finding it is the whole of the friction, so the button goes straight there.
+                        if let settings = SigningChange.screenRecordingSettings {
+                            Button("Open Screen Recording") {
+                                showing = false
+                                dismiss()
+                                NSWorkspace.shared.open(settings)
+                            }
+                            .buttonStyle(.borderedProminent)
+                        }
+                        Button("Got it") {
+                            showing = false
+                            dismiss()
+                        }
+                        .buttonStyle(.link)
                     }
                 }
                 .padding(16)
