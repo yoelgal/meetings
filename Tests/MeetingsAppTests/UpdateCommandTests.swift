@@ -41,11 +41,10 @@ import Testing
             == "cd '/Users/someone/Developer/meetings' && git pull && ./install.sh")
     }
 
-    /// **The sentence printed above that command.** The update notice has one branch with a button and
-    /// one with a command, and the command branch is where every downloaded copy lands — it carries no
-    /// `MeetingsSourceRoot`, so it can never self-update. It used to tell that copy "Meetings is built
-    /// from source. Run this where you keep the repository", which is a false statement about how it
-    /// got there and points at a repository the user does not have.
+    /// **The sentence printed above that command.** It used to tell a downloaded copy "Meetings is
+    /// built from source. Run this where you keep the repository", which is a false statement about
+    /// how it got there and points at a repository the user does not have. That copy now presses a
+    /// button, and this text is what is left if writing the script ever fails.
     @Test func aDownloadedCopyIsNeverToldItWasBuiltFromSource() {
         let text = SelfUpdate.howToUpdate(sourceRoot: nil)
         #expect(!text.lowercased().contains("built from"), "\(text)")
@@ -64,6 +63,73 @@ import Testing
         #expect(text.contains("no longer where"))
         #expect(text.contains("repository"))
         #expect(!text.contains("downloaded"), "this copy was compiled, not fetched: \(text)")
+    }
+
+    /// **What the button actually runs on a downloaded copy.** Every user is on this branch, and it
+    /// used to have no button at all: the popover printed `curl … | install.sh | bash` as text with a
+    /// Copy button, so updating meant copying a line, finding a terminal and pasting it.
+    @Test func aDownloadedCopyGetsAScriptThatRunsTheInstaller() throws {
+        let script = try #require(SelfUpdate.updateScript(sourceRoot: nil, to: "9.9.9"))
+        #expect(script.contains(AppInfo.updateCommand(sourceRoot: nil)),
+                "the script has to run the same line the README gives: \(script)")
+        #expect(!script.contains("git pull"), "a downloaded copy has nothing to pull: \(script)")
+    }
+
+    /// The script is run, not read: a shebang that is wrong, a `set -e` that trips on its own echoes,
+    /// or a pipe that never reaches `bash` all pass an assertion about the text and fail in a Terminal
+    /// window the user is watching. `curl` is stubbed on `PATH`, so this proves the plumbing without
+    /// fetching a release or installing anything.
+    @Test func theDownloadedCopyScriptRunsWhatCurlHandsIt() throws {
+        let fm = FileManager.default
+        let work = fm.temporaryDirectory.appendingPathComponent("update-script-\(UUID().uuidString)")
+        try fm.createDirectory(at: work.appendingPathComponent("bin"), withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: work) }
+
+        // Whatever arguments it is given, this curl prints a one-line installer.
+        let curl = work.appendingPathComponent("bin/curl")
+        try "#!/bin/bash\necho 'echo INSTALLED'\n".write(to: curl, atomically: true, encoding: .utf8)
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: curl.path)
+
+        let script = work.appendingPathComponent("update.command")
+        try #require(SelfUpdate.updateScript(sourceRoot: nil, to: "9.9.9"))
+            .write(to: script, atomically: true, encoding: .utf8)
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+
+        let process = Process()
+        process.executableURL = script
+        process.environment = ["PATH": work.appendingPathComponent("bin").path + ":/usr/bin:/bin"]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        try process.run()
+        let output = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        process.waitUntilExit()
+
+        #expect(process.terminationStatus == 0, "\(output)")
+        #expect(output.contains("INSTALLED"), "the piped installer never ran: \(output)")
+        #expect(output.contains("Done."), "the script stopped before its own last line: \(output)")
+        // The artwork and the version line are the window's whole heading, and both are drawn by a
+        // quoted heredoc that an unbalanced marker or a stray expansion would swallow silently.
+        #expect(output.contains(SelfUpdate.wordmark), "the banner never rendered: \(output)")
+        #expect(output.contains("─→  9.9.9"), "the version being installed is not named: \(output)")
+    }
+
+    /// The one copy left without a button: built from a checkout that has since moved or been deleted.
+    /// Handing it a script would `cd` to a path that is not there, so it keeps the copyable command.
+    @Test func aStrandedCheckoutGetsNoScript() {
+        #expect(SelfUpdate.updateScript(sourceRoot: "/Users/someone/gone/meetings", to: "9.9.9") == nil)
+    }
+
+    /// **The promise made before the button is pressed.** A download of a few seconds and a rebuild of
+    /// a couple of minutes are different waits, and telling a downloaded copy it is about to compile
+    /// for two minutes is the same false "built from source" claim in a new place.
+    @Test func aDownloadedCopyIsNotPromisedARebuild() {
+        let text = SelfUpdate.whatUpdateDoes(sourceRoot: nil)
+        #expect(!text.lowercased().contains("rebuild"), "\(text)")
+        #expect(!text.contains("two minutes"), "\(text)")
+        #expect(text.contains("Terminal"), "the window that opens is the whole surprise: \(text)")
+        #expect(SelfUpdate.whatUpdateDoes(sourceRoot: "/Users/someone/Developer/meetings")
+            .contains("rebuilds"))
     }
 
     /// The escaping, proved by handing the command to the shell that would run it.
