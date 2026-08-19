@@ -284,7 +284,18 @@ private struct GeneralSettings: View {
             }
 
             Section {
-                Button("Show the setup guide again") { model.showingOnboarding = true }
+                Button("Show the setup guide again") {
+                    model.showingOnboarding = true
+                    // The wizard opens inside the main window, and this window sits in front of it,
+                    // so pressing the button looked like it did nothing at all.
+                    //
+                    // AppKit rather than `@Environment(\.dismiss)`: dismiss closes a `Window` or a
+                    // `UtilityWindow` scene, and inside `Settings` it is a no-op — pressed, the
+                    // wizard came up behind a settings window that stayed exactly where it was.
+                    // Pressing this button is what makes this window the key one, and `performClose`
+                    // is the close button's own action, so SwiftUI's scene state follows.
+                    NSApp.keyWindow?.performClose(nil)
+                }
             }
         }
         .formStyle(.grouped)
