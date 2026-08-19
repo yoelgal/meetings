@@ -191,7 +191,7 @@ struct NotesPanelView: View {
                 Text(tab.label)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Text(model.notesPanelMeeting?.title ?? "Notes")
+                Text(model.notesPanelMeeting?.title ?? "No meeting selected")
                     .font(.callout.weight(.medium))
                     .lineLimit(1)
             }
@@ -255,7 +255,7 @@ struct NotesPanelView: View {
             } else {
                 hint("""
                     Live notes are stamped with the recording clock, so they start when the \
-                    recording does. Press Record and type here.
+                    recording does. Press Start recording and type here.
                     """)
             }
         }
@@ -403,7 +403,7 @@ struct PopOutButton: View {
 /// What a pane shows once its content is in the panel. Popping out should read as detaching, not as
 /// opening a second thing, so the window says where the content went and offers to take it back.
 struct DetachedNotesNotice: View {
-    let what: String
+    let tab: NotesTab
     let bringBack: () -> Void
 
     var body: some View {
@@ -411,7 +411,7 @@ struct DetachedNotesNotice: View {
             Image(systemName: "macwindow.on.rectangle")
                 .font(.system(size: 26, weight: .light))
                 .foregroundStyle(.tertiary)
-            Text("\(what) are in the floating panel")
+            Text("Your \(tab.phrase) are in the floating panel")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)

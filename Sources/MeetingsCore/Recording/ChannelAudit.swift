@@ -80,18 +80,17 @@ public struct ChannelAudit: Sendable, Equatable {
     public static func noSignalReason(_ channel: Channel) -> String {
         switch channel {
         case .mic:
-            return "the microphone delivered pure digital silence for the whole recording, so your "
-                + "own voice was not captured. Nothing in this transcript is your half of the "
-                + "meeting. The usual cause is Microphone access being off. Check Microphone under "
-                + "Privacy & Security in System Settings before the next call."
+            return "the microphone delivered pure digital silence for the whole recording, so this "
+                + "transcript has only the other side of the meeting. The usual cause is "
+                + "Microphone access being off. Check Microphone under Privacy & Security in "
+                + "System Settings before the next call."
         case .system:
-            return "nothing at all came through the system-audio track, so no other participant "
-                + "was recorded."
+            return "nothing came through the system channel, so no other participant was recorded."
         }
     }
 
     public static func emptyReason(_ channel: Channel) -> String {
-        "the recording ended before any audio reached the \(channel.rawValue) track, so there is "
+        "the recording ended before any audio reached the \(channel.rawValue) channel, so there is "
             + "nothing on it to transcribe."
     }
 }

@@ -333,7 +333,7 @@ enum BundleFixture {
         let restored = try restoredStore.transcriptIssues(meetingID: result.meeting.id)
         #expect(restored.map(\.channel) == [.mic, .system])
         #expect(restored.map(\.kind) == [.capture, .transcription])
-        #expect(restored[0].sentence.contains("your own voice was not captured"))
+        #expect(restored[0].sentence.contains("only the other side of the meeting"))
         #expect(restored.allSatisfy { $0.at == recordedAt })
         #expect(try restoredStore.meetingIDsWithTranscriptIssues() == [result.meeting.id])
 

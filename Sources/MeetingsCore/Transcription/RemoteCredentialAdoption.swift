@@ -24,7 +24,7 @@ extension MeetingStore {
     /// skipped it, found the key empty, and filled it — from a *different* provider. The result was
     /// `Authorization: Bearer <Anthropic key>` sent to `api.openai.com` along with the audio of every
     /// meeting, under a green tick claiming the fields had been filled in helpfully. Pressing
-    /// "Verify the endpoint" was enough to transmit it; no meeting was required.
+    /// "Verify the service" was enough to transmit it; no meeting was required.
     ///
     /// So the unit of adoption is the whole triple, not three fields. When transcription already
     /// points somewhere other than the write-up provider, **nothing** is copied: that endpoint was

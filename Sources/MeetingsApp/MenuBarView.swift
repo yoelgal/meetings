@@ -93,7 +93,7 @@ private struct NudgeRow: View {
                 Image(systemName: "video.badge.waveform")
                     .foregroundStyle(Color(nsColor: .systemOrange))
             }
-            Text("Started at \(Format.timeOfDay(event.start)) and nothing is being recorded.")
+            Text("Started at \(Format.timeOfDay(event.start)) and nothing is recording.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

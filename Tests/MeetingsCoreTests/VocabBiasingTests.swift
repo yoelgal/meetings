@@ -239,6 +239,6 @@ import Testing
     @Test func termsInEffectWithNothingToCorrectIsNotAFailure() {
         let report = VocabularyBiasingReport(terms: ["Torch0"], detected: ["Torch0"])
         #expect(report.unavailable == nil)
-        #expect(report.sentence == "1 vocabulary term(s) in effect; none needed applying.")
+        #expect(report.sentence == "1 vocabulary term in effect; none needed applying.")
     }
 }

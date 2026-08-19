@@ -39,8 +39,8 @@ struct RemoteTranscriptionFields: View {
 
     var body: some View {
         Label {
-            Text("The audio of every meeting is uploaded to this endpoint. Your notes, search and "
-                + "write-ups stay on this Mac. The recordings leave it.")
+            Text("The audio of every meeting is uploaded to this service. Your notes, search and "
+                + "write-ups stay on this Mac.")
                 .font(.callout)
                 .fixedSize(horizontal: false, vertical: true)
         } icon: {
@@ -60,7 +60,7 @@ struct RemoteTranscriptionFields: View {
                 text: SettingBinding(store: store, key: .transcribeRemoteKeyRef).binding($keyRef)
             )
             .labelsHidden()
-            Text("The name this key is filed under in your Keychain. Any name works; blank uses "
+            Text("The name your Keychain files this key under. Any name works; blank uses "
                 + "\"\(Self.defaultKeyRef)\".")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -70,7 +70,7 @@ struct RemoteTranscriptionFields: View {
             .onSubmit(check)
 
         HStack(spacing: 10) {
-            Button("Verify the endpoint", action: check)
+            Button("Verify the service", action: check)
                 .disabled(checking)
             if checking { ProgressView().controlSize(.small) }
         }
@@ -82,14 +82,14 @@ struct RemoteTranscriptionFields: View {
             // Skipping is offered — an endpoint behind a VPN that is not up yet is a real situation —
             // but it is the second thing on the line, not the first.
             Text("Verify before continuing: a wrong key fails silently after your first meeting, "
-                + "with the audio already recorded. If the service is unreachable right now, "
-                + "continue and verify later in Settings.")
+                + "with the audio already recorded. If the service is unreachable right now, you "
+                + "can come back to this later.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
 
-        Text("The defaults point at OpenAI, and anything that speaks the same API works — "
+        Text("The defaults point at OpenAI, and anything that speaks the same API works, "
             + "including one you run yourself. Your key is kept in your Keychain, never in "
             + "Meetings' own database.")
             .font(.caption)

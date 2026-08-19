@@ -171,7 +171,7 @@ public enum MeetingsDatabase {
     private static func reason(for error: Error, at directory: URL) -> String {
         var isDirectory: ObjCBool = false
         if FileManager.default.fileExists(atPath: directory.path, isDirectory: &isDirectory), !isDirectory.boolValue {
-            return "there is a file there, not a directory"
+            return "there is a file there, not a directory."
         }
         // The underlying POSIX error first: Foundation's own sentence for a symlink loop is "The
         // file “loop” couldn’t be saved in the folder “attack”", which describes neither the file

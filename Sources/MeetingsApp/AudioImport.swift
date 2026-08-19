@@ -125,9 +125,9 @@ struct ImportSheet: View {
         case .local:
             "The audio is copied into Meetings and transcribed on this Mac."
         case .cloud:
-            "The audio is copied into Meetings and uploaded to the remote endpoint you configured, "
-                + "which transcribes it. Nothing else about Meetings changes — notes, search and "
-                + "your write-up stay on this Mac — but the recording itself leaves it."
+            "The audio is copied into Meetings and uploaded to the transcription service you "
+                + "set up, which transcribes it. Your notes, search and write-ups stay on this "
+                + "Mac; the recording itself leaves it."
         }
     }
 }

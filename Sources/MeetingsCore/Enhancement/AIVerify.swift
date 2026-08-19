@@ -89,7 +89,7 @@ public enum AIVerify {
         }
         return AIVerification(
             ok: true,
-            message: "\(name) found at \(path). The command is not run until a meeting finishes."
+            message: "Found \(name) at \(path). The command is not run until a meeting finishes."
         )
     }
 
@@ -227,7 +227,7 @@ public enum AIVerify {
         case .http(let code, let body):
             raw = httpSentence(host: host, code: code, body: Data(body.utf8), key: configuration.apiKey)
         case .emptyResponse:
-            raw = "\(host) answered without a summary, so nothing was written."
+            raw = "\(host) answered without a write-up, so nothing was written."
         case nil:
             raw = error is URLError
                 ? "Could not reach \(host): \(sentence(for: error))."

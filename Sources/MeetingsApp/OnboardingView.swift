@@ -189,7 +189,7 @@ struct OnboardingView: View {
         case .welcome: "Welcome to Meetings"
         case .permissions: "Three things to allow"
         case .model: "Transcribing your meetings"
-        case .mode: "Who writes the summary"
+        case .mode: "Who writes it up"
         case .cli: "Connecting your agent"
         }
     }
@@ -326,8 +326,8 @@ private struct WelcomeStep: View {
             FeatureRow(
                 symbol: "square.and.pencil",
                 heading: "Your notes steer the write-up",
-                detail: "Notes you type stick to that moment in the transcript, and the summary is "
-                    + "written around them."
+                detail: "Notes you type stick to that moment in the transcript, and the write-up "
+                    + "is built around them."
             )
             FeatureRow(
                 symbol: "terminal",
@@ -344,8 +344,8 @@ private struct PermissionsStep: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
-            Text("Nothing is asked for until you press its button. Meetings still works without "
-                + "them.")
+            Text("Meetings asks for nothing until you press one of these buttons, and works "
+                + "without any of them.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -431,7 +431,7 @@ private struct TranscriberStep: View {
             // below the fold, it read as absent. The step looked like it offered one choice.
             ModeCard(
                 title: "On this Mac",
-                detail: "Your audio never leaves the machine. One download, then it works with no "
+                detail: "Your audio never leaves this Mac. One download, then it works with no "
                     + "network and no account.",
                 badge: "Recommended",
                 selected: engine == .local
@@ -485,7 +485,7 @@ private struct TranscriberStep: View {
                 .fixedSize(horizontal: false, vertical: true)
         case (_, true):
             ProgressView(value: progress) {
-                Text("Downloading — \(LocalTranscriber.current.downloadSizeText)")
+                Text("Downloading (\(LocalTranscriber.current.downloadSizeText))")
             } currentValueLabel: {
                 Text(progress.formatted(.percent.precision(.fractionLength(0))))
                     .monospacedDigit()
@@ -496,7 +496,7 @@ private struct TranscriberStep: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         default:
-            Button("Download — \(LocalTranscriber.current.downloadSizeText)") { download() }
+            Button("Download (\(LocalTranscriber.current.downloadSizeText))") { download() }
                 .buttonStyle(.bordered)
                 .controlSize(.large)
             // The old copy read "you can skip this and still record", which is true and misleading
@@ -651,8 +651,8 @@ private struct ModeStep: View {
 
             ModeCard(
                 title: "A cloud provider",
-                detail: "A provider you set up writes the summary. Your transcript and notes are "
-                    + "sent to them.",
+                detail: "A provider you set up writes it. Your transcript and notes are sent "
+                    + "to them.",
                 badge: nil,
                 selected: mode == .cloud
             ) { select(.cloud) }
@@ -831,8 +831,8 @@ private struct CLIStep: View {
             FeatureRow(
                 symbol: "link",
                 heading: "The meetings command",
-                detail: "Puts the tool inside Meetings.app where your agent can find it, so it can "
-                    + "reach your meetings from anywhere."
+                detail: "Installs the command inside Meetings.app, where your agent can find it "
+                    + "and reach your meetings from any terminal."
             )
             FeatureRow(
                 symbol: "sparkles",

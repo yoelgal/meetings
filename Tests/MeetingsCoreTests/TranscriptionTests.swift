@@ -461,7 +461,7 @@ private struct StubEngine: TranscriptionEngine, Sendable {
 
         let report = try #require(await service.lastVocabularyReport)
         #expect(report.applied == ["ptychography"])
-        #expect(report.sentence == "Applied ptychography from 1 vocabulary term(s).")
+        #expect(report.sentence == "Applied ptychography from 1 vocabulary term.")
     }
 
     /// …and a pass that could not bias has to reach further than a property on a live actor. The
@@ -487,7 +487,7 @@ private struct StubEngine: TranscriptionEngine, Sendable {
         #expect(issues.map(\.kind) == [.vocabulary, .vocabulary], "one per channel that ran")
         #expect(issues.allSatisfy { $0.reason == "the vocabulary model could not be loaded (offline)" })
         #expect(issues[0].sentence
-            == "Custom vocabulary did not apply to the mic channel: "
+            == "Custom vocabulary did not run on the mic channel: "
             + "the vocabulary model could not be loaded (offline)")
         #expect(try store.meetingIDsWithTranscriptIssues().contains(meeting.id))
         #expect(try store.meeting(id: meeting.id)?.state == .ready, "the transcript is still fine")

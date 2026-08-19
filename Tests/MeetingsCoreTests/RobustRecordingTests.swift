@@ -186,7 +186,8 @@ struct RobustRecordingTests {
         for _ in 0..<1_200 { writer.append(chunk) }  // two minutes of audio into three megabytes
         let failure = try #require(writer.writeFailure, "the disk filled and nothing said so")
         #expect(failure.reason.contains("disk filled up"), "\(failure.reason)")
-        #expect(failure.reason.contains("mic.wav"), "\(failure.reason)")
+        #expect(!failure.reason.contains("mic.wav"),
+                "an internal filename must not reach the user: \(failure.reason)")
         #expect(failure.framesDropped > 16_000, "\(failure.framesDropped) frames dropped")
         writer.finish()
 

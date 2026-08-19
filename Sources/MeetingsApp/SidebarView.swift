@@ -65,7 +65,7 @@ struct SidebarView: View {
                         .buttonStyle(.plain)
                         .labelStyle(.iconOnly)
                         .foregroundStyle(.secondary)
-                        .help("Create a folder")
+                        .help("New folder")
                         // A section header gets less trailing inset than a row does, so a button
                         // pushed to the header's edge overhangs the counts in the rows above it by
                         // about this much and reads as falling off the sidebar. Measured against
@@ -246,7 +246,7 @@ private struct UpdateNotice: View {
                         }
                         .padding(10)
                         .background(.quaternary.opacity(0.4), in: .rect(cornerRadius: 8, style: .continuous))
-                        Button("What changed in \(update.version)") { NSWorkspace.shared.open(update.url) }
+                        Button("What changed") { NSWorkspace.shared.open(update.url) }
                             .buttonStyle(.link)
                     }
                 }
@@ -313,7 +313,7 @@ private struct PermissionsResetNotice: View {
                         // This grant does not: it is a checkbox in a pane nothing links to, and
                         // finding it is the whole of the friction, so the button goes straight there.
                         if let settings = SigningChange.screenRecordingSettings {
-                            Button("Open Screen Recording") {
+                            Button("Open System Settings") {
                                 showing = false
                                 dismiss()
                                 NSWorkspace.shared.open(settings)

@@ -233,13 +233,13 @@ extension SigningChange.Cause {
         switch self {
         case .migration: "Permissions need granting again"
         case .rotation: "This build has a different signature"
-        case .localBuild: "Your own build needs the permissions again"
+        case .localBuild: "Your own build needs permissions again"
         }
     }
 
     var detail: String {
         switch self {
-        case .migration: "Once only — here is why"
+        case .migration: "Once only, after this update"
         case .rotation: "Worth checking before you grant them back"
         case .localBuild: "Expected when you build it yourself"
         }
@@ -257,7 +257,7 @@ extension SigningChange.Cause {
         switch self {
         case .migration: "Meetings now ships prebuilt"
         case .rotation: "Signed by a different certificate"
-        case .localBuild: "Signed with your own certificate"
+        case .localBuild: "Signed by your own certificate"
         }
     }
 
@@ -273,7 +273,7 @@ extension SigningChange.Cause {
     var explanation: String {
         switch self {
         case .migration:
-            "This version was downloaded ready to run and signed once, rather than compiled on your "
+            "This copy was downloaded ready to run and signed once, rather than compiled on your "
                 + "Mac. macOS treats a differently signed app as a new app, so it will ask for the "
                 + "microphone one more time, and Screen & System Audio Recording has to be switched "
                 + "back on by hand. Every update after this one keeps both. Your meetings are "
@@ -286,10 +286,10 @@ extension SigningChange.Cause {
                 + "or from the install command in its README, find out where it came from before you "
                 + "grant anything back."
         case .localBuild:
-            "You built this copy from a checkout, so it is signed with the certificate on this Mac "
+            "You built this copy from a checkout, so it is signed by the certificate on this Mac "
                 + "rather than the one the releases carry. macOS keys permissions to the signature, so "
                 + "the microphone and Screen & System Audio Recording have to be granted once for this "
-                + "build. Every rebuild signed with the same local certificate keeps them."
+                + "build. Every rebuild signed by the same local certificate keeps them."
         }
     }
 }
@@ -306,7 +306,7 @@ struct AdHocSigningNotice: View {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .foregroundStyle(Color(nsColor: .systemOrange))
-                Text("These permissions will be asked for again after every update")
+                Text("macOS will ask for these permissions again after every update")
                     .font(.callout.weight(.medium))
             }
             Text("This copy of Meetings is signed ad hoc, so macOS sees each new build as a "

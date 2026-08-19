@@ -248,9 +248,9 @@ public actor TranscriptionService {
                     + "the key in the Keychain"
             }
             return "remote endpoint \(host) (model \(model)); audio for each meeting is uploaded there"
-                + (isCleartextEgress(base) ? ", in the clear over http — anything between this Mac "
-                    + "and \(host) can read it. `meetings config set transcribe.remote.baseURL` no "
-                    + "longer accepts http, but a URL stored before that is still used" : "")
+                + (isCleartextEgress(base) ? " in the clear over http, so anything between this Mac "
+                    + "and \(host) can read it. It was stored before http was refused; set "
+                    + "transcribe.remote.baseURL to an https URL to stop it." : "")
         case .local(let transcriber):
             return await modelsReady()
                 ? "on this Mac (\(transcriber.languages)); nothing is uploaded"

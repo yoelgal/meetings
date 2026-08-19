@@ -96,9 +96,7 @@ struct RecordingDetailView: View {
             Divider()
 
             if model.notesPanelHolds(meeting, tab) {
-                DetachedNotesNotice(what: tab == .liveNotes
-                    ? "Your live notes"
-                    : "Your pre-meeting notes") {
+                DetachedNotesNotice(tab: tab) {
                     model.setNotesPanel(tab, open: false)
                 }
             } else if tab == .liveNotes {
@@ -167,10 +165,10 @@ private struct LiveTranscriptPane: View {
                     symbol: unavailable == nil ? "waveform" : "exclamationmark.triangle",
                     title: unavailable == nil ? "Listening" : "No live transcript",
                     message: unavailable.map {
-                        "The live transcript is unavailable: \($0). The recording will be "
-                            + "transcribed when you stop."
-                    } ?? "Words appear here a moment after they are said. The final transcript "
-                        + "is made when you stop."
+                        "The live transcript is unavailable: \($0). The full transcript is made "
+                            + "when you stop."
+                    } ?? "Words appear here a moment after they are said. The full transcript is "
+                        + "made when you stop."
                 )
             } else {
                 transcript

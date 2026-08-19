@@ -537,7 +537,7 @@ struct RootView: View {
                         Task { await model.startAdHocMeeting() }
                     }
                     .labelStyle(.iconOnly)
-                    .help("New meeting. Records one that is not in your calendar")
+                    .help("Record a meeting that is not in your calendar")
                 }
             }
             // Splits the shared glass so the action does not share a capsule with the search
@@ -566,7 +566,7 @@ private struct RecordingToolbarStatus: View {
                     .contentTransition(.numericText())
             }
         }
-        .help("Recording \(model.activeMeeting?.title ?? "")")
+        .help(model.activeMeeting.map { "Recording \($0.title)" } ?? "Recording")
     }
 }
 

@@ -44,7 +44,7 @@ struct ScheduledDetailView: View {
                 // actually do before the meeting starts, and wave 2 gave it a 220 pt box with six
                 // hundred points of empty pane underneath.
                 if model.notesPanelHolds(meeting, .preNotes) {
-                    DetachedNotesNotice(what: "These pre-meeting notes") {
+                    DetachedNotesNotice(tab: .preNotes) {
                         model.setNotesPanel(.preNotes, open: false)
                     }
                 } else {
@@ -127,6 +127,7 @@ struct PreNotesEditor: View {
             identity: "prenotes:\(meeting.id)",
             placeholder: "What do you want out of this meeting? Markdown works here.",
             oversizeHint: "Read and change these notes with meetings prenotes get and meetings prenotes set --file.",
+            subject: "these pre-meeting notes",
             draft: Appearance.preNotesDraft,
             save: save,
             popOut: popOut
@@ -158,6 +159,9 @@ struct SharedFieldEditor: View {
     /// The second sentence of the oversize notice, naming the commands that can still reach this
     /// particular field.
     let oversizeHint: String
+    /// What the external-change banner calls this field, mid-sentence: "Something else changed
+    /// \(subject) while you were typing".
+    let subject: String
     /// Screenshot seam only — see `Appearance.preNotesDraft`.
     var draft: String?
     let save: (String) -> Void
@@ -226,6 +230,7 @@ struct SharedFieldEditor: View {
                 ExternalChangeBanner(
                     mine: text,
                     theirs: external,
+                    subject: subject,
                     keepMine: { resolve(with: text) },
                     useTheirs: { resolve(with: external, mineWins: false) },
                     keepBoth: { resolve(with: SharedFieldEdit.merge(mine: text, theirs: external)) }
@@ -427,13 +432,14 @@ struct SharedFieldEditor: View {
 private struct ExternalChangeBanner: View {
     let mine: String
     let theirs: String
+    let subject: String
     let keepMine: () -> Void
     let useTheirs: () -> Void
     let keepBoth: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Label("These notes were changed by something else while you were typing",
+            Label("Something else changed \(subject) while you were typing",
                   systemImage: "exclamationmark.triangle.fill")
                 .font(.callout.weight(.medium))
                 .foregroundStyle(.primary)

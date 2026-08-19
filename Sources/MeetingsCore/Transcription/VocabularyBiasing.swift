@@ -49,9 +49,11 @@ public struct VocabularyBiasingReport: Sendable, Hashable {
         if let unavailable { return "Custom vocabulary did not run: \(unavailable)" }
         guard !terms.isEmpty else { return "No custom vocabulary was in effect." }
         guard !applied.isEmpty else {
-            return "\(terms.count) vocabulary term(s) in effect; none needed applying."
+            return "\(terms.count) vocabulary term\(terms.count == 1 ? "" : "s") in effect; none "
+                + "needed applying."
         }
-        return "Applied \(applied.joined(separator: ", ")) from \(terms.count) vocabulary term(s)."
+        return "Applied \(applied.joined(separator: ", ")) from \(terms.count) vocabulary "
+            + "term\(terms.count == 1 ? "" : "s")."
     }
 
     /// Both channels of one pass, as one verdict. Terms are the same list on both sides; what
@@ -277,8 +279,9 @@ actor VocabularyBiasing {
             report.applied = realigned.applied
             let lost = report.replacements.count - realigned.placed
             if lost > 0 {
-                report.unavailable = "\(lost) of \(report.replacements.count) correction(s) could "
-                    + "not be matched to the word timings and were left uncorrected"
+                report.unavailable = "\(lost) of \(report.replacements.count) "
+                    + "correction\(report.replacements.count == 1 ? "" : "s") could not be matched "
+                    + "to the word timings and were left uncorrected"
             }
             return (Self.reassemble(realigned.words, into: segments), report)
         } catch {

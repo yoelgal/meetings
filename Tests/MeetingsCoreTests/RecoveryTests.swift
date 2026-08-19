@@ -131,7 +131,7 @@ import Testing
         let issues = try store.transcriptIssues(meetingID: meeting.id)
         #expect(issues.count == 2, "both channels are accounted for, got \(issues.map(\.channel))")
         #expect(issues.allSatisfy { $0.kind == .capture })
-        #expect(issues[0].sentence.hasPrefix("The mic channel was not captured:"))
+        #expect(issues[0].sentence.hasPrefix("The mic channel is missing audio:"))
         #expect(try store.meetingIDsWithTranscriptIssues().contains(meeting.id))
     }
 
@@ -285,7 +285,7 @@ import Testing
         #expect(issues.count == 1)
         #expect(issues[0].channel == .mic)
         #expect(issues[0].kind == .capture)
-        #expect(issues[0].sentence.contains("your own voice was not captured"))
+        #expect(issues[0].sentence.contains("only the other side of the meeting"))
         #expect(issues[0].sentence.contains("Privacy & Security"))
     }
 
@@ -315,7 +315,7 @@ import Testing
         #expect(try sweep().map(\.disposition) == [.recovered])
         let issues = try store.transcriptIssues(meetingID: meeting.id)
         #expect(issues.map(\.channel) == [.mic])
-        #expect(issues.first?.sentence.contains("your own voice was not captured") == true)
+        #expect(issues.first?.sentence.contains("only the other side of the meeting") == true)
     }
 
     @Test("an empty system track is still reported, because that is not silence")

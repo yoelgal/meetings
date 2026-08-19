@@ -170,7 +170,7 @@ struct MeetingListView: View {
         case .folder:
             "Drag a meeting onto this folder in the sidebar to file it here."
         default:
-            "Start a recording and it appears here."
+            "Start a meeting and it appears here."
         }
     }
 }

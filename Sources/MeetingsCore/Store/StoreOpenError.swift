@@ -39,7 +39,7 @@ public enum StoreOpenError: Error, LocalizedError {
                 """
 
         case .homeUnusable(let path, let reason):
-            return "The store directory \(path) cannot be used: \(reason)"
+            return "\(path) cannot be used: \(reason)"
 
         case .diskFull(let path):
             return """
@@ -57,13 +57,13 @@ public enum StoreOpenError: Error, LocalizedError {
             // which — before the migration path started taking one — was everybody who had not run
             // `meetings backup` by hand.
             let fallback = snapshot.map {
-                "or restore \($0.lastPathComponent) from the backups directory beside the store"
-            } ?? "there is no automatic snapshot beside the store to fall back to"
+                ", or restore \($0.lastPathComponent) from the backups directory beside the store"
+            } ?? ". There is no automatic snapshot beside the store to fall back to"
             return """
                 The store at \(path) was written by a newer version of Meetings \
                 (it has migration\(unknown.count == 1 ? "" : "s") \(unknown.sorted().joined(separator: ", ")), \
                 which this build does not know). It has not been opened or changed. Install the \
-                newer version again — \(fallback).
+                newer version again\(fallback).
                 """
 
         case .stillLocked(let path, let seconds):
@@ -112,15 +112,15 @@ public enum StoreOpenError: Error, LocalizedError {
             return homeUnusable(
                 path: directory.path,
                 reason: """
-                    it is not writable, and SQLite has to write a -wal and a -shm beside the \
-                    database even to read it. Restore write permission there, or point \
-                    MEETINGS_HOME at a directory you own
+                    the store directory is not writable, and SQLite has to write a -wal and a -shm \
+                    beside the database even to read it. Restore write permission there, or point \
+                    MEETINGS_HOME at a directory you own.
                     """
             )
         }
         for companion in [url.path, url.path + "-wal", url.path + "-shm"]
         where manager.fileExists(atPath: companion) && !manager.isWritableFile(atPath: companion) {
-            return homeUnusable(path: companion, reason: "it is not writable, and SQLite has to write to it to open the store")
+            return homeUnusable(path: companion, reason: "that file is not writable, and SQLite has to write to it to open the store.")
         }
 
         guard let db = error as? DatabaseError else { return error }
@@ -147,7 +147,7 @@ public enum StoreOpenError: Error, LocalizedError {
         case .SQLITE_CANTOPEN:
             var isDirectory: ObjCBool = false
             if manager.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue {
-                return homeUnusable(path: url.path, reason: "there is a directory there, and the store has to be a file")
+                return homeUnusable(path: url.path, reason: "there is a directory there, and the store has to be a file.")
             }
             return error
         default:

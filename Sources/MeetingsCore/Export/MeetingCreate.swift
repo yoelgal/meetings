@@ -291,8 +291,9 @@ extension TranscriptDraft {
                     "That transcript file starts with \(opener), so it is meant to be JSON, but it "
                     + "will not parse as one: \(describe(error)). The shape is an array of "
                     + "{\"channel\": \"mic\"|\"system\", \"startMs\": 0, \"endMs\": 4000, "
-                    + "\"text\": \"…\"}. Only text is required. Fix the file, or drop the brackets "
-                    + "if you meant to import it as plain prose."
+                    + "\"text\": \"…\"}. Only text is required. Fix the file, or delete the "
+                    + "surrounding \(opener == "{" ? "braces" : "brackets") if you meant to "
+                    + "import it as plain prose."
                 )
             }
         }

@@ -28,7 +28,7 @@ public enum ActionsInput {
 
     public static func parse(_ raw: String) throws -> [Action] {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { throw usage("the actions JSON came through empty") }
+        guard !trimmed.isEmpty else { throw usage("it came through empty") }
 
         let parsed: Any
         do {

@@ -496,10 +496,9 @@ public final class RecordingController {
         guard case .recording = phase, !reportedCaptureFailures.contains(.mic) else { return }
         guard Self.hasStalled(frames: mic.framesWritten, progress: &micProgress, now: Date())
         else { return }
-        report(.mic, "the microphone stopped delivering audio, so nothing is being recorded on this "
-            + "track any more. The usual cause is the input device changing or being unplugged "
-            + "mid-meeting. Everything up to that point is safe; stop and start the recording again "
-            + "to capture the rest.")
+        report(.mic, "the microphone stopped delivering audio, so nothing more was recorded on "
+            + "this channel. The usual cause is the input device changing or being unplugged "
+            + "mid-meeting. Everything recorded up to that point is safe.")
     }
 
     /// The rule itself, kept pure and separate from the recorder: a microphone cannot be opened in

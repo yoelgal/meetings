@@ -71,9 +71,9 @@ public struct TranscriptIssue: Codable, Hashable, Sendable, FetchableRecord, Per
     public var sentence: String {
         switch kind {
         case .transcription: "The \(channel.rawValue) channel could not be transcribed: \(reason)"
-        case .capture: "The \(channel.rawValue) channel was not captured: \(reason)"
+        case .capture: "The \(channel.rawValue) channel is missing audio: \(reason)"
         case .vocabulary:
-            "Custom vocabulary did not apply to the \(channel.rawValue) channel: \(reason)"
+            "Custom vocabulary did not run on the \(channel.rawValue) channel: \(reason)"
         }
     }
 }

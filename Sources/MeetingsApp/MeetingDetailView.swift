@@ -16,7 +16,7 @@ struct MeetingDetailView: View {
                 EmptyStateView(
                     symbol: "waveform",
                     title: "No meeting selected",
-                    message: "Pick a meeting on the left, or start a recording from the toolbar."
+                    message: "Pick a meeting on the left, or start a new meeting from the toolbar."
                 )
             }
             // Nothing at all when the list itself is empty. Wave 1 drew two empty states side by
@@ -353,7 +353,7 @@ private struct TranscribingDetailView: View {
             VStack(spacing: 6) {
                 Text("Transcribing \(meeting.title)")
                     .font(.headline)
-                Text("Both channels are being re-transcribed on this Mac. The meeting appears "
+                Text("Both channels are being transcribed on this Mac. The meeting appears "
                     + "under Needs write-up when it finishes.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
@@ -445,6 +445,7 @@ private struct WrittenDetailView: View {
                         identity: "summary:\(meeting.id)",
                         placeholder: "Write it up here, or let an agent do it. Markdown works.",
                         oversizeHint: "Read and change it with meetings show --summary and meetings summary set --file.",
+                        subject: "this write-up",
                         save: saveSummary,
                         titleShown: false
                     )
@@ -456,7 +457,7 @@ private struct WrittenDetailView: View {
                     if !notes.isEmpty {
                         SecondarySection(
                             title: "Your notes",
-                            trailing: "\(notes.count) — click one to jump to it",
+                            trailing: "\(notes.count) · click one to jump to it",
                             open: $showNotes
                         ) {
                             ForEach(notes) { note in
@@ -580,7 +581,7 @@ private struct MeetingChips: View {
                     .disabled(meeting.folderID == folder.id)
             }
         } label: {
-            chip(current?.name ?? "Add to folder", symbol: current == nil ? "plus" : "folder")
+            chip(current?.name ?? "Move to Folder", symbol: current == nil ? "plus" : "folder")
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)

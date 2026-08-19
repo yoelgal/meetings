@@ -103,7 +103,7 @@ struct StoreUnavailableView: View {
             }
             .buttonStyle(.borderedProminent)
             if FileManager.default.fileExists(atPath: Paths.backupsRoot.path) {
-                Button("Show the snapshots") {
+                Button("Show the backups folder") {
                     NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: Paths.backupsRoot.path)
                 }
             }

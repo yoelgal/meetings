@@ -30,7 +30,7 @@ enum TranscriptIssueStyle {
     /// it gets the honest silence instead of a claim that might not be true of it.
     static let losesAChannel: Set<TranscriptIssue.Kind> = [.capture, .transcription]
 
-    static let legend = "One channel of that meeting is missing from its transcript."
+    static let legend = "One side of that conversation is missing from its transcript."
 }
 
 /// The banner above a written-up meeting. One line per issue, in MeetingsCore's own words.
@@ -84,7 +84,7 @@ struct TranscriptIssueBanner: View {
         guard issues.contains(where: { TranscriptIssueStyle.losesAChannel.contains($0.kind) }) else {
             return nil
         }
-        return "The summary and actions below are drawn from a conversation with a side missing."
+        return "The write-up and actions below are drawn from a conversation with a side missing."
     }
 }
 

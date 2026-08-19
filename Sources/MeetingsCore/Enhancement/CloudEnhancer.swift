@@ -120,7 +120,7 @@ public enum CloudEnhancementError: Error, CustomStringConvertible {
     public var description: String {
         switch self {
         case .http(let code, let body): "the provider returned HTTP \(code): \(body)"
-        case .emptyResponse: "the provider returned no summary"
+        case .emptyResponse: "the provider returned no write-up"
         }
     }
 }

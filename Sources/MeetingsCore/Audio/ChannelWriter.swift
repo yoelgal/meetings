@@ -271,11 +271,11 @@ final class ChannelWriter: @unchecked Sendable {
         let free = (try? url.resourceValues(forKeys: [.volumeAvailableCapacityKey]))?
             .volumeAvailableCapacity
         if let free, free < 16 << 20 {
-            return "the disk filled up, so \(url.lastPathComponent) stopped growing. Everything "
-                + "recorded up to that point is safe. Free some space and the rest of this meeting "
-                + "will be recorded. Nothing needs restarting."
+            return "the disk filled up, so nothing more could be written to this channel. "
+                + "Everything recorded up to that point is safe. Free some space and the rest of "
+                + "this meeting will be recorded. Nothing needs restarting."
         }
-        return "\(url.lastPathComponent) could not be written: \(error.localizedDescription)"
+        return "it could not be written (\(error.localizedDescription))"
     }
 
     /// Average the channels. `1/n` weighting rather than a sum, so a nine-channel route does not

@@ -169,8 +169,7 @@ private struct GeneralSettings: View {
                 // so SwiftUI never sees a `LocalizedStringKey` and the backticks below would draw
                 // as backticks. `MarkdownLiteralTests` fails the build if this idiom comes back.
                 Text("""
-                    `0` keeps recordings forever. Only the audio is deleted — never your \
-                    transcripts or notes.
+                    `0` keeps audio forever. Your transcripts and notes are never deleted.
                     """)
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -187,7 +186,7 @@ private struct GeneralSettings: View {
                     .fixedSize(horizontal: false, vertical: true)
 
                 Toggle("Keep the notes panel above other apps", isOn: $model.notesPanelFloats)
-                Text("The panel stays on top of other windows, even full-screen ones.")
+                Text("It stays above full-screen apps too.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -374,9 +373,9 @@ private struct AISettings: View {
                 // invisible to anybody who did not press a disclosure — in the one pane whose
                 // entire purpose is choosing between the three.
                 Picker("Mode", selection: modeBinding) {
-                    Text("Manual — you ask your own agent").tag(AIMode.manual)
-                    Text("Local agent — Meetings runs a command").tag(AIMode.localAgent)
-                    Text("Cloud — a provider writes it").tag(AIMode.cloud)
+                    Text("Manual: you ask your own agent").tag(AIMode.manual)
+                    Text("Local agent: Meetings runs a command").tag(AIMode.localAgent)
+                    Text("Cloud: a provider writes it").tag(AIMode.cloud)
                 }
                 .pickerStyle(.inline)
                 Text(explanation)
@@ -426,11 +425,11 @@ private struct AISettings: View {
             "Nothing runs on its own. Finished meetings wait under Needs write-up until you ask "
                 + "your agent."
         case .localAgent:
-            "Meetings runs the command below as soon as a meeting is ready. Whether the transcript "
+            "The command below runs as soon as a meeting is ready. Whether the transcript "
                 + "leaves this Mac depends on the command you set."
         case .cloud:
-            "Your transcript and notes are sent to the provider below, and the summary it returns "
-                + "is saved."
+            "Your transcript and notes are sent to the provider below, and the write-up it "
+                + "returns is saved."
         }
     }
 }
@@ -660,7 +659,7 @@ struct CloudProviderFields: View {
             .onSubmit(saveKey)
 
         HStack(spacing: 10) {
-            Button("Test the connection", action: check)
+            Button("Verify the provider", action: check)
                 .disabled(checking)
             if checking {
                 ProgressView().controlSize(.small)
@@ -813,18 +812,18 @@ private struct TranscriptionSettings: View {
         })
     }
 
-    /// Two sentences, and which two depends on whether there is anything downloaded to reassure the
-    /// user about. Both open with the fact that matters most, which is that their audio is uploaded.
+    /// One sentence, and which one depends on whether there is anything downloaded to reassure the
+    /// user about. Neither repeats that the audio is uploaded: `RemoteTranscriptionFields` says so
+    /// directly above this, in the same pane, and saying it twice in forty points reads as a
+    /// warning the pane is not confident it landed.
     ///
     /// Switching away deletes nothing, and saying so is the point: a download silently thrown away
     /// by a picker would be unforgivable — and a user who assumes it *was* thrown away will not
     /// switch back. Neither, then: the files stay where they are and the pane says so.
     private var cloudNote: String {
         localModelsPresent
-            ? "Your recordings are uploaded to that service. What is already downloaded here is "
-                + "kept, so switching back needs no second download."
-            : "Your recordings are uploaded to that service, and nothing is downloaded here. There "
-                + "is also no live transcript while you talk."
+            ? "What is already downloaded here is kept, so switching back needs no second download."
+            : "Nothing is downloaded here, and there is no live transcript while you talk."
     }
 
     private var localModelsPresent: Bool {

@@ -19,7 +19,7 @@ import Testing
     @Test func aFoundAgentSaysWhereItIsAndThatItWasNotRun() {
         let result = AIVerify.localAgent(template: "/bin/echo {meeting_id}", environment: [:])
         #expect(result.ok)
-        #expect(result.message == "echo found at /bin/echo. The command is not run until a meeting finishes.")
+        #expect(result.message == "Found echo at /bin/echo. The command is not run until a meeting finishes.")
     }
 
     /// The failure the button exists for: a GUI launch inherits four directories of PATH, so an
@@ -39,7 +39,7 @@ import Testing
             environment: ["HOME": directory.path, "PATH": "/usr/bin:/bin"]
         )
         #expect(result.ok)
-        #expect(result.message == "meetings-agent found at \(agent.path). The command is not run until a meeting finishes.")
+        #expect(result.message == "Found meetings-agent at \(agent.path). The command is not run until a meeting finishes.")
     }
 
     @Test func aMissingAgentSaysWhatWouldHappenRatherThanJustFailing() {

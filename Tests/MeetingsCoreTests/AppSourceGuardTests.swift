@@ -891,7 +891,7 @@ import Testing
         // The metadata run became chips, and the last of them files the meeting — through the same
         // model call the meeting row's context menu uses, not a second filing path.
         #expect(detail.contains("private struct MeetingChips: View"), "the metadata run became chips")
-        #expect(detail.contains("Add to folder") && detail.contains("moveToFolder("),
+        #expect(detail.contains("Move to Folder") && detail.contains("moveToFolder("),
                 "filing is reachable from the write-up, not only from a right-click back in the list")
         let app = try Self.source("MeetingActions.swift")
         #expect(app.contains("model.move(meetingID: meeting.id, toFolder:"),

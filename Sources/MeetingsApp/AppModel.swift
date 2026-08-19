@@ -862,7 +862,7 @@ final class AppModel {
             refresh()
             return true
         } catch {
-            errorMessage = "Recording could not start: \(PlainText.sentence(for: error))"
+            errorMessage = "The recording could not be started: \(PlainText.sentence(for: error))"
             return false
         }
     }
@@ -878,7 +878,8 @@ final class AppModel {
         do {
             try await recording.stop()
         } catch {
-            errorMessage = "Recording could not be stopped cleanly: \(PlainText.sentence(for: error))"
+            errorMessage = "The recording could not be stopped cleanly: "
+                + PlainText.sentence(for: error)
         }
         // Back to the implied answer. A choice of "live notes" made during the call would otherwise
         // outlive it, and the switch that set it is only on screen while recording — so the panel
@@ -962,7 +963,8 @@ final class AppModel {
         do {
             try store.updateMeeting(id: meetingID) { $0.preNotes = text }
         } catch {
-            errorMessage = "Pre-notes could not be saved: \(PlainText.sentence(for: error))"
+            errorMessage = "Your pre-meeting notes could not be saved: "
+                + PlainText.sentence(for: error)
         }
     }
 
@@ -981,7 +983,7 @@ final class AppModel {
                 loadSelection()
             }
         } catch {
-            errorMessage = "The summary could not be saved: \(PlainText.sentence(for: error))"
+            errorMessage = "The write-up could not be saved: \(PlainText.sentence(for: error))"
         }
     }
 
@@ -1013,7 +1015,7 @@ final class AppModel {
             refresh()
             return folder
         } catch {
-            errorMessage = "That folder could not be created: \(PlainText.sentence(for: error))"
+            errorMessage = "The folder could not be created: \(PlainText.sentence(for: error))"
             return nil
         }
     }
@@ -1084,7 +1086,7 @@ final class AppModel {
         case .ran(let run):
             lastEnhancement = run.exitCode == 0
                 ? "Your agent wrote this up at \(Format.timeOfDay(Date()))."
-                : "Your agent exited \(run.exitCode): \(run.output)"
+                : "Your agent could not write this up (exit \(run.exitCode)): \(run.output)"
             refresh()
         case .wroteSummary:
             lastEnhancement = "Your provider wrote this up at \(Format.timeOfDay(Date()))."

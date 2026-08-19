@@ -66,7 +66,7 @@ enum Prerequisites {
             return [Prerequisite(
                 id: "remote-endpoint",
                 title: "Transcription is not set up",
-                detail: "Its address, model or key is missing. Meetings are recorded, and "
+                detail: "Its URL, model or key is missing. Meetings are recorded, and "
                     + "nothing is transcribed.",
                 fix: .openTranscriptionSettings
             )]
@@ -92,7 +92,8 @@ enum Prerequisites {
             return [Prerequisite(
                 id: "cli",
                 title: "The meetings command is not installed",
-                detail: "Nothing will find this command until the tool is installed.",
+                detail: "The line you copy will fail with `command not found` when your agent "
+                    + "runs it.",
                 fix: .installCLI
             )]
         }
