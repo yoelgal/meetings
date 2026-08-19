@@ -19,19 +19,48 @@ public enum BundleResources {
     /// the bundle instead of landing at its root.
     private static let subdirectory = "Resources"
 
-    /// The resolution rule, as a pure function so both branches are testable without an assembled
-    /// `.app`. Inside the app `mainResourceURL` is `Meetings.app/Contents/Resources`; for the CLI and
-    /// under `swift test` there is no such nested bundle and we fall back to SwiftPM's own accessor,
-    /// whose `.build` path is correct in exactly that case.
-    public static func locate(mainResourceURL: URL?) -> Bundle {
+    /// The resolution rule, as a pure function so every branch is testable without an assembled
+    /// `.app`. Three candidates, in order:
+    ///
+    /// 1. **Inside the app.** `mainResourceURL` is `Meetings.app/Contents/Resources`, and the bundle
+    ///    sits directly in it.
+    /// 2. **The shipped CLI**, which is the branch this used to get wrong. `meetings` lives at
+    ///    `Meetings.app/Contents/Helpers/meetings`, so its resource bundle is one directory up and
+    ///    across, in `Contents/Resources`. The executable path is resolved through symlinks first,
+    ///    because the installer links the CLI onto `PATH` — and for a bare executable
+    ///    `Bundle.main.resourceURL` is the directory the binary was *invoked* from, which for a
+    ///    symlink is `~/.local/bin`. Candidate 1 therefore misses, and before this candidate existed
+    ///    the lookup fell through to candidate 3.
+    /// 3. **A build tree or `swift test`**, where SwiftPM's accessor is right and its baked `.build`
+    ///    path really is where the bundle is.
+    ///
+    /// What made this expensive to find: candidate 3 succeeds on the machine that compiled the
+    /// binary, so every local run and every CI run passed while every published release shipped a CLI
+    /// that trapped on `could not load resource bundle`. Only a Mac that did not build it can tell.
+    public static func locate(mainResourceURL: URL?, executableURL: URL? = nil) -> Bundle {
         if let mainResourceURL,
            let nested = Bundle(url: mainResourceURL.appendingPathComponent(bundleName)) {
             return nested
         }
+        if let executableURL {
+            let contents = executableURL
+                .resolvingSymlinksInPath()
+                .deletingLastPathComponent()   // Contents/Helpers
+                .deletingLastPathComponent()   // Contents
+            let sibling = contents
+                .appendingPathComponent("Resources")
+                .appendingPathComponent(bundleName)
+            if let nested = Bundle(url: sibling) {
+                return nested
+            }
+        }
         return .module
     }
 
-    public static let bundle: Bundle = locate(mainResourceURL: Bundle.main.resourceURL)
+    public static let bundle: Bundle = locate(
+        mainResourceURL: Bundle.main.resourceURL,
+        executableURL: Bundle.main.executableURL
+    )
 
     public static func url(forResource name: String, withExtension ext: String, in bundle: Bundle = bundle) -> URL? {
         bundle.url(forResource: name, withExtension: ext, subdirectory: subdirectory)
