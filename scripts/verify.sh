@@ -12,7 +12,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 STEP=0
-step() { STEP=$((STEP + 1)); echo; echo "=== $STEP/8  $*"; }
+step() { STEP=$((STEP + 1)); echo; echo "=== $STEP/9  $*"; }
 
 step "the toolchain gate, and the Command Line Tools staying enough to build this"
 # fix/install-requires-xcode. A stranger's install cloned the repo, spent their login password on a
@@ -51,9 +51,15 @@ esac
 # install.sh carries its own copy of the check, on purpose: it is fetched over curl and runs before
 # this repo exists, so it cannot source one from here. It is also the copy that has to fire before
 # the certificate prompt spends a password, so it is checked the same way rather than grepped for.
+#
+# `--from-source` explicitly, because that is now the only path a toolchain can matter on: the
+# default installs a prebuilt release and never compiles anything, so it must NOT consult the SDK —
+# refusing to install a downloaded binary because the machine cannot build one would be the whole
+# point of the download inverted. A bare `./install.sh` here would therefore reach the network, and
+# the assertion below would fail for the right reason at the wrong door.
 SRC_PROBE="$STUB/should-not-exist"
-OLD="$(PATH="$STUB:$PATH" MEETINGS_SRC="$SRC_PROBE" MEETINGS_NO_OPEN=1 ./install.sh 2>&1 </dev/null)" \
-    && { echo "verify: install.sh accepted a macOS 15 SDK" >&2; exit 1; }
+OLD="$(PATH="$STUB:$PATH" MEETINGS_SRC="$SRC_PROBE" MEETINGS_NO_OPEN=1 ./install.sh --from-source 2>&1 </dev/null)" \
+    && { echo "verify: install.sh --from-source accepted a macOS 15 SDK" >&2; exit 1; }
 case "$OLD" in
     *"macOS 26 SDK"*) echo "install.sh: $(printf '%s' "$OLD" | head -1)" ;;
     *) echo "verify: install.sh failed on a macOS 15 SDK, but not at the gate:
@@ -174,6 +180,27 @@ fi
 # from is a backup that silently is not one.
 old export 0112-weekly --format md --out "$OLD_HOME/md" >/dev/null
 grep -rq "Send the numbers" "$OLD_HOME/md" || fail "markdown export dropped the migrated actions"
+
+step "the install a user actually does: a prebuilt release, on a Mac with no compiler"
+# Last, because it rebuilds dist/ as a release-shaped bundle and every step above wants the ordinary
+# one. It is its own script rather than inline here because it stages a whole rehearsal — a signed
+# bundle, a zip, a checksum, a throwaway certificate and a file:// release — and needs a cleanup trap
+# of its own for the keychain it creates.
+#
+# What it is guarding is not the happy path. Meetings is not notarized, so Gatekeeper never inspects
+# it: a curl download carries no quarantine attribute and macOS runs that check on nothing else. The
+# checksum and signature refusals in install.sh are therefore the only thing between a user and
+# whatever the network handed them, and each of the four is exercised with an input that would install
+# if the refusal were deleted — an ad-hoc-signed release, a corrupted download, a release signed by a
+# certificate that is not the pinned one, and install.sh's pinned fingerprint disagreeing with
+# Packaging/distribution-cert.sha1. None of them may touch the app already installed. The claim used
+# to be that "the certificate pin" was among them while the run reached it on no input at all.
+#
+# Then the upgrade, which is the other half nothing used to reach: installing over an existing
+# ad-hoc-signed copy has to replace the bundle, keep the CLI resolving, leave the store alone, sweep
+# the aside copy, and say once — and only on that install — that macOS will ask for the microphone
+# again.
+bash scripts/install-check.sh
 
 echo
 echo "VERIFY OK"
