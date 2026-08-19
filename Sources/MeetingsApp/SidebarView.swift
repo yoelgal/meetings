@@ -151,15 +151,15 @@ struct SidebarView: View {
 
 /// The foot of the sidebar when a newer release exists.
 ///
-/// It does not say "Restart to update", which is what a notice like this usually says, because
-/// nothing here downloads or installs anything: this build was compiled from source on the machine
-/// it runs on, so there is no new binary for a restart to pick up.
+/// It does not say "Restart to update", which is what a notice like this usually says, because a
+/// restart picks up nothing: the new version has to be fetched or rebuilt first, and the app has to
+/// be closed while its own bundle is replaced.
 ///
-/// It opens a popover carrying the command rather than opening the release page, which was the first
-/// version and was not much better than saying nothing. A release page tells you what changed; it
-/// has no idea where you keep your clone, so somebody reading it still has to work out what to
-/// actually type. The command is the answer, so the command is what the notice hands over, with the
-/// notes one click further on for anyone who wants them.
+/// It opens a popover with a button rather than opening the release page, which was the first version
+/// and was not much better than saying nothing. A release page tells you what changed and leaves you
+/// to work out what to type. Pressing the button opens a Terminal window on the install — see
+/// ``SelfUpdate`` for why Terminal and not in-process — with the notes one click further on for
+/// anyone who wants them.
 private struct UpdateNotice: View {
     let update: AvailableUpdate
     /// Non-empty while a meeting is being recorded, because the update quits the app and would take
@@ -198,17 +198,14 @@ private struct UpdateNotice: View {
                         .font(.headline)
 
                     if SelfUpdate.isPossible {
-                        Text("Meetings is built from source, so updating pulls the new version and "
-                            + "rebuilds. A Terminal window opens so you can watch it, Meetings "
-                            + "closes while the new copy is installed, and it reopens when it is "
-                            + "done. About two minutes. Your meetings are untouched.")
+                        Text(SelfUpdate.whatUpdateDoes(sourceRoot: AppInfo.sourceRoot))
                             .font(.callout)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                         HStack {
                             Button("Update now") {
                                 showing = false
-                                problem = SelfUpdate.run()
+                                problem = SelfUpdate.run(to: update.version)
                             }
                             .buttonStyle(.borderedProminent)
                             Button("What changed") { NSWorkspace.shared.open(update.url) }
@@ -223,10 +220,10 @@ private struct UpdateNotice: View {
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                     } else {
-                        // No checkout to rebuild, so the honest offer is the command, not a button
-                        // that cannot work. Which command, and why, depends on how this copy got
-                        // here — a downloaded release is *always* in this branch, since it carries no
-                        // source root and so can never self-update.
+                        // No script this app can run — a build whose checkout has moved or been
+                        // deleted — so the honest offer is the command, not a button that cannot
+                        // work. A downloaded copy is not in this branch: `install.sh` updates it,
+                        // and the button runs that.
                         Text(SelfUpdate.howToUpdate(sourceRoot: AppInfo.sourceRoot))
                             .font(.callout)
                             .foregroundStyle(.secondary)

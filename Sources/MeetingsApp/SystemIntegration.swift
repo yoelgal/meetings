@@ -335,37 +335,53 @@ struct AdHocSigningNotice: View {
     private static let command = "scripts/make-signing-identity.sh"
 }
 
-/// Updating the app from inside the app: pull, rebuild, reinstall, reopen.
+/// Updating the app from inside the app: fetch or rebuild, reinstall, reopen.
 ///
 /// It hands the work to Terminal rather than doing it in-process, for two reasons that are really
 /// one. The app has to be **replaced while it is not running** — `install.sh` kills it before it
-/// moves the new bundle into place — so whatever drives the update cannot be the app. And a rebuild
-/// is a couple of minutes of compiler output; run invisibly, that is two minutes of a quit app and
-/// no evidence anything is happening, which is indistinguishable from a crash.
+/// moves the new bundle into place — so whatever drives the update cannot be the app. And the work
+/// is a download or a rebuild with output worth seeing; run invisibly, a rebuild is two minutes of a
+/// quit app and no evidence anything is happening, which is indistinguishable from a crash.
 ///
-/// So the button opens a Terminal window on a script. You watch it build, and it reopens Meetings at
-/// the end. `open -a Terminal <script>` rather than AppleScript deliberately: driving Terminal by
-/// AppleScript needs the Automation permission, and asking for a fourth permission so the app can
-/// update itself is a bad trade.
+/// So the button opens a Terminal window on a script. You watch it, and `install.sh` reopens Meetings
+/// at the end. A `.command` file rather than AppleScript deliberately: driving Terminal by AppleScript
+/// needs the Automation permission, and asking for a fourth permission so the app can update itself
+/// is a bad trade.
+///
+/// A downloaded copy takes the same route with a different script — the README's own installer line,
+/// which fetches the release, verifies it and swaps it in. It used to be handed that line as text to
+/// copy into a terminal by hand, which is the same command with four more steps in front of it.
 enum SelfUpdate {
-    /// Only when there is still a checkout to update. A bundle whose source was moved or deleted
-    /// gets the copyable command instead, which at least tells the truth.
-    static var isPossible: Bool { script != nil }
+    /// True for a downloaded copy (the installer line updates it) and for a build whose checkout is
+    /// still where the bundle says it is. False only for a build whose checkout has moved or been
+    /// deleted: that copy is handed the copyable command, because the path in it is the one thing
+    /// this app cannot fix.
+    static var isPossible: Bool { updateScript(sourceRoot: AppInfo.sourceRoot, to: "") != nil }
 
     /// The command a person can run by hand, and the one the script runs.
     static var command: String { AppInfo.updateCommand }
 
-    /// The sentence above the command, for the copies that get a command rather than a button.
+    /// What pressing the button is about to do, for the copies that get one. One line: the person
+    /// pressing Update wants the update, not an account of the install, and the two cases differ only
+    /// in what happens and how long it takes.
+    static func whatUpdateDoes(sourceRoot: String?) -> String {
+        guard sourceRoot != nil else {
+            return "A Terminal window runs the installer. Meetings closes and reopens, a few seconds."
+        }
+        return "A Terminal window pulls and rebuilds. Meetings closes and reopens, about two minutes."
+    }
+
+    /// The sentence above the command, for the one copy that gets a command rather than a button.
     ///
     /// It used to say "Meetings is built from source" unconditionally, which was true when every copy
     /// was compiled on the machine it ran on and became a plain falsehood the moment releases shipped
-    /// prebuilt — told, worse, to exactly the population it is wrong about: a downloaded copy has no
-    /// `MeetingsSourceRoot`, so it can never take the self-update path and always lands here.
+    /// prebuilt — told, worse, to exactly the population it is wrong about.
     ///
-    /// The two cases need different sentences because they need different actions. A downloaded copy
-    /// runs one line that fetches and swaps the app in seconds. A copy whose checkout has been moved
-    /// or deleted has to be run from wherever that checkout went, and the command it is given still
-    /// names the old path, so saying where to run it is the whole of the help.
+    /// A downloaded copy now presses a button instead, so the only text left here belongs to a build
+    /// whose checkout has moved or been deleted: the command it is given still names the old path, so
+    /// saying where to run it is the whole of the help. The downloaded sentence stays because
+    /// ``whatUpdateDoes(sourceRoot:)`` is not the only place a copy can end up — a write that fails
+    /// leaves the command as the fallback.
     static func howToUpdate(sourceRoot: String?) -> String {
         guard sourceRoot != nil else {
             return "This copy was downloaded ready to run. One line in Terminal fetches the new "
@@ -375,8 +391,10 @@ enum SelfUpdate {
             + "Run this wherever the repository is now:"
     }
 
-    static func run() -> String? {
-        guard let source = script else { return "Cannot find the folder this copy was built from." }
+    static func run(to version: String) -> String? {
+        guard let source = updateScript(sourceRoot: AppInfo.sourceRoot, to: version) else {
+            return "Cannot find the folder this copy was built from."
+        }
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("meetings-update-\(UUID().uuidString).command")
         do {
@@ -391,8 +409,29 @@ enum SelfUpdate {
         return nil
     }
 
-    private static var script: String? {
-        guard let root = AppInfo.sourceRoot else { return nil }
+    /// The script the button runs, or nil when there is nothing this app can run on this copy's
+    /// behalf. A parameter rather than the bundle's own `MeetingsSourceRoot` for the same reason
+    /// ``AppInfo/updateCommand(sourceRoot:)`` takes one: the test process runs inside `swift test`'s
+    /// bundle, whose Info.plist keys no test can change, and the downloaded branch is the one every
+    /// user is on.
+    static func updateScript(sourceRoot: String?, to version: String) -> String? {
+        guard let root = sourceRoot else {
+            // A downloaded copy: `install.sh` fetches the release, checks it against its published
+            // checksum and signature, replaces this bundle and reopens it. `curl | bash` unquoted on
+            // purpose — it is the line the README gives and the one people run by hand, so a script
+            // that ran something subtly different would be a second install path to keep honest.
+            return """
+                #!/bin/bash
+                # Written by Meetings. Safe to delete.
+                set -euo pipefail
+                \(banner(to: version, doing: "Downloading and replacing this copy"))
+                \(AppInfo.updateCommand(sourceRoot: nil))
+                echo
+                echo "  Done. This window can be closed."
+                echo
+
+                """
+        }
         let fm = FileManager.default
         guard fm.fileExists(atPath: root + "/.git"),
               fm.isExecutableFile(atPath: root + "/install.sh") else { return nil }
@@ -402,18 +441,71 @@ enum SelfUpdate {
             # Written by Meetings. Safe to delete.
             set -euo pipefail
             cd '\(quoted)'
-            echo "Updating Meetings in $(pwd)"
-            echo
+            \(banner(to: version, doing: "Pulling and rebuilding in $(pwd)"))
             # --ff-only, never a merge: this is someone pressing a button, not resolving a conflict.
             # Local commits or a dirty tree stop here with git's own message, which is more use than
             # anything this script could invent.
             git pull --ff-only
             ./install.sh
             echo
-            echo "Done. This window can be closed."
+            echo "  Done. This window can be closed."
+            echo
 
             """
     }
+
+    /// The head of that script: once the button is pressed, this terminal window is the whole of the
+    /// update's interface, and it opened on top of whatever the person was doing. The artwork says
+    /// which app asked for it without a sentence, and the two version numbers say what is about to
+    /// change — the popover's own line is gone from the screen by then.
+    ///
+    /// `<<'MEETINGS'` is quoted, so the shell expands nothing between the markers. That is what makes
+    /// pasting artwork in here safe, and it is also why `doing` is echoed *below* the heredoc: a
+    /// `$(pwd)` in it has to reach the shell.
+    private static func banner(to version: String, doing: String) -> String {
+        """
+        cat <<'MEETINGS'
+
+        \(wordmark)
+
+        MEETINGS
+        echo "  \(AppInfo.version)  ─→  \(version)"
+        echo "  \(doing)"
+        echo
+        """
+    }
+
+    /// The mark from `brand/logo.png` in the classic ASCII density ramp, with the name set under it in
+    /// block letters — the README's banner, as a terminal can draw it.
+    ///
+    /// Regenerated, never hand-drawn: `swift scripts/make-ascii-banner.swift` prints exactly this, so a
+    /// change to the mark is carried into the terminal by re-running it. That script also carries the
+    /// one thing worth knowing about the conversion: the artwork's glow is *coloured* while the mark is
+    /// white, so it masks on whiteness rather than brightness, and the glow drops out on its own.
+    static let wordmark = """
+                                 :*%@%-    -#@%*:
+                                -@@@@@@-::-@@@@@@-
+                                *#@@@@@%--%@@@@@#*.
+                          .::  -=#@@@@@@##@@@@@@%=+::-:.
+                         :#@@%.=-@@@@@@@@@@@@@@@@-+=%@@#-
+                        .+%@@@%+%@@@@@@@@@@@@@@@@#=%@@@%*.
+                      .=##@@@@@@@@@@@@@@@@@@@@@%%%%#######=.
+                     #%@@@@@@@@@%%##%@@@@@@@@@##****++++*#%%*
+                      :=#%@@@%%%#***#%@@@@@@@%*++++++++***=:
+                        .+%@@@%=#*+++#%@@@@%#++++*=%%**#*:
+                         -*@@%.::#+===*#@@%*+==+*::.%@%*-
+                          .--. : *+=--=#+*%+===+*.- .--.
+                               .=++===++  *%+=+**+.
+                                +*#++##.  .%%**#%+
+                                 +%%@#:    :#@%%+
+
+        ███╗   ███╗███████╗███████╗████████╗██╗███╗   ██╗ ██████╗ ███████╗
+        ████╗ ████║██╔════╝██╔════╝╚══██╔══╝██║████╗  ██║██╔════╝ ██╔════╝
+        ██╔████╔██║█████╗  █████╗     ██║   ██║██╔██╗ ██║██║  ███╗███████╗
+        ██║╚██╔╝██║██╔══╝  ██╔══╝     ██║   ██║██║╚██╗██║██║   ██║╚════██║
+        ██║ ╚═╝ ██║███████╗███████╗   ██║   ██║██║ ╚████║╚██████╔╝███████║
+        ╚═╝     ╚═╝╚══════╝╚══════╝   ╚═╝   ╚═╝╚═╝  ╚═══╝ ╚═════╝ ╚══════╝
+        """
 }
 
 /// The three permissions Meetings needs, reported without ever asking for one.
