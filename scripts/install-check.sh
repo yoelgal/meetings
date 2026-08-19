@@ -604,6 +604,44 @@ MEETINGS_HOME="$STAGE/store" "$STAGE/bin/meetings" status >/dev/null 2>&1 \
 $(MEETINGS_HOME="$STAGE/store" "$STAGE/bin/meetings" status 2>&1)"
 pass "the CLI is linked and answers 'meetings status'"
 
+# And the CLI can reach its resource bundles — which is a structural claim on purpose, because no
+# behavioural test on this machine can make it.
+#
+# `Bundle.module` is SwiftPM-generated: it looks beside the running binary, then at the absolute
+# .build path of whatever machine compiled the binary. The app reaches resources through
+# BundleResources, so Contents/Resources suffices for it; the CLI at Contents/Helpers looked in
+# Contents/Helpers, found nothing, and fell through to the build path. That path EXISTS on the machine
+# that built it and is /Users/runner/work/... on everybody else's — so every published release shipped
+# a CLI that fatally errored on any command needing bundled resources, while every local run passed.
+# Measured against the published v0.4.0-rc1: `meetings skill install` exited 133 with
+# "Fatal error: could not load resource bundle".
+#
+# That is why this is a file check and not a command. Running the command here proves nothing: this
+# machine, and the CI runner, both satisfy the fallback the defect relies on. Only a machine that did
+# not compile the binary can tell the difference, and neither of the machines that run this check
+# qualifies. So the invariant is asserted directly — every resource bundle beside the app's binary is
+# also reachable beside the CLI — and it fails the moment the link that provides it goes missing.
+for rb in "$APP/Contents/Resources"/*.bundle; do
+    [ -e "$rb" ] || continue
+    sibling="$APP/Contents/Helpers/$(basename "$rb")"
+    [ -d "$sibling" ] || die "the CLI cannot reach $(basename "$rb"): there is nothing at
+                      Contents/Helpers/$(basename "$rb"), so Bundle.module falls through to the build
+                      machine's own path — which resolves here and on CI, and does not exist on any
+                      Mac that did not compile this binary. That is the shipped-broken-CLI defect."
+done
+pass "every resource bundle the app has is reachable from the CLI beside it"
+
+# The behavioural half, kept even though it cannot fail here for the reason above: it costs nothing and
+# it is the assertion that would catch a regression in the step itself rather than in the layout.
+grep -q "Trace/BPT trap" "$STAGE/out" \
+    && die "something in the install was killed or trapped on its first execution:
+$(cat "$STAGE/out")"
+grep -q "Installed the agent skill" "$STAGE/out" \
+    || die "'meetings skill install' did not report success, so the agent skill was not installed.
+                      The install tolerates that failure silently, which is why it is asserted here:
+$(cat "$STAGE/out")"
+pass "the agent skill installs, and nothing trapped on a first execution"
+
 # ---------------------------------------------------------------- upgrading over an existing install
 # Contract criterion 5, and until this existed nothing in the check reached any of it: the move-aside,
 # the restore trap, the quit-and-wait, the two sudo fallbacks and the re-grant notice were all
