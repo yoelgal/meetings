@@ -1,9 +1,0 @@
-{
-  "hooks": {
-    "PreToolUse": [
-      { "matcher": "Bash", "hooks": [ { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR/.better-dev/bin/bd-guard\" check-bash", "timeout": 5 } ] },
-      { "matcher": "Edit|Write|NotebookEdit", "hooks": [ { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR/.better-dev/bin/bd-guard\" check-edit",
-"timeout": 5 } ] }
-    ]
-  }
-}
