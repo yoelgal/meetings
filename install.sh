@@ -955,7 +955,12 @@ echo
 if [ -z "$INSTALLED_REQ" ]; then
     echo "    Setup will ask for the microphone and for Screen Recording — macOS files"
     echo "    audio-only capture under that name, and Meetings never records your screen."
-    echo "    It then downloads about 1 GB of speech models, once."
+    # 640 MB, the figure LocalTranscriber owns and the README, the wizard, Settings and
+    # `meetings status` all quote. This line said "about 1 GB" — the one place that disagreed with the
+    # constant whose own comment says it exists "so the wizard, Settings and meetings status cannot
+    # disagree". Spotted when a fresh install printed 1 GB and `meetings status` answered 640 MB two
+    # lines later.
+    echo "    It then downloads about 640 MB of speech models, once."
     echo
 elif [ "$INSTALLED_REQ" != "$NEW_REQ" ]; then
     # macOS keys permission grants to the Designated Requirement, so a build signed differently from
