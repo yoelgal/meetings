@@ -184,6 +184,45 @@ if [ -z "${MEETINGS_APPS:-}" ] && [ ! -w "$APPS" ]; then
     fi
 fi
 
+# ---------------------------------------------------------------- say what is changing, first
+# The one install where the answer to "what is about to happen to my Mac" is not obvious, so it is
+# said before anything is downloaded rather than explained afterwards.
+#
+# Who this is: somebody whose installed copy carries MeetingsSourceRoot, which build-app.sh writes
+# only when a build was assembled from a checkout on this Mac. That key is the reliable marker, and it
+# is read off the OLD bundle — so this cannot be confused with a certificate rotation, where the
+# installed copy is a release and carries no such key. Every other way of telling those apart needs
+# something neither the installer nor the app can know.
+#
+# The permissions sentence is safe to make here even though nothing has been downloaded yet: the pin
+# below refuses anything not signed with the distribution certificate, so an install that completes
+# has, by construction, arrived at the signature every later release carries too.
+if [ "$FROM_SOURCE" != 1 ] && [ -d "$APPS/Meetings.app" ] \
+   && /usr/libexec/PlistBuddy -c 'Print :MeetingsSourceRoot' \
+        "$APPS/Meetings.app/Contents/Info.plist" >/dev/null 2>&1; then
+    cat <<'BANNER'
+
+  ┌────────────────────────────────────────────────────────────────────┐
+  │  Meetings updates differently from now on                          │
+  └────────────────────────────────────────────────────────────────────┘
+
+    You compiled the copy on this Mac. From this version Meetings ships
+    ready to run, so updating downloads it instead — seconds, not half an
+    hour, and no developer tools.
+
+    This replaces the copy you built.
+
+      Your meetings and notes    kept exactly as they are
+      The microphone and Screen
+      & System Audio Recording   asked for once more
+
+    macOS ties those permissions to whoever signed the app, and this is
+    the update where that changes. Afterwards every release is signed the
+    same way, so it is asked once and then stops.
+
+BANNER
+fi
+
 # ---------------------------------------------------------------- one install at a time
 # Two of these running at once share every path they touch, and the window is not small: the
 # quit-and-wait below can hold one of them for ten seconds between testing the destination and

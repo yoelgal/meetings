@@ -668,6 +668,54 @@ grep -q "expected if you built the previous copy yourself" "$STAGE/out" \
 $(cat "$STAGE/out")"
 pass "the migration is announced once, as the migration"
 
+# ---------------------------------------------------------------- the banner, and who it is for
+# The up-front explanation somebody compiling their own copy gets: the mechanism changed, this
+# replaces what they built, their meetings survive, permissions are asked once. It fires on
+# MeetingsSourceRoot in the OLD bundle — the key build-app.sh writes only for a build assembled from a
+# checkout on this Mac — which is what keeps it off a certificate rotation, where the copy being
+# replaced is a release and carries no such key.
+#
+# Both directions, because a banner that shows for everyone is noise and a banner that shows for
+# nobody is nothing. The negative case is the same install with the key absent.
+echo "==> a compiled-here copy is told the mechanism changed, before anything is downloaded"
+rm -rf "$STAGE/apps/Meetings.app"
+cp -R "$ROOT/dist/Meetings.app" "$STAGE/apps/Meetings.app"
+/usr/libexec/PlistBuddy -c "Add :MeetingsSourceRoot string /Users/someone/meetings" \
+    "$STAGE/apps/Meetings.app/Contents/Info.plist" >/dev/null 2>&1 \
+    || die "could not stamp MeetingsSourceRoot on the planted copy, so this case proves nothing"
+rc="$(install_run)"
+[ "$rc" = 0 ] || die "the install failed for a copy compiled here:
+$(cat "$STAGE/out")"
+grep -q "Meetings updates differently from now on" "$STAGE/out" \
+    || die "somebody who compiled their own copy was not told the mechanism changed:
+$(cat "$STAGE/out")"
+grep -q "kept exactly as they are" "$STAGE/out" \
+    || die "the banner did not say their meetings survive, which is the question it exists to answer:
+$(cat "$STAGE/out")"
+# Before the download, not after: an explanation that arrives once the app has already been replaced
+# is a report, not a warning. The banner's first line must precede the first download line.
+# `Downloading` unanchored: say() wraps its prefix in ANSI bold, so the line does not begin with the
+# literal `==>` and an anchored match silently never fires — which made this assertion fail for a
+# reason that had nothing to do with ordering.
+awk '/Meetings updates differently from now on/{b=NR} /Downloading/{d=NR} END{exit !(b && d && b < d)}' \
+    "$STAGE/out" \
+    || die "the banner printed after the download started, so it explains a change already underway:
+$(cat "$STAGE/out")"
+pass "a compiled-here copy is told what changes, before anything is fetched"
+
+echo "==> and a downloaded copy is not told it compiled anything"
+rm -rf "$STAGE/apps/Meetings.app"
+cp -R "$ROOT/dist/Meetings.app" "$STAGE/apps/Meetings.app"
+rc="$(install_run)"
+[ "$rc" = 0 ] || die "the install failed replacing a downloaded copy:
+$(cat "$STAGE/out")"
+grep -q "Meetings updates differently from now on" "$STAGE/out" \
+    && die "a copy that was never compiled here was told it was, which is the banner firing on a
+                      certificate rotation:
+$(cat "$STAGE/out")"
+pass "the banner stays off for a copy that was downloaded, not built"
+rm -rf "$STAGE/apps/Meetings.app"
+
 rc="$(install_run)"
 [ "$rc" = 0 ] || die "re-running the install over its own output failed (exit $rc):
 $(cat "$STAGE/out")"
