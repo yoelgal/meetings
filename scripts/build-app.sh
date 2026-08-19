@@ -287,13 +287,20 @@ codesign --force --sign "$SIGN_IDENTITY" --timestamp=none "$CONTENTS/Helpers/mee
 codesign --force --sign "$SIGN_IDENTITY" --timestamp=none \
     --entitlements "$ROOT/Packaging/Meetings.entitlements" "$APP"
 codesign --verify --deep --strict "$APP" || die "codesign verification failed"
-# The helper as code, not as a sealed resource. `--verify --deep` above walks nested code, but it
-# passed on the ad-hoc helper too, so it is not the check that would have caught this: an ad-hoc
-# signature is a valid signature. What distinguishes the shipped state from the broken one is whether
-# the helper carries the same identity as the bundle, so that is what is asserted.
-case "$(codesign -dv "$CONTENTS/Helpers/meetings" 2>&1)" in
-    *adhoc*) die "Contents/Helpers/meetings is still ad-hoc signed after signing it. It would be
-                      killed on its first execution, which is what runs 'meetings skill install'." ;;
-esac
+# The helper carries the same identity as the bundle around it — asked only when there IS an identity.
+# `MEETINGS_SIGN_ADHOC=1` is a legitimate build (it is what verify.sh and every CI run use), and its
+# helper is ad-hoc because the whole bundle is; asserting otherwise there fails a build that is doing
+# exactly what it was asked to. This first shipped as an unguarded check and broke the gate on its own
+# first run.
+#
+# What it defends: the top-level sign seals the helper as a RESOURCE without signing it as code, so
+# without the explicit sign above a release ships a certificate-signed bundle wrapping an ad-hoc
+# binary. `codesign --verify --deep` does not catch that, because an ad-hoc signature is a valid one.
+if [ "$SIGN_IDENTITY" != "-" ]; then
+    case "$(codesign -dv "$CONTENTS/Helpers/meetings" 2>&1)" in
+        *adhoc*) die "Contents/Helpers/meetings is still ad-hoc after signing it with $SIGN_IDENTITY,
+                      so the release would wrap an unsigned CLI in a signed bundle." ;;
+    esac
+fi
 
 echo "OK: $APP"
