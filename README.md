@@ -6,6 +6,8 @@
 
 **An app for you. A CLI for your agent.**
 
+https://github.com/user-attachments/assets/9a59da0d-48a8-47e9-9ec3-2da6055e0abc
+
 Thirty seconds, one continuous shot, every frame the shipping app against a throwaway store of
 invented data ([how it was made](video/README.md)).
 
