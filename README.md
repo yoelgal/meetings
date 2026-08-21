@@ -6,6 +6,11 @@
 
 **An app for you. A CLI for your agent.**
 
+<video src="https://github.com/yoelgal/meetings/raw/main/video/film/out/meetings-demo.mp4" width="720" controls muted></video>
+
+Thirty seconds, one continuous shot, every frame the shipping app against a throwaway store of
+invented data ([how it was made](video/README.md)).
+
 ```sh
 curl -fsSL https://raw.githubusercontent.com/yoelgal/meetings/main/install.sh | bash
 ```

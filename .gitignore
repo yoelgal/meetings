@@ -11,3 +11,13 @@ granola-screenshots/
 # better-dev wiring is per-developer, not part of the project.
 CLAUDE.local.md
 .worktrees/
+
+# The launch film. The sources are committed, and so is the finished 9.6 MB mp4, because a video
+# only plays inline in the README if GitHub can serve it from the repo. The ProRes master and the
+# captured footage are not — 200 MB of it — and `video/shoot.sh` regenerates every byte from the app.
+node_modules/
+video/film/out/*
+!video/film/out/meetings-demo.mp4
+video/film/public/shots/
+video/film/public/clips/
+video/film/public/fonts/
