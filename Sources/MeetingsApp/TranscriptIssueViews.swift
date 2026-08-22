@@ -84,7 +84,7 @@ struct TranscriptIssueBanner: View {
         guard issues.contains(where: { TranscriptIssueStyle.losesAChannel.contains($0.kind) }) else {
             return nil
         }
-        return "The write-up and actions below are drawn from a conversation with a side missing."
+        return "Summary and actions are drawn from an incomplete transcript."
     }
 }
 

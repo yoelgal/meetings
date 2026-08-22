@@ -167,8 +167,7 @@ extension AppModel {
         export(
             meeting,
             suggestedName: MeetingBundle.directoryName(for: meeting),
-            message: "A lossless bundle: every transcript segment, note anchor and timing. This is "
-                + "the one that imports back."
+            message: "Lossless bundle with audio, transcript segments, and notes. Can be re-imported."
         ) { scratch in
             try MeetingBundle.export(meeting, store: self.store, to: scratch)
         }
@@ -178,8 +177,7 @@ extension AppModel {
         export(
             meeting,
             suggestedName: MeetingBundle.slugName(for: meeting),
-            message: "Markdown to read, in Obsidian or anywhere else. Nothing here imports back, "
-                + "so do not keep it as a backup."
+            message: "Markdown format for reading and notes apps. Cannot be re-imported."
         ) { scratch in
             try MarkdownExport.export(meeting, store: self.store, to: scratch)
         }
@@ -232,9 +230,7 @@ extension AppModel {
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "Delete “\(meeting.title)”?"
-        alert.informativeText = "The recording, its transcript, its notes and its write-up are "
-            + "deleted from this Mac. There is no undo and no trash. Export it first if you might "
-            + "want it back."
+        alert.informativeText = "Permanently deletes the recording, transcript, notes, and write-up from this Mac. This cannot be undone."
         let delete = alert.addButton(withTitle: "Delete")
         delete.hasDestructiveAction = true
         delete.keyEquivalent = ""

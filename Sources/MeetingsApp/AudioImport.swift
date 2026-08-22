@@ -68,8 +68,7 @@ struct ImportSheet: View {
             }
             .formStyle(.grouped)
 
-            Text(whereItIsTranscribed + " There is one track, so the transcript has no "
-                + "microphone / system split.")
+            Text(whereItIsTranscribed + " Single-track audio has no mic/system split.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -80,8 +79,7 @@ struct ImportSheet: View {
                     PrerequisiteNotice(prerequisites: prerequisites) {
                         Task { prerequisites = await Prerequisites.forTranscription(transcription, store: store) }
                     }
-                    Text("Importing now still works. The meeting is created either way and stays at "
-                        + "Transcribing while the download runs.")
+                    Text("The meeting is created immediately and will transcribe once the download finishes.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -125,9 +123,7 @@ struct ImportSheet: View {
         case .local:
             "The audio is copied into Meetings and transcribed on this Mac."
         case .cloud:
-            "The audio is copied into Meetings and uploaded to the transcription service you "
-                + "set up, which transcribes it. Your notes, search and write-ups stay on this "
-                + "Mac; the recording itself leaves it."
+            "Audio is uploaded — the recording leaves it. Notes, search, and write-ups stay on this Mac."
         }
     }
 }

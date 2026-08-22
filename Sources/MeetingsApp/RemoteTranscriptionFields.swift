@@ -39,8 +39,7 @@ struct RemoteTranscriptionFields: View {
 
     var body: some View {
         Label {
-            Text("The audio of every meeting is uploaded to this service. Your notes, search and "
-                + "write-ups stay on this Mac.")
+            Text("Audio is uploaded. Notes stay on this Mac.")
                 .font(.callout)
                 .fixedSize(horizontal: false, vertical: true)
         } icon: {
@@ -54,17 +53,12 @@ struct RemoteTranscriptionFields: View {
         TextField("Model", text: SettingBinding(store: store, key: .transcribeRemoteModel).binding($model))
         // Same disclosure and the same reason as the write-up provider's: the account is a label
         // with no correct value, and it does not belong between two fields that have one.
-        DisclosureGroup("Keychain account") {
+        DisclosureGroup("Keychain account (optional)") {
             TextField(
                 "Keychain account",
                 text: SettingBinding(store: store, key: .transcribeRemoteKeyRef).binding($keyRef)
             )
             .labelsHidden()
-            Text("The name your Keychain files this key under. Any name works; blank uses "
-                + "\"\(Self.defaultKeyRef)\".")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
         }
         SecureField("API key", text: $key)
             .onSubmit(check)
@@ -74,31 +68,12 @@ struct RemoteTranscriptionFields: View {
                 .disabled(checking)
             if checking { ProgressView().controlSize(.small) }
         }
+        .onChange(of: verifyRequested) { _, _ in check() }
+        .onChange(of: reloadRequested) { _, _ in load() }
 
         if let result {
             VerifyResultLabel(result: result)
-        } else {
-            // The default is to verify, and this says so before the user has pressed anything.
-            // Skipping is offered — an endpoint behind a VPN that is not up yet is a real situation —
-            // but it is the second thing on the line, not the first.
-            Text("Verify before continuing: a wrong key fails silently after your first meeting, "
-                + "with the audio already recorded. If the service is unreachable right now, you "
-                + "can come back to this later.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
         }
-
-        Text("The defaults point at OpenAI, and anything that speaks the same API works, "
-            + "including one you run yourself. Your key is kept in your Keychain, never in "
-            + "Meetings' own database.")
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
-            // Zero is the initial value of both counters, so the first bump is 1 and neither of
-            // these fires on appear — where `load` has already run off `onAppear` above.
-            .onChange(of: verifyRequested) { _, _ in check() }
-            .onChange(of: reloadRequested) { _, _ in load() }
     }
 
     // MARK: -

@@ -125,9 +125,9 @@ struct PreNotesEditor: View {
             title: "Pre-meeting notes",
             value: meeting.preNotes,
             identity: "prenotes:\(meeting.id)",
-            placeholder: "What do you want out of this meeting? Markdown works here.",
-            oversizeHint: "Read and change these notes with meetings prenotes get and meetings prenotes set --file.",
-            subject: "these pre-meeting notes",
+            placeholder: "Meeting agenda and notes (Markdown supported)…",
+            oversizeHint: "Use `meetings prenotes get` and `meetings prenotes set --file` to view or edit.",
+            subject: "pre-meeting notes",
             draft: Appearance.preNotesDraft,
             save: save,
             popOut: popOut
@@ -439,7 +439,7 @@ private struct ExternalChangeBanner: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Label("Something else changed \(subject) while you were typing",
+            Label("External change to \(subject) while editing",
                   systemImage: "exclamationmark.triangle.fill")
                 .font(.callout.weight(.medium))
                 .foregroundStyle(.primary)

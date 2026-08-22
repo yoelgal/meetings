@@ -50,11 +50,15 @@ struct SettingsView: View {
                     case .vocabulary: VocabularySettings(model: model)
                     }
                 }
+                .formStyle(.grouped)
+                .scrollContentBackground(.hidden)
+                .background(.clear)
                 .tabItem { Label(tab.title, systemImage: tab.symbol) }
                 .tag(tab)
             }
         }
         .frame(width: 620, height: 520)
+        .background(.clear)
         .onAppear { if let initialTab, let parsed = Tab(rawValue: initialTab) { tab = parsed } }
     }
 }
@@ -140,10 +144,7 @@ private struct GeneralSettings: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-                Text("""
-                    Meetings with a link in that window get a row, so you can write notes \
-                    before they start.
-                    """)
+                Text("Calendar meetings in this window appear so you can write notes.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -168,25 +169,20 @@ private struct GeneralSettings: View {
                 // One string literal, not two joined with `+`: `Text("…" + "…")` is an expression,
                 // so SwiftUI never sees a `LocalizedStringKey` and the backticks below would draw
                 // as backticks. `MarkdownLiteralTests` fails the build if this idiom comes back.
-                Text("""
-                    `0` keeps audio forever. Your transcripts and notes are never deleted.
-                    """)
+                Text("`0` keeps audio forever. Transcripts and notes are never deleted.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
             Section("Floating notes panel") {
-                Toggle("Hide the notes panel from screen sharing", isOn: $model.notesPanelHiddenFromCapture)
-                Text("""
-                    Zoom, Meet, Teams and anything else recording your screen cannot see it. \
-                    Neither can your own screenshots.
-                    """)
+                Toggle("Hide notes panel from screen sharing", isOn: $model.notesPanelHiddenFromCapture)
+                Text("Hidden from screen shares and screenshots.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
-                Toggle("Keep the notes panel above other apps", isOn: $model.notesPanelFloats)
-                Text("It stays above full-screen apps too.")
+                Toggle("Keep notes panel above other apps", isOn: $model.notesPanelFloats)
+                Text("Floats above full-screen apps.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -214,11 +210,11 @@ private struct GeneralSettings: View {
                     // a new row elsewhere in the window is a button you press twice.
                     switch checkResult {
                     case .update(let update):
-                        Text("Version \(update.version) is available. See the foot of the sidebar.")
+                        Text("Version \(update.version) is available.")
                             .font(.caption)
                             .foregroundStyle(Color(nsColor: .systemGreen))
                     case .upToDate:
-                        Text("You are up to date.")
+                        Text("Up to date.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     case .failed(let why):
@@ -231,10 +227,7 @@ private struct GeneralSettings: View {
                 }
 
                 Toggle("Check automatically", isOn: $model.updateCheckEnabled)
-                Text("""
-                    Meetings asks GitHub daily whether a newer version exists. It sends nothing \
-                    about you or your meetings.
-                    """)
+                Text("Checks GitHub daily. No meeting data is sent.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -260,10 +253,7 @@ private struct GeneralSettings: View {
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
                 }
-                Text("""
-                    Puts the `meetings` command in /usr/local/bin, so your agent can run it \
-                    from anywhere.
-                    """)
+                Text("Installs `meetings` in /usr/local/bin for your agent.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -283,7 +273,7 @@ private struct GeneralSettings: View {
             }
 
             Section {
-                Button("Show the setup guide again") {
+                Button("Show setup guide again") {
                     model.showingOnboarding = true
                     // The wizard opens inside the main window, and this window sits in front of it,
                     // so pressing the button looked like it did nothing at all.
@@ -314,6 +304,7 @@ private struct GeneralSettings: View {
 struct PermissionRow: View {
     let permission: Permission
     let status: PermissionStatus
+    var compact = false
     let changed: (PermissionStatus) -> Void
 
     var body: some View {
@@ -341,10 +332,12 @@ struct PermissionRow: View {
                     EmptyView()
                 }
             }
-            Text(permission.explanation)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            if !compact {
+                Text(permission.explanation)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .padding(.vertical, 2)
     }
@@ -373,9 +366,9 @@ private struct AISettings: View {
                 // invisible to anybody who did not press a disclosure — in the one pane whose
                 // entire purpose is choosing between the three.
                 Picker("Mode", selection: modeBinding) {
-                    Text("Manual: you ask your own agent").tag(AIMode.manual)
-                    Text("Local agent: Meetings runs a command").tag(AIMode.localAgent)
-                    Text("Cloud: a provider writes it").tag(AIMode.cloud)
+                    Text("Manual: ask your agent").tag(AIMode.manual)
+                    Text("Local agent: runs a command").tag(AIMode.localAgent)
+                    Text("Cloud: provider writes it").tag(AIMode.cloud)
                 }
                 .pickerStyle(.inline)
                 Text(explanation)
@@ -392,15 +385,15 @@ private struct AISettings: View {
             // changes rather than on a Save.
             switch mode {
             case .manual:
-                Section("The command you copy") {
+                Section("Command to copy") {
                     ManualPasteCommandFields(store: model.store)
                 }
             case .localAgent:
-                Section("The command Meetings runs") {
+                Section("Command to run") {
                     LocalAgentCommandFields(store: model.store)
                 }
             case .cloud:
-                Section("Your provider") {
+                Section("Provider") {
                     CloudProviderFields(store: model.store)
                 }
             }
@@ -422,14 +415,11 @@ private struct AISettings: View {
     private var explanation: String {
         switch mode {
         case .manual:
-            "Nothing runs on its own. Finished meetings wait under Needs write-up until you ask "
-                + "your agent."
+            "Finished meetings wait under Needs write-up until you ask your agent."
         case .localAgent:
-            "The command below runs as soon as a meeting is ready. Whether the transcript "
-                + "leaves this Mac depends on the command you set."
+            "Runs when a meeting is ready. Whether transcripts leave this Mac depends on the command you set."
         case .cloud:
-            "Your transcript and notes are sent to the provider below, and the write-up it "
-                + "returns is saved."
+            "Transcripts and notes are sent to the configured provider."
         }
     }
 }
@@ -454,10 +444,7 @@ struct ManualPasteCommandFields: View {
         .font(.callout.monospaced())
         .onAppear { command = loadSetting(store, .aiManualPasteCommand) }
 
-        Text("""
-            The Copy button on a finished meeting copies this, with `{meeting_id}` filled in. \
-            Meetings never runs it.
-            """)
+        Text("`{meeting_id}` is replaced with the meeting ID. Meetings never runs it.")
             .font(.caption)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
@@ -533,10 +520,7 @@ struct LocalAgentCommandFields: View {
 
         if let result { VerifyResultLabel(result: result) }
 
-        Text("""
-            `{meeting_id}` becomes the meeting's id. It runs directly, so pipes and `&&` do \
-            nothing.
-            """)
+        Text("`{meeting_id}` is replaced with the meeting ID.")
             .font(.caption)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
@@ -650,7 +634,7 @@ struct CloudProviderFields: View {
         DisclosureGroup("Keychain account") {
             TextField("Keychain account", text: SettingBinding(store: store, key: .aiCloudKeyRef).binding($keyRef))
                 .labelsHidden()
-            Text("The name your Keychain files this key under. Any name works.")
+            Text("The name your Keychain files this key under.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -668,10 +652,7 @@ struct CloudProviderFields: View {
 
         if let result { VerifyResultLabel(result: result) }
 
-        Text("""
-            Your key is stored in the login Keychain, never in the database. Your transcript and \
-            notes are sent to the provider above.
-            """)
+        Text("Key is stored in Keychain. Transcripts and notes are sent to your provider.")
             .font(.caption)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
@@ -748,7 +729,7 @@ private struct TranscriptionSettings: View {
             Section("Where transcription runs") {
                 Picker("Engine", selection: engineBinding) {
                     Text("On this Mac").tag(TranscriptionEngineChoice.local)
-                    Text("A service you set up").tag(TranscriptionEngineChoice.cloud)
+                    Text("Cloud service").tag(TranscriptionEngineChoice.cloud)
                 }
                 .pickerStyle(.inline)
             }
@@ -774,7 +755,7 @@ private struct TranscriptionSettings: View {
                     if let downloadProblem {
                         Text(downloadProblem).font(.caption).foregroundStyle(.secondary)
                     }
-                    Text("Your recordings stay on this Mac.")
+                    Text("Audio stays on this Mac.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -822,8 +803,8 @@ private struct TranscriptionSettings: View {
     /// switch back. Neither, then: the files stay where they are and the pane says so.
     private var cloudNote: String {
         localModelsPresent
-            ? "What is already downloaded here is kept, so switching back needs no second download."
-            : "Nothing is downloaded here, and there is no live transcript while you talk."
+            ? "Downloaded models are kept if you switch back."
+            : "No local models downloaded. Live transcription is disabled."
     }
 
     private var localModelsPresent: Bool {
@@ -862,7 +843,7 @@ private struct TranscriptionSettings: View {
                 }
                 modelsReady = await model.transcription.modelsReady()
             } catch {
-                downloadProblem = "The download did not finish: \(error.localizedDescription)"
+                downloadProblem = "Download failed: \(error.localizedDescription)"
             }
             downloading = false
         }
@@ -887,8 +868,7 @@ enum VocabularyRules {
     static func refusal(for term: String) -> String? {
         let trimmed = term.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.count < minimumTermLength else { return nil }
-        return "“\(trimmed)” is too short. Words under \(minimumTermLength) letters are ignored, "
-            + "so add the longer word it appears in."
+        return "“\(trimmed)” is too short. Words under \(minimumTermLength) letters are ignored."
     }
 }
 
@@ -987,10 +967,7 @@ private struct VocabularySettings: View {
             }
             // The one sentence the other three tabs all have and this one did not: what the list is
             // for, and where the rows you did not type came from.
-            Text("""
-                These spellings help the transcriber get names right. Names from your calendar \
-                are added for you, and you can turn any of them off.
-                """)
+            Text("Custom spellings improve transcription. Calendar names are added automatically.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

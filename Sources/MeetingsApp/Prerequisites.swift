@@ -46,8 +46,7 @@ enum Prerequisites {
             missing.append(Prerequisite(
                 id: "system-audio",
                 title: "System audio",
-                detail: "Recording works, but only your voice. Everyone else on the call is "
-                    + "missing from the transcript.",
+                detail: "Everyone else on the call is missing from the transcript.",
                 fix: .grant(.systemAudio)
             ))
         }
@@ -66,8 +65,7 @@ enum Prerequisites {
             return [Prerequisite(
                 id: "remote-endpoint",
                 title: "Transcription is not set up",
-                detail: "Its URL, model or key is missing. Meetings are recorded, and "
-                    + "nothing is transcribed.",
+                detail: "URL, model, or key is missing. Meetings are recorded but not transcribed.",
                 fix: .openTranscriptionSettings
             )]
         }
@@ -77,8 +75,7 @@ enum Prerequisites {
         return [Prerequisite(
             id: "models",
             title: "Transcription is not downloaded yet",
-            detail: "\(LocalTranscriber.current.downloadSizeText), once. Until it is here, "
-                + "meetings are recorded but not transcribed.",
+            detail: "\(LocalTranscriber.current.downloadSizeText), once. Meetings are recorded but not transcribed until downloaded.",
             fix: .downloadModels
         )]
     }
@@ -92,8 +89,7 @@ enum Prerequisites {
             return [Prerequisite(
                 id: "cli",
                 title: "The meetings command is not installed",
-                detail: "The line you copy will fail with `command not found` when your agent "
-                    + "runs it.",
+                detail: "Pasted agent commands require the CLI tool.",
                 fix: .installCLI
             )]
         }

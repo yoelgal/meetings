@@ -53,7 +53,7 @@ struct SearchPalette: View {
             // Every key the palette answers to is handled here rather than on the container: the
             // field is what has focus, and a handler on an ancestor only sees a key the focused
             // view did not already eat — which is exactly what a text field does with the arrows.
-            TextField("Search meetings, notes, transcripts and write-ups", text: $model.searchQuery)
+            TextField("Search meetings, notes, transcripts…", text: $model.searchQuery)
                 .textFieldStyle(.plain)
                 .font(.title3)
                 .focused($focused)
@@ -75,12 +75,11 @@ struct SearchPalette: View {
         // palette with a query already in it, and a search that answers "nothing contains X" before
         // the first read of the store is a statement about the user's data made without looking.
         if !model.loaded {
-            PaletteMessage(title: "Reading your meetings…")
+            PaletteMessage(title: "Loading meetings…")
         } else if model.searchResults.isEmpty {
             PaletteMessage(
                 title: "No matches",
-                detail: "No meeting name, note, transcript or write-up "
-                    + "contains “\(model.searchQuery)”."
+                detail: "No results matching “\(model.searchQuery)”."
             )
         } else {
             ScrollViewReader { proxy in
@@ -219,7 +218,7 @@ struct SearchToolbarButton: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .help("Search meetings, notes, transcripts and write-ups")
+        .help("Search meetings")
         .accessibilityLabel("Search")
     }
 }

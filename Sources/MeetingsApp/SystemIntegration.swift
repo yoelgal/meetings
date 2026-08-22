@@ -306,12 +306,10 @@ struct AdHocSigningNotice: View {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .foregroundStyle(Color(nsColor: .systemOrange))
-                Text("macOS will ask for these permissions again after every update")
+                Text("Permissions reset after every update")
                     .font(.callout.weight(.medium))
             }
-            Text("This copy of Meetings is signed ad hoc, so macOS sees each new build as a "
-                + "different app. Run this once in the folder you built it from and the grants "
-                + "stick from then on.")
+            Text("Ad-hoc builds lose permissions on update. Run this once in your build folder to persist grants.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -541,15 +539,11 @@ enum Permission: String, CaseIterable, Identifiable {
     var explanation: String {
         switch self {
         case .microphone:
-            "Your own voice. Recording starts only when you press Start, and the audio never "
-                + "leaves this Mac."
+            "Records your voice. Audio is processed locally and never leaves this Mac."
         case .systemAudio:
-            "Everyone else on the call. macOS files this under Screen Recording because system "
-                + "audio is only available through the screen-capture API. Meetings never records "
-                + "or saves a picture of your screen. Approving it means audio only."
+            "Captures call audio. macOS lists this under Screen Recording, but Meetings only records audio and never captures your screen."
         case .calendar:
-            "Read-only. Lets Meetings list what is coming up, attach pre-notes to the right "
-                + "event, and spell attendee names correctly."
+            "Read-only access to list upcoming events, link pre-notes, and populate attendee names."
         }
     }
 
