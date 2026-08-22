@@ -147,8 +147,7 @@ private struct LiveTranscriptPane: View {
             if let systemAudioUnavailable {
                 Notice(
                     symbol: "speaker.slash",
-                    text: "Only your microphone is being recorded. Everyone else on the call will "
-                        + "be missing from the transcript."
+                    text: "Only microphone audio is recorded. Other callers are missing from the transcript."
                 )
                 // The value is `String(describing:)` of an error upstream — a Swift type dump,
                 // which tells somebody mid-recording nothing they can act on. It stays on the
@@ -165,10 +164,8 @@ private struct LiveTranscriptPane: View {
                     symbol: unavailable == nil ? "waveform" : "exclamationmark.triangle",
                     title: unavailable == nil ? "Listening" : "No live transcript",
                     message: unavailable.map {
-                        "The live transcript is unavailable: \($0). The full transcript is made "
-                            + "when you stop."
-                    } ?? "Words appear here a moment after they are said. The full transcript is "
-                        + "made when you stop."
+                        "Live transcript unavailable: \($0). Full transcript will be generated when recording stops."
+                    } ?? "Words appear here as spoken. Full transcript is generated when recording stops."
                 )
             } else {
                 transcript
@@ -291,7 +288,7 @@ struct LiveNotesPane: View {
                     }
                 TimelineView(.periodic(from: .now, by: 1)) { _ in
                     // "Return files this note at 23:33" read first as a sentence about files.
-                    Text("Press Return to save this note at \(Format.clock(milliseconds: elapsedMs()))")
+                    Text("Return saves note at \(Format.clock(milliseconds: elapsedMs()))")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }
@@ -378,17 +375,12 @@ private struct RecordingBar: View {
             .padding(.horizontal, 20)
             .padding(.vertical, 12)
         }
-        // The bar material alone measures 1.00:1 against the pane in a captured window, because
-        // `.bar` *is* the pane's material with nothing behind it — and no macOS chrome colour
-        // clears 3:1 against a content pane in both schemes (measured on this machine:
-        // windowBackground 1.00:1 in both, underPageBackground 2.96:1 light but 1.13:1 dark). The
-        // platform does not separate chrome from content with a fill, so neither do we; the wash
-        // on top of the material is the tonal step, the divider above is the edge, and the window
-        // edge below closes it.
+        // Full-width edge chrome, not a floating capsule. glassEffect defaults to a rounded
+        // shape; pin it to a rectangle so it meets the window edge.
         .background {
             Rectangle()
-                .fill(.quaternary.opacity(0.4))
-                .background(.bar)
+                .fill(.black.opacity(0.18))
+                .glassEffect(.regular, in: .rect)
         }
     }
 

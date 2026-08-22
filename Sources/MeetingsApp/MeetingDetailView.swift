@@ -16,7 +16,7 @@ struct MeetingDetailView: View {
                 EmptyStateView(
                     symbol: "waveform",
                     title: "No meeting selected",
-                    message: "Pick a meeting on the left, or start a new meeting from the toolbar."
+                    message: "Select a meeting from the list or start a new one."
                 )
             }
             // Nothing at all when the list itself is empty. Wave 1 drew two empty states side by
@@ -158,7 +158,7 @@ struct AttendeeList: View {
         VStack(alignment: .leading, spacing: 8) {
             SectionHeader(title: "Attendees")
             if attendees.isEmpty {
-                Text("No attendees listed.")
+                Text("No attendees.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             } else {
@@ -252,7 +252,7 @@ struct MarkdownText: View {
     /// Says the text is cut and names the one command that prints the whole thing. Without it the
     /// pane would simply stop mid-sentence, which is the same lie as showing nothing.
     private var overflowNotice: some View {
-        Text("Showing the first \(Self.renderLimit.formatted()) characters of a \(source.utf8.count.formatted(.byteCount(style: .file))) document. Read the rest with the `meetings` command line.")
+        Text("Showing first \(Self.renderLimit.formatted()) characters of \(source.utf8.count.formatted(.byteCount(style: .file))). Read the rest via CLI.")
             .font(.footnote)
             .foregroundStyle(.secondary)
             .padding(.top, 8)
@@ -353,8 +353,7 @@ private struct TranscribingDetailView: View {
             VStack(spacing: 6) {
                 Text("Transcribing \(meeting.title)")
                     .font(.headline)
-                Text("Both channels are being transcribed on this Mac. The meeting appears "
-                    + "under Needs write-up when it finishes.")
+                Text("Transcribing on-device. The meeting will appear under Needs write-up.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -443,8 +442,8 @@ private struct WrittenDetailView: View {
                         title: "Summary",
                         value: meeting.summary ?? "",
                         identity: "summary:\(meeting.id)",
-                        placeholder: "Write it up here, or let an agent do it. Markdown works.",
-                        oversizeHint: "Read and change it with meetings show --summary and meetings summary set --file.",
+                        placeholder: "Write summary or generate with an agent. Markdown supported.",
+                        oversizeHint: "View or edit with `meetings show --summary` and `meetings summary set --file`.",
                         subject: "this write-up",
                         save: saveSummary,
                         titleShown: false
@@ -457,7 +456,7 @@ private struct WrittenDetailView: View {
                     if !notes.isEmpty {
                         SecondarySection(
                             title: "Your notes",
-                            trailing: "\(notes.count) · click one to jump to it",
+                            trailing: "\(notes.count) · click to jump",
                             open: $showNotes
                         ) {
                             ForEach(notes) { note in
@@ -687,7 +686,7 @@ private struct AgentCommandCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Nothing has written this up yet. Run this in your agent session:")
+            Text("Run this command in your agent session:")
                 .font(.callout)
                 .foregroundStyle(.secondary)
             // Above the command rather than under the Copy button. Reading and copying is one

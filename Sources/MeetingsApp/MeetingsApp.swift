@@ -12,7 +12,8 @@ struct MeetingsApp: App {
     /// and a migration check, and a window that appears empty and then fills in is worse than one
     /// that appears correct. Anything genuinely slow — model downloads, the audio engine — stays
     /// off this path (cold launch to a usable window under a second).
-    private let launch = Launch()
+    @NSApplicationDelegateAdaptor(MeetingsAppDelegate.self) private var appDelegate
+    private var launch: Launch { appDelegate.launch }
 
     var body: some Scene {
         Window("Meetings", id: "main") {
@@ -22,16 +23,14 @@ struct MeetingsApp: App {
                     RootView(model: model)
                 case .unavailable(let error):
                     StoreUnavailableView(error: error)
+                        .windowGlass()
                 }
             }
             .preferredColorScheme(Appearance.override)
             .background(WindowFrame(autosaveName: Appearance.windowAutosaveName))
         }
-        // The wizard's size when the wizard is what will be on screen. `launch` has already opened
-        // the store by the time this scene is built, so "is this a first run" is answerable here,
-        // before the window exists. Opening at 1180x780 and letting `WizardWindowSize` shrink it
-        // afterwards is a resize the user watches happen.
-        .defaultSize(width: openingSize.width, height: openingSize.height)
+        .defaultSize(width: Self.defaultWindowSize.width, height: Self.defaultWindowSize.height)
+        .defaultLaunchBehavior(.presented)
         .commands {
             CommandGroup(after: .sidebar) {
                 if case .ready(let model) = launch {
@@ -75,6 +74,7 @@ struct MeetingsApp: App {
             if case .ready(let model) = launch {
                 SettingsView(model: model)
                     .preferredColorScheme(Appearance.override)
+                    .windowGlass()
             }
         }
     }
@@ -122,17 +122,11 @@ struct MeetingsApp: App {
         return "waveform"
     }
 
-    /// What the window opens at. The wizard is a fixed size and the app behind it is not, so a first
-    /// run opens at the wizard's size and everything else at the app's.
-    private var openingSize: CGSize {
-        if case .ready(let model) = launch, model.showingOnboarding { return OnboardingView.card }
-        return Self.defaultWindowSize
-    }
 }
 
 /// Either the app or a truthful explanation of why not. A store that will not open is not something
 /// to crash over — the path may simply be unwritable.
-private enum Launch {
+enum Launch {
     case ready(AppModel)
     /// The error itself, not a sentence made from it. `MeetingsDatabase.open` already diagnoses
     /// every way this fails and throws a `StoreOpenError` that says what to do about it;
@@ -152,6 +146,67 @@ private enum Launch {
         } catch {
             self = .unavailable(error)
         }
+    }
+}
+
+
+/// Owns first-run: present the OLA wizard and keep the SwiftUI window off screen until setup
+/// finishes. Traffic-light close quits; the next launch is still the wizard.
+@MainActor
+final class MeetingsAppDelegate: NSObject, NSApplicationDelegate {
+    let launch = Launch()
+    private weak var mainWindow: NSWindow?
+
+    var needsOnboarding: Bool {
+        if Appearance.panel?.name == "onboarding" { return true }
+        if case .ready(let model) = launch { return model.showingOnboarding }
+        return false
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        cacheMainWindow()
+        guard needsOnboarding, case .ready(let model) = launch else { return }
+        hideMainWindows()
+        OnboardingWindowController.shared.show(
+            model: model,
+            initialStep: Appearance.panel?.argument
+        ) { [weak self] in
+            self?.revealMainWindow()
+        }
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        guard needsOnboarding, case .ready(let model) = launch else { return true }
+        hideMainWindows()
+        OnboardingWindowController.shared.show(model: model, initialStep: Appearance.panel?.argument) { [weak self] in
+            self?.revealMainWindow()
+        }
+        return false
+    }
+
+    private func cacheMainWindow() {
+        mainWindow = NSApp.windows.first {
+            $0.identifier?.rawValue != OnboardingWindowController.windowID && !($0 is NSPanel)
+        }
+    }
+
+    private func hideMainWindows() {
+        cacheMainWindow()
+        mainWindow?.orderOut(nil)
+    }
+
+    func revealMainWindow() {
+        if case .ready(let model) = launch {
+            model.showingOnboarding = false
+        }
+        if mainWindow == nil { cacheMainWindow() }
+        guard let window = mainWindow else { return }
+        window.styleMask.insert(.resizable)
+        window.setContentSize(MeetingsApp.defaultWindowSize)
+        WindowGlass.apply(window, titleVisible: true)
+        window.center()
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
 }
 
@@ -331,11 +386,6 @@ struct MenuBarContent: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             MenuBarView(model: model)
-            // Only during a call. Outside one this menu is a Start button and nothing else: there
-            // is no meeting for "float my notes" to mean, so it would float whichever row happened
-            // to be selected in a window you cannot see. `isRecording` is the same condition the
-            // quick-note field uses, so the two halves of this menu cannot disagree about whether a
-            // call is happening.
             if model.isRecording {
                 Divider()
                 HStack(spacing: 8) {
@@ -348,10 +398,6 @@ struct MenuBarContent: View {
         .frame(width: 280)
     }
 
-    /// One button per surface rather than a switch and then a button: picking which notes and then
-    /// asking for them is two steps to do one thing, and neither is what the user came here for.
-    /// The picture-in-picture symbol is what says the press floats it, so the label is free to be
-    /// just the name of the thing.
     private func floatButton(_ tab: NotesTab) -> some View {
         let floating = model.notesPanelOpen(tab)
         return Button {
@@ -382,28 +428,12 @@ struct RootView: View {
             case "import":
                 importPanel
             case "onboarding":
-                OnboardingView(model: model, initialStep: Appearance.panel?.argument) {}
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                Color.clear
             default:
-                // Deliberately the window's content and not a sheet. AppKit refuses to terminate
-                // an app that has a sheet attached, and it refuses *before* consulting the
-                // application delegate, so there is nowhere to intervene. The one request that
-                // matters arrives exactly here: switch Screen Recording on and macOS offers "Quit
-                // & Reopen", which is the only way a running process picks up that grant — and
-                // with the wizard up as a sheet, that button silently did nothing. The permission
-                // never took hold and the row that had just sent you to System Settings still read
-                // "Not asked yet".
-                //
-                // Nothing is lost by inlining it. On a first launch there is no content behind the
-                // wizard to be modal over, and this is already how the screenshot seam above
-                // renders it.
-                if model.showingOnboarding {
-                    OnboardingView(model: model) { model.showingOnboarding = false }
-                } else {
-                    split
-                }
+                split
             }
         }
+        .modifier(MainWindowGlass(enabled: Appearance.panel?.name != "onboarding"))
         // Search, over whatever the window is showing. An overlay rather than a sheet, deliberately
         // and permanently: a sheet stops AppKit terminating the app before the delegate is even
         // asked, so ⌘Q would do nothing while it was open (`SearchPalette` has the full reason).
@@ -414,7 +444,14 @@ struct RootView: View {
         }
         // One place decides which panels are on screen, so the menu items, the menu bar rows, the
         // panels' own close buttons and the remembered state cannot disagree.
+        .onChange(of: model.showingOnboarding) { _, showing in
+            guard showing else { return }
+            OnboardingWindowController.shared.show(model: model, initialStep: nil) {
+                model.showingOnboarding = false
+            }
+        }
         .onChange(of: model.openNotesPanels, initial: true) { _, open in
+            guard !model.showingOnboarding else { return }
             for tab in NotesTab.allCases {
                 if open.contains(tab) {
                     openWindow(id: NotesPanel.sceneID(tab))
@@ -479,54 +516,32 @@ struct RootView: View {
         } content: {
             MeetingListView(model: model)
         } detail: {
-            VStack(spacing: 0) {
-                if let message = model.errorMessage {
-                    ErrorBanner(message: message) { model.errorMessage = nil }
-                }
-                // Beside the error banner, and for the same reason: a recording can be started from
-                // the detail view, the toolbar, the menu bar or the calendar nudge, and only two of
-                // those have anywhere of their own to put this. Here it is on screen whichever one
-                // the press came from — including the case where nothing started at all.
-                if !model.recordingBlockers.isEmpty {
-                    PrerequisiteNotice(prerequisites: model.recordingBlockers) {
-                        Task { await model.recheckRecordingBlockers() }
+            GlassContentCard {
+                VStack(spacing: 0) {
+                    if let message = model.errorMessage {
+                        ErrorBanner(message: message) { model.errorMessage = nil }
                     }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 10)
+                    if !model.recordingBlockers.isEmpty {
+                        PrerequisiteNotice(prerequisites: model.recordingBlockers) {
+                            Task { await model.recheckRecordingBlockers() }
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                    }
+                    MeetingDetailView(model: model)
                 }
-                MeetingDetailView(model: model)
             }
-            // The reading column gets a floor, and it is the *only* column that does not yield.
-            // Without one, NSSplitView compresses the lowest-priority pane first — which is this
-            // one — so a half-screen window left the summary ragging at four words a line while
-            // the sidebar sat at its ideal width. 160 + 200 + 380 keeps the whole window under
-            // 760 pt, which is what a half-screen window on a 1512 pt display actually is.
             .navigationSplitViewColumnWidth(min: 380, ideal: 640)
         }
-        // No subtitle. It restated the sidebar's selected row and its badge in the one place they
-        // are both already on screen — "Needs write-up · 2" above a sidebar row reading
-        // "Needs write-up  2". Notes does not have one either.
         .navigationTitle(model.title(for: model.scope))
         .toolbar {
-            // A recording is a state of the app, not of the detail pane, so on macOS it belongs in
-            // the toolbar — but only when the recording screen is not already on screen. It is one
-            // transport, shown once: when you are looking at the meeting being recorded, the bar
-            // along the bottom is it, and duplicating it up here put two elapsed clocks, two
-            // pulsing red dots and two Stop controls ~700 pt apart on one window.
             if model.recordingChromeBelongsInToolbar {
                 ToolbarItem(placement: .principal) {
                     RecordingToolbarStatus(model: model)
                 }
             }
-            // Both of these are `Button(title, systemImage:)` drawn `.iconOnly` rather than
-            // `Button { Image(...) }`: the title is still there for VoiceOver, which is the whole
-            // difference between a toolbar button and an unannounced glyph. `.help` carries the
-            // same words to the pointer.
             ToolbarItem(placement: .primaryAction) {
                 if model.recordingChromeBelongsInToolbar {
-                    // Bare `stop.circle` next to the principal item's pulsing dot and running
-                    // clock, which is the transport macOS itself draws in Voice Memos and
-                    // QuickTime. The roomier control on the recording screen keeps its word.
                     Button("Stop recording", systemImage: "stop.circle") {
                         Task { await model.stopRecording() }
                     }
@@ -537,14 +552,10 @@ struct RootView: View {
                         Task { await model.startAdHocMeeting() }
                     }
                     .labelStyle(.iconOnly)
-                    .help("Record a meeting that is not in your calendar")
+                    .help("New meeting that is not in your calendar")
                 }
             }
-            // Splits the shared glass so the action does not share a capsule with the search
-            // control (packaging §4.6 `ToolbarSpacer`).
             ToolbarSpacer(.fixed, placement: .primaryAction)
-            // Where the search field used to be, on the trailing edge in its own capsule. It opens
-            // the palette instead of holding a second query beside it.
             ToolbarItem(placement: .primaryAction) {
                 SearchToolbarButton(model: model)
             }

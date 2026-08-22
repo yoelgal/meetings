@@ -75,6 +75,9 @@ struct SidebarView: View {
             }
         }
         .listStyle(.sidebar)
+        .scrollContentBackground(.hidden)
+        .background(.clear)
+        .columnTrailingHairline()
         // 160 rather than 180: the reading column is the one that has to survive a narrow window,
         // so the two navigation columns are the ones that give. A folder name still fits.
         .navigationSplitViewColumnWidth(min: 160, ideal: 216, max: 320)
@@ -93,7 +96,7 @@ struct SidebarView: View {
                     UpdateNotice(
                         update: update,
                         recording: model.isRecording
-                            ? "A meeting is recording. Stop it first: updating quits Meetings." : ""
+                            ? "Meeting in progress. Stop recording before updating." : ""
                     )
                 }
             }
@@ -294,7 +297,7 @@ private struct PermissionsResetNotice: View {
                 .contentShape(.rect)
             }
             .buttonStyle(.plain)
-            .help("Why macOS is asking for permissions again")
+            .help("Permissions explanation")
             .padding(.horizontal, 22)
             .padding(.vertical, 10)
             .popover(isPresented: $showing, arrowEdge: .trailing) {

@@ -98,16 +98,16 @@ struct StoreUnavailableView: View {
 
     private var buttons: some View {
         HStack(spacing: 10) {
-            Button("Show the store in Finder") {
+            Button("Show in Finder") {
                 NSWorkspace.shared.activateFileViewerSelecting([Paths.databaseURL])
             }
             .buttonStyle(.borderedProminent)
             if FileManager.default.fileExists(atPath: Paths.backupsRoot.path) {
-                Button("Show the backups folder") {
+                Button("Show backups") {
                     NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: Paths.backupsRoot.path)
                 }
             }
-            Button("Copy this message") {
+            Button("Copy message") {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(prose, forType: .string)
             }

@@ -24,12 +24,12 @@ struct OnboardingView: View {
     /// Set by the transcriber step when transcription is pointed at a remote endpoint that has not
     /// been proved to work. It holds Continue on that one step, and on that one condition.
     ///
-    /// Every other step here is skippable and stays skippable — a permission ungranted or a model
+    /// Every other step here can be left unfinished — a permission ungranted or a model
     /// undownloaded announces itself the moment it matters, loudly, in the app. A wrong API key does
     /// not: it fails after the first real meeting, with the audio already recorded, and the only
     /// cheap moment to catch it is this one. Hence a gate here and nowhere else, and hence
-    /// ``verifyRequested`` rather than a locked door — "Skip setup" still works, and one failed
-    /// verification puts a way past it on screen.
+    /// ``verifyRequested`` rather than a locked door — one failed verification puts a way past it
+    /// on screen.
     @State private var remoteUnverified = false
     /// Bumped to ask the transcriber step to run its verification now.
     @State private var verifyRequested = 0
@@ -43,11 +43,14 @@ struct OnboardingView: View {
     /// binding's storage outlives that teardown, so the completion still lands somewhere real
     /// instead of on a discarded copy of a view.
     @State private var downloadRunning = false
+    /// True when Local is selected and the model is not on disk. Continue then goes to ``download``.
+    @State private var downloadNeeded = false
+
 
     /// The size the wizard was designed at. Every step is laid out against it.
     /// Not private: the window scene opens at this size on a first run, so the wizard is never
     /// watched resizing into place.
-    static let card = CGSize(width: 620, height: 580)
+    static let card = CGSize(width: 560, height: 700)
 
     /// Where the wizard had got to, in UserDefaults rather than the settings table: it is progress
     /// through a screen, not something the CLI or an agent has any business reading or setting.
@@ -63,85 +66,74 @@ struct OnboardingView: View {
     }
 
     enum Step: Int, CaseIterable {
-        case welcome, permissions, model, mode, cli
+        case welcome = 0
+        case permissions = 1
+        case model = 2
+        /// New page. Raw 5 so a store that saved `mode` (3) or `cli` (4) still resumes there.
+        case download = 5
+        case mode = 3
+        case cli = 4
 
-        var next: Step? { Step(rawValue: rawValue + 1) }
-        var previous: Step? { Step(rawValue: rawValue - 1) }
+        static let sequence: [Step] = [.welcome, .permissions, .model, .download, .mode, .cli]
+
+        var index: Int { Self.sequence.firstIndex(of: self) ?? 0 }
+
+        var next: Step? {
+            let sequence = Self.sequence
+            guard let i = sequence.firstIndex(of: self), i + 1 < sequence.count else { return nil }
+            return sequence[i + 1]
+        }
+
+        var previous: Step? {
+            let sequence = Self.sequence
+            guard let i = sequence.firstIndex(of: self), i > 0 else { return nil }
+            return sequence[i - 1]
+        }
     }
+
 
     var body: some View {
         VStack(spacing: 0) {
+            GeometryReader { geo in
+                let fraction = CGFloat(step.index) / CGFloat(max(Step.sequence.count - 1, 1))
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color.primary.opacity(0.10))
+                    Capsule()
+                        .fill(Color.accentColor)
+                        .frame(width: max(24, geo.size.width * fraction))
+                        .shadow(color: Color.accentColor.opacity(0.45), radius: 6)
+                }
+            }
+            .frame(height: 4)
+            .padding(.horizontal, 28)
+            .padding(.top, 44)
+
             ScrollView {
-                VStack(alignment: .leading, spacing: 28) {
+                VStack(alignment: .leading, spacing: 8) {
                     Text(title)
-                        // A text style rather than a point size, so the wizard tracks Dynamic Type.
-                        .font(.largeTitle.weight(.bold))
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    content
-                }
-                .padding(.horizontal, 40)
-                .padding(.top, 44)
-                .padding(.bottom, 24)
-            }
-
-            Divider()
-
-            HStack(spacing: 12) {
-                // Skippable at every step, and it says so. A wizard you cannot leave is a wizard
-                // people quit the app to escape. Drawn as a link rather than a caption because grey
-                // plain text is what this app's captions look like, and the one way out of the
-                // wizard has to look like a way out.
-                Button("Skip setup", action: complete)
-                    .buttonStyle(.link)
-                if hold == .unverifiedEndpoint, allowUnverified {
-                    Button("Continue without verifying") {
-                        withAnimation { step = step.next ?? step }
-                    }
-                    .buttonStyle(.link)
-                } else if hold == .downloadRunning {
-                    // A dead Continue with nothing next to it reads as a bug. One line saying what
-                    // it is waiting for turns the same disabled button into a progress report.
-                    Text("Continue once the download finishes.")
-                        .font(.caption)
+                        .font(.system(size: 26, weight: .semibold))
+                    Text(subtitle)
+                        .font(.callout)
                         .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    content
+                        .id(step)
+                        .transition(.opacity)
+                        .padding(.top, 16)
                 }
-                Spacer()
-                // Only once there is something behind you. A Back button greyed out on page one is
-                // a control that spends its first impression telling you it does not work.
-                if let previous = step.previous {
-                    Button("Back") { withAnimation { step = previous } }
-                        .buttonStyle(.bordered)
-                        .controlSize(.large)
-                        .buttonBorderShape(.capsule)
-                        // Nothing here is committed by moving between pages: permissions are
-                        // granted by their own buttons, the download runs where it runs, and the
-                        // mode is a stored setting. Going back re-reads, it does not undo.
-                        .keyboardShortcut("[", modifiers: .command)
-                }
-                Text("\(step.rawValue + 1) of \(Step.allCases.count)")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.tertiary)
-                Button(continueTitle) {
-                    if hold == .unverifiedEndpoint {
-                        allowUnverified = true
-                        verifyRequested += 1
-                    } else if let next = step.next {
-                        withAnimation { step = next }
-                    } else {
-                        complete()
-                    }
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-                .buttonBorderShape(.capsule)
-                .keyboardShortcut(.defaultAction)
-                .disabled(hold == .downloadRunning)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+                .padding(.horizontal, 28)
+                .padding(.top, 20)
+                .padding(.bottom, 12)
             }
-            .padding(.horizontal, 32)
-            .padding(.vertical, 16)
+            .scrollIndicators(.hidden)
+
+            footer
+                .padding(.horizontal, 28)
+                .padding(.bottom, 28)
         }
         .frame(width: Self.card.width, height: Self.card.height)
-        .background(WizardWindowSize(size: Self.card))
+        .background(Color.clear)
         .onAppear {
             if let initialStep, let index = Int(initialStep), let parsed = Step(rawValue: index) {
                 step = parsed
@@ -151,6 +143,46 @@ struct OnboardingView: View {
             UserDefaults.standard.set(moved.rawValue, forKey: Self.stepKey)
         }
     }
+
+    @ViewBuilder
+    private var footer: some View {
+        standardFooter
+    }
+
+    @ViewBuilder
+    private var standardFooter: some View {
+        HStack(spacing: 12) {
+            if hold == .unverifiedEndpoint, allowUnverified {
+                Button("Continue without verifying") {
+                    withAnimation(.easeOut(duration: 0.15)) { step = .mode }
+                }
+                .buttonStyle(.link)
+            } else if hold == .downloadRunning {
+                EmptyView()
+            }
+            Spacer()
+            if let previous = retreatTarget {
+                Button("Back") { withAnimation(.easeOut(duration: 0.15)) { step = previous } }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .keyboardShortcut("[", modifiers: .command)
+            }
+        }
+        Button(action: advance) {
+            Text(continueTitle)
+                .font(.headline)
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 14)
+                .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .background(Color.accentColor, in: .rect(cornerRadius: 12, style: .continuous))
+        .keyboardShortcut(.defaultAction)
+        .disabled(hold == .downloadRunning)
+        .opacity(hold == .downloadRunning ? 0.45 : 1)
+    }
+
 
     /// The two things that can hold Continue, both of them on the transcriber step.
     ///
@@ -170,16 +202,13 @@ struct OnboardingView: View {
     }
 
     private var hold: Hold? {
-        guard step == .model else { return nil }
-        // The download outranks the endpoint deliberately: it is the shorter wait and it has no
-        // escape hatch to offer, which is precisely what stops an in-flight download borrowing one.
-        // When it settles this falls through to the endpoint, so neither hold is lost.
-        if downloadRunning { return .downloadRunning }
-        if remoteUnverified { return .unverifiedEndpoint }
+        if step == .download, downloadRunning { return .downloadRunning }
+        if step == .model, remoteUnverified { return .unverifiedEndpoint }
         return nil
     }
 
     private var continueTitle: String {
+        if hold == .downloadRunning { return "Please wait…" }
         if hold == .unverifiedEndpoint { return "Verify and continue" }
         return step.next == nil ? "Start using Meetings" : "Continue"
     }
@@ -187,10 +216,45 @@ struct OnboardingView: View {
     private var title: String {
         switch step {
         case .welcome: "Welcome to Meetings"
-        case .permissions: "Three things to allow"
-        case .model: "Transcribing your meetings"
-        case .mode: "Who writes it up"
-        case .cli: "Connecting your agent"
+        case .permissions: "Permissions"
+        case .model: "Transcribe"
+        case .download: "Downloading the model"
+        case .mode: "Write-up"
+        case .cli: "Agent"
+        }
+    }
+
+    private var subtitle: String {
+        switch step {
+        case .welcome: "Both sides, on this Mac."
+        case .permissions: "Optional. Asked only when needed."
+        case .model: "Local or cloud."
+        case .download: "\(LocalTranscriber.current.languages). \(LocalTranscriber.current.downloadSizeText)."
+        case .mode: "Your agent, a cloud provider, or manual."
+        case .cli: "Command and skill for your agent."
+        }
+    }
+
+    /// Back from write-up skips the download page unless we actually opened it.
+    private var retreatTarget: Step? {
+        if step == .mode { return downloadNeeded ? .download : .model }
+        return step.previous == .download && !downloadNeeded ? .model : step.previous
+    }
+
+    private func advance() {
+        if hold == .unverifiedEndpoint {
+            allowUnverified = true
+            verifyRequested += 1
+            return
+        }
+        if step == .model {
+            withAnimation(.easeOut(duration: 0.15)) { step = downloadNeeded ? .download : .mode }
+            return
+        }
+        if let next = step.next {
+            withAnimation(.easeOut(duration: 0.15)) { step = next == .download && !downloadNeeded ? .mode : next }
+        } else {
+            complete()
         }
     }
 
@@ -203,11 +267,13 @@ struct OnboardingView: View {
             TranscriberStep(
                 model: model,
                 unverified: $remoteUnverified,
-                downloading: $downloadRunning,
+                downloadNeeded: $downloadNeeded,
                 verifyRequested: verifyRequested
             ) {
-                withAnimation { step = step.next ?? step }
+                withAnimation(.easeOut(duration: 0.15)) { step = downloadNeeded ? .download : .mode }
             }
+        case .download:
+            DownloadStep(model: model, downloading: $downloadRunning)
         case .mode: ModeStep(model: model)
         case .cli: CLIStep()
         }
@@ -215,70 +281,73 @@ struct OnboardingView: View {
 
     private func complete() {
         try? model.store.setSetting(.onboardingCompleted, "true")
-        // Finished or skipped, the resume point is spent. Left behind, "Show the setup guide again"
-        // would open on whichever page the wizard happened to end on.
         UserDefaults.standard.removeObject(forKey: Self.stepKey)
         finish()
-        // Hand the window back the way it was found. The app behind the wizard is not a fixed size
-        // and would otherwise open into the wizard's footprint.
-        DispatchQueue.main.async {
-            guard let window = NSApp.keyWindow ?? NSApp.mainWindow else { return }
-            window.styleMask.insert(.resizable)
-            window.setContentSize(MeetingsApp.defaultWindowSize)
-            window.center()
-        }
     }
 }
 
-/// Holds the window at the wizard's size for as long as the wizard is on screen.
-///
-/// The wizard is a fixed 620×580 and the window is not. On an ordinary window that takes care of
-/// itself — SwiftUI shrinks the frame to the content. Full screen is where it falls apart: the
-/// window cannot shrink, so the wizard ends up a small panel marooned in the middle of the display
-/// with a field of empty background around it. Leaving full screen is the only fix; there is no
-/// size a full-screen window can be.
-private struct WizardWindowSize: NSViewRepresentable {
-    let size: CGSize
+/// OpenLookAway's onboarding window: a raw `NSWindow` whose `contentView` is
+/// `installGlassHost`. SwiftUI `Window` owns a titlebar that paints black on
+/// become-key; this stack does not.
+@MainActor
+final class OnboardingWindowController: NSObject, NSWindowDelegate {
+    static let shared = OnboardingWindowController()
+    static let windowID = "meetings-onboarding"
+    private var window: NSWindow?
+    private var onFinished: (() -> Void)?
+    private var accepted = false
+    /// First-run close quits. Replaying the guide from Settings just dismisses.
+    private var quitOnClose = true
 
-    /// Owns the full-screen observer so it is torn down with the wizard rather than leaked.
-    final class Coordinator {
-        var token: (any NSObjectProtocol)?
-
-        deinit {
-            if let token { NotificationCenter.default.removeObserver(token) }
+    func show(model: AppModel, initialStep: String?, onFinished: @escaping () -> Void) {
+        if window?.isVisible == true {
+            window?.makeKeyAndOrderFront(nil)
+            return
         }
-    }
-
-    func makeCoordinator() -> Coordinator { Coordinator() }
-
-    func makeNSView(context: Context) -> NSView {
-        let probe = NSView(frame: .zero)
-        let coordinator = context.coordinator
-        // The view has no window until it is in the hierarchy, which is one runloop turn away.
-        DispatchQueue.main.async {
-            guard let window = probe.window else { return }
-            guard window.styleMask.contains(.fullScreen) else { return resize(window) }
-
-            // Resizing during the full-screen animation is thrown away, so wait for the window to
-            // actually be back before touching its size.
-            coordinator.token = NotificationCenter.default.addObserver(
-                forName: NSWindow.didExitFullScreenNotification,
-                object: window,
-                queue: .main
-            ) { _ in resize(window) }
-            window.toggleFullScreen(nil)
+        self.onFinished = onFinished
+        accepted = false
+        quitOnClose = (try? model.store.settingBool(.onboardingCompleted)) != true
+        let root = OnboardingView(model: model, initialStep: initialStep) { [weak self] in
+            self?.accept()
         }
-        return probe
-    }
-
-    func updateNSView(_ nsView: NSView, context: Context) {}
-
-    /// Non-resizable while the wizard is up: every step is laid out at exactly this size, and a
-    /// window the user can drag wider than its only content is a window that looks broken.
-    private func resize(_ window: NSWindow) {
-        window.setContentSize(size)
-        window.styleMask.remove(.resizable)
+        let card = OnboardingView.card
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: card.width, height: card.height),
+            styleMask: [.titled, .closable, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "Meetings"
+        window.titleVisibility = .hidden
+        window.identifier = NSUserInterfaceItemIdentifier(Self.windowID)
+        window.isReleasedWhenClosed = false
+        window.installGlassHost(root)
+        window.delegate = self
         window.center()
+        self.window = window
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// Last Continue. Reveal the app first, then close this window.
+    func accept() {
+        guard !accepted else { return }
+        accepted = true
+        let done = onFinished
+        onFinished = nil
+        done?()
+        window?.delegate = nil
+        window?.close()
+        window = nil
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        guard !accepted else { return }
+        onFinished = nil
+        window = nil
+        if quitOnClose {
+            NSApp.terminate(nil)
+        }
     }
 }
 
@@ -311,30 +380,33 @@ private struct FeatureRow: View {
 
 private struct WelcomeStep: View {
     var body: some View {
-        VStack(alignment: .leading, spacing: 24) {
-            FeatureRow(
-                symbol: "waveform.badge.mic",
-                heading: "Records both sides, separately",
-                detail: "Your mic and your Mac's audio are kept as two tracks, so the transcript "
-                    + "can tell you apart from everyone else."
-            )
-            FeatureRow(
-                symbol: "cpu",
-                heading: "Transcribes on this Mac",
-                detail: "As you talk, with no account and nothing uploaded."
-            )
-            FeatureRow(
-                symbol: "square.and.pencil",
-                heading: "Your notes steer the write-up",
-                detail: "Notes you type stick to that moment in the transcript, and the write-up "
-                    + "is built around them."
-            )
-            FeatureRow(
-                symbol: "terminal",
-                heading: "Your own agent writes it",
-                detail: "Meetings has no prompts of its own. It hands the transcript to the agent "
-                    + "you already use."
-            )
+        VStack(alignment: .leading, spacing: 20) {
+            if let icon = NSApp.applicationIconImage {
+                Image(nsImage: icon)
+                    .resizable()
+                    .interpolation(.high)
+                    .frame(width: 72, height: 72)
+                    .clipShape(.rect(cornerRadius: 16, style: .continuous))
+                    .shadow(color: .black.opacity(0.25), radius: 12, y: 6)
+            }
+            VStack(alignment: .leading, spacing: 14) {
+                FeatureRow(
+                    symbol: "waveform",
+                    heading: "Both sides",
+                    detail: "Mic and system audio, one transcript."
+                )
+                FeatureRow(
+                    symbol: "laptopcomputer",
+                    heading: "On this Mac",
+                    detail: "Local by default. Cloud if you want it."
+                )
+                FeatureRow(
+                    symbol: "sparkles",
+                    heading: "Written up",
+                    detail: "Your agent turns the call into notes."
+                )
+            }
+            .padding(.top, 4)
         }
     }
 }
@@ -343,47 +415,21 @@ private struct PermissionsStep: View {
     @State private var statuses: [Permission: PermissionStatus] = [:]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            Text("Meetings asks for nothing until you press one of these buttons, and works "
-                + "without any of them.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
+        VStack(alignment: .leading, spacing: 8) {
             ForEach(Permission.allCases) { permission in
                 PermissionRow(
                     permission: permission,
-                    status: statuses[permission] ?? permission.status
+                    status: statuses[permission] ?? permission.status,
+                    compact: true
                 ) { statuses[permission] = $0 }
                 Divider()
             }
-
-            // Before they grant anything, because "you will be asked for these again after every
-            // update" changes how the next three buttons feel, and finding out a week later does
-            // not.
             if CodeSignature.isAdHoc { AdHocSigningNotice() }
-
-            // A real risk, this one: the OS dialog says "screen recording" for what is
-            // audio-only, and people reasonably refuse it. Explaining it before the dialog appears
-            // is the mitigation, so it keeps its own line rather than becoming a footnote — and the
-            // fact survives the shortening even though the paragraph did not.
-            //
-            // One string literal, not two joined with `+`. A concatenation is an expression, so
-            // SwiftUI never sees a `LocalizedStringKey` and the `**` renders as two literal
-            // asterisks — see `MarkdownLiteralTests`.
-            Label {
-                Text("""
-                    macOS calls system-audio capture **Screen Recording**. Meetings never records \
-                    your screen; that API is the only way Apple gives access to system audio.
-                    """)
-                    .font(.callout)
-                    .fixedSize(horizontal: false, vertical: true)
-            } icon: {
-                Image(systemName: "info.circle.fill")
-                    .foregroundStyle(Color(nsColor: .systemBlue))
-            }
-            .padding(12)
-            .background(.quaternary.opacity(0.4), in: .rect(cornerRadius: 10, style: .continuous))
+            Text("macOS calls system-audio capture **Screen Recording**. Meetings never records your screen.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 4)
         }
         .onAppear { statuses = Permission.snapshot() }
         .refreshingPermissions(into: $statuses)
@@ -402,57 +448,36 @@ private struct TranscriberStep: View {
     /// True while transcription is pointed at a remote endpoint nothing has proved works. Read by
     /// the wizard's footer.
     @Binding var unverified: Bool
-    /// True from the press of Download until it settles. The wizard's footer holds Continue on it.
-    @Binding var downloading: Bool
+    @Binding var downloadNeeded: Bool
     /// A counter the wizard bumps to mean "run the verification now".
     let verifyRequested: Int
     /// Called when a verification passes, so Continue does not need a second press.
     let advance: () -> Void
 
     @State private var engine = TranscriptionEngineChoice.local
-
     @State private var ready: Bool?
-    @State private var progress = 0.0
-    @State private var problem: String?
-
-    /// Bumped when cloud credentials are carried over, to make ``RemoteTranscriptionFields`` read
-    /// the rows again. Its fields load into `@State` once, so without this the carry-over would
-    /// write four correct settings rows and leave four visibly empty boxes on top of them.
     @State private var remoteReload = 0
-    /// Whether anything was actually carried over, so the reassurance is only shown when it is true.
     @State private var carriedOverCredentials = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
-            // Both choices first, then the panel belonging to whichever is selected. The two panels
-            // are different heights and the wizard's scroll viewport is only about 515 pt once the
-            // footer is out, so a card placed *under* the other card's panel began below the bottom
-            // edge — and macOS hides the scrollbar until something scrolls, so it did not read as
-            // below the fold, it read as absent. The step looked like it offered one choice.
-            ModeCard(
-                title: "On this Mac",
-                detail: "Your audio never leaves this Mac. One download, then it works with no "
-                    + "network and no account.",
-                badge: "Recommended",
-                selected: engine == .local
-            ) { select(.local) }
-
-            ModeCard(
-                title: "A transcription service",
-                detail: "Nothing to download. The audio of every meeting is uploaded to a service "
-                    + "you set up, and transcribed there.",
-                badge: nil,
-                selected: engine == .cloud
-            ) { select(.cloud) }
-
-            switch engine {
-            case .local:
-                ConfigurationPanel { localBody }
-            case .cloud:
+            HStack(spacing: 16) {
+                EngineTile(
+                    symbol: "laptopcomputer",
+                    title: "Local",
+                    selected: engine == .local
+                ) { select(.local) }
+                EngineTile(
+                    symbol: "cloud",
+                    title: "Cloud",
+                    selected: engine == .cloud
+                ) { select(.cloud) }
+            }
+            if engine == .cloud {
                 ConfigurationPanel {
                     if carriedOverCredentials {
                         Label(
-                            "Filled in from your write-up provider, so you do not type it twice.",
+                            "Filled from your write-up provider.",
                             systemImage: "checkmark.circle.fill"
                         )
                         .font(.callout)
@@ -474,112 +499,168 @@ private struct TranscriberStep: View {
         .onDisappear { unverified = false }
     }
 
-    // MARK: - On this Mac
-
-    @ViewBuilder
-    private var localBody: some View {
-        switch (ready, downloading) {
-        case (true, _):
-            Label("Ready. Your meetings are transcribed on this Mac.", systemImage: "checkmark.circle.fill")
-                .foregroundStyle(Color(nsColor: .systemGreen))
-                .fixedSize(horizontal: false, vertical: true)
-        case (_, true):
-            ProgressView(value: progress) {
-                Text("Downloading (\(LocalTranscriber.current.downloadSizeText))")
-            } currentValueLabel: {
-                Text(progress.formatted(.percent.precision(.fractionLength(0))))
-                    .monospacedDigit()
-            }
-            .frame(maxWidth: .infinity)
-            Text("This happens once. You can carry on as soon as it finishes.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        default:
-            Button("Download (\(LocalTranscriber.current.downloadSizeText))") { download() }
-                .buttonStyle(.bordered)
-                .controlSize(.large)
-            // The old copy read "you can skip this and still record", which is true and misleading
-            // in the same breath. Recording works; nothing downstream of it does. Someone deciding
-            // whether to wait should be told what they are trading, not reassured.
-            Text("Skip it and you get audio only: no transcript, no search, no write-up. You can "
-                + "download later in Settings.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        if let problem {
-            Text(problem).font(.caption).foregroundStyle(Color(nsColor: .systemRed))
-        }
-    }
-
-    // MARK: -
-
     private func load() async {
         engine = model.store.transcriptionEngine()
         unverified = engine == .cloud
-        // Arriving on a store that is already pointed at a service: carry the credentials over
-        // *before* the fields appear. Doing it only on the card press is too late in that case,
-        // because `RemoteTranscriptionFields.load` fills its own OpenAI defaults on first sight, and
-        // a row that is no longer empty is a row the carry-over will not touch.
         if engine == .cloud { carryOverCloudCredentials() }
         ready = await model.transcription.modelsReady()
-        // Leaving this step tears the view down and takes `progress` with it, while the download
-        // itself carries on. Coming back therefore offered a Download button for a download already
-        // running, and pressing it used to start a second one.
-        //
-        // Rejoining is now the same call: `prepareModels` attaches to the download in flight
-        // rather than starting one, so this needs no separate resume path — and it re-arms the
-        // footer's hold, which is correct, because the download really is still running.
-        if await model.transcription.isPreparingModels { download() }
+        refreshDownloadNeeded()
+        if await model.transcription.isPreparingModels {
+            downloadNeeded = true
+        }
     }
 
     private func select(_ choice: TranscriptionEngineChoice) {
         engine = choice
-        // Choosing the endpoint arms the verification hold; choosing local disarms it. Picking the
-        // service and then changing your mind must not leave Continue held on a verification for an
-        // engine that is no longer selected.
         unverified = choice == .cloud
         try? model.store.setSetting(.transcribeBatchEngine, choice.rawValue)
         if choice == .cloud { carryOverCloudCredentials() }
-        // The service caches the engine it resolved on first use, and that cache outlives this
-        // press. Without dropping it, switching here and recording in the same launch would still
-        // run the previous engine.
         Task {
             await model.transcription.forgetResolvedEngine()
             ready = await model.transcription.modelsReady()
+            refreshDownloadNeeded()
         }
     }
 
-    /// A base URL, model and key set up for the write-up provider describe an account the same
-    /// person almost certainly wants to transcribe with, and typing them a second time into a second
-    /// pane is the single most avoidable set of presses in this window.
-    ///
-    /// Safe to call more than once: the store copies only onto rows that are still empty, so a value
-    /// the user typed here is never replaced, and a second call after the first has filled everything
-    /// copies nothing and reports false.
+    private func refreshDownloadNeeded() {
+        downloadNeeded = engine == .local && ready != true
+    }
+
     private func carryOverCloudCredentials() {
         guard (try? model.store.adoptCloudCredentialsForTranscription()) == true else { return }
         carriedOverCredentials = true
         remoteReload += 1
     }
+}
 
-    private func download() {
+/// Dedicated wait. Auto-starts, and `prepareModels` joins a download already in flight.
+private struct DownloadStep: View {
+    let model: AppModel
+    @Binding var downloading: Bool
+    @State private var progress = 0.0
+    @State private var problem: String?
+
+    var body: some View {
+        VStack(spacing: 28) {
+            DownloadIconTile(progress: progress) {
+                if let icon = NSApp.applicationIconImage {
+                    Image(nsImage: icon)
+                        .resizable()
+                        .interpolation(.high)
+                        .frame(width: 72, height: 72)
+                        .clipShape(.rect(cornerRadius: 16, style: .continuous))
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.top, 40)
+            if let problem {
+                Text(problem).font(.caption).foregroundStyle(Color(nsColor: .systemRed))
+            }
+        }
+        .task { start() }
+    }
+
+    private func start() {
         downloading = true
         problem = nil
+        progress = 0
         Task {
             do {
                 try await model.transcription.prepareModels { value in
-                    Task { @MainActor in progress = value }
+                    Task { @MainActor in progress = max(progress, value) }
                 }
-                ready = await model.transcription.modelsReady()
+                progress = 1
             } catch {
                 problem = "The download failed: \(error.localizedDescription)"
             }
-            // Released on failure as well as success. A hold that outlived a failed download would
-            // leave Continue dead with an error message beside it and no way forward at all.
             downloading = false
         }
+    }
+}
+
+/// App Store download: dim icon, pie wipe restores full colour.
+private struct DownloadIconTile<Content: View>: View {
+    let progress: Double
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: 26, style: .continuous)
+        ZStack {
+            content
+                .saturation(0.2)
+                .opacity(0.35)
+            content
+                .mask(PieReveal(progress: progress))
+        }
+        .frame(width: 108, height: 108)
+        .background(Color.primary.opacity(0.08), in: shape)
+        .overlay(shape.strokeBorder(Color.primary.opacity(0.12), lineWidth: 1))
+        .overlay {
+            Circle()
+                .trim(from: 0, to: max(0.001, min(progress, 1)))
+                .stroke(Color.white.opacity(0.85), style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+                .padding(10)
+                .opacity(progress < 1 ? 1 : 0)
+        }
+        .shadow(color: .black.opacity(0.28), radius: 18, y: 10)
+    }
+}
+
+private struct PieReveal: Shape {
+    var progress: Double
+
+    var animatableData: Double {
+        get { progress }
+        set { progress = newValue }
+    }
+
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        let center = CGPoint(x: rect.midX, y: rect.midY)
+        path.move(to: center)
+        path.addArc(
+            center: center,
+            radius: hypot(rect.width, rect.height),
+            startAngle: .degrees(-90),
+            endAngle: .degrees(-90 + 360 * max(0, min(progress, 1))),
+            clockwise: false
+        )
+        path.closeSubpath()
+        return path
+    }
+}
+
+private struct EngineTile: View {
+    let symbol: String
+    let title: String
+    let selected: Bool
+    let select: () -> Void
+
+    var body: some View {
+        Button(action: select) {
+            VStack(spacing: 14) {
+                Image(systemName: symbol)
+                    .font(.system(size: 36, weight: .light))
+                    .foregroundStyle(selected ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+                Text(title)
+                    .font(.headline)
+                    .foregroundStyle(selected ? .primary : .secondary)
+            }
+            .frame(maxWidth: .infinity, minHeight: 148)
+            .background(
+                selected ? Color.accentColor.opacity(0.12) : Color.primary.opacity(0.04),
+                in: .rect(cornerRadius: 16, style: .continuous)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .strokeBorder(
+                        selected ? Color.accentColor.opacity(0.85) : Color.primary.opacity(0.08),
+                        lineWidth: selected ? 1.5 : 1
+                    )
+            )
+        }
+        .buttonStyle(.plain)
     }
 }
 
@@ -623,8 +704,7 @@ private struct ModeStep: View {
             // on their own machine.
             ModeCard(
                 title: "Your agent, automatically",
-                detail: "Meetings runs your agent as soon as a meeting is transcribed, without "
-                    + "asking. Whether the transcript leaves this Mac depends on the command you set.",
+                detail: "Runs after each meeting. Depends on the command you set.",
                 badge: "Recommended",
                 selected: mode == .localAgent
             ) { select(.localAgent) }
@@ -643,16 +723,14 @@ private struct ModeStep: View {
 
             ModeCard(
                 title: "Only when you ask",
-                detail: "Nothing runs on its own. Finished meetings wait under Needs write-up until "
-                    + "you hand one to your agent yourself.",
+                detail: "Finished meetings wait under Needs write-up.",
                 badge: nil,
                 selected: mode == .manual
             ) { select(.manual) }
 
             ModeCard(
                 title: "A cloud provider",
-                detail: "A provider you set up writes it. Your transcript and notes are sent "
-                    + "to them.",
+                detail: "Transcript and notes are sent to them.",
                 badge: nil,
                 selected: mode == .cloud
             ) { select(.cloud) }
@@ -831,16 +909,13 @@ private struct CLIStep: View {
             FeatureRow(
                 symbol: "link",
                 heading: "The meetings command",
-                detail: "Installs the command inside Meetings.app, where your agent can find it "
-                    + "and reach your meetings from any terminal."
+                detail: "Where your agent can find it."
             )
             FeatureRow(
                 symbol: "sparkles",
                 heading: "A skill for your agent",
-                detail: "Installed on launch, so \"add some notes to my call with Will tomorrow\" "
-                    + "works straight away."
+                detail: "Installed on launch."
             )
-
             VStack(alignment: .leading, spacing: 10) {
                 Label(status.label, systemImage: isInstalled ? "checkmark.circle.fill" : "circle.dashed")
                     .foregroundStyle(isInstalled ? AnyShapeStyle(Color(nsColor: .systemGreen)) : AnyShapeStyle(.secondary))
@@ -869,7 +944,7 @@ private struct CLIStep: View {
                 }
                 if skillTargets.isEmpty {
                     Label(
-                        "No agent found on this Mac yet, so there is nowhere to put the skill.",
+                        "No agent found on this Mac yet.",
                         systemImage: "circle.dashed"
                     )
                     .foregroundStyle(.secondary)

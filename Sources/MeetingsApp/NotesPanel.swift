@@ -216,7 +216,7 @@ struct NotesPanelView: View {
                 Image(systemName: "pip.exit")
             }
             .buttonStyle(.borderless)
-            .help("Put these notes back in the window")
+            .help("Return notes to window")
         }
     }
 
@@ -234,7 +234,7 @@ struct NotesPanelView: View {
                     }
                 }
             } else {
-                hint("Pick a meeting in the main window and its pre-notes appear here.")
+                hint("Select a meeting to view pre-notes.")
             }
         case .liveNotes:
             // A live note is stamped with the recording clock, and with nothing recording that clock
@@ -253,10 +253,7 @@ struct NotesPanelView: View {
                     model.addLiveNote(text, to: meeting)
                 }
             } else {
-                hint("""
-                    Live notes are stamped with the recording clock, so they start when the \
-                    recording does. Press Start recording and type here.
-                    """)
+                hint("Start recording to take timestamped live notes.")
             }
         }
     }
@@ -396,7 +393,7 @@ struct PopOutButton: View {
             Image(systemName: "pip.enter")
         }
         .buttonStyle(.borderless)
-        .help("Float these notes above your other apps")
+        .help("Float notes above other windows")
     }
 }
 
@@ -411,11 +408,11 @@ struct DetachedNotesNotice: View {
             Image(systemName: "macwindow.on.rectangle")
                 .font(.system(size: 26, weight: .light))
                 .foregroundStyle(.tertiary)
-            Text("Your \(tab.phrase) are in the floating panel")
+            Text("\(tab.label) are in the floating panel")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
-            Button("Bring them back", action: bringBack)
+            Button("Return to window", action: bringBack)
         }
         .padding(20)
         .frame(maxWidth: .infinity, maxHeight: .infinity)

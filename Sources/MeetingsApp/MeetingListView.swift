@@ -22,12 +22,15 @@ struct MeetingListView: View {
         // one line of metadata, both already truncated to one line, so 200 pt costs it far less
         // than 185 pt costs the thing you are actually reading.
         .navigationSplitViewColumnWidth(min: 200, ideal: 300, max: 420)
+        .scrollContentBackground(.hidden)
+        .background(.clear)
+        .columnTrailingHairline()
     }
 
     @ViewBuilder
     private var meetings: some View {
         if !model.loaded {
-            LoadingStateView(message: "Reading your meetings…")
+            LoadingStateView(message: "Loading meetings…")
         } else if model.meetings.isEmpty {
             EmptyStateView(
                 symbol: model.scope.symbol,
@@ -70,7 +73,12 @@ struct MeetingListView: View {
                     }
                 }
             }
+            .scrollContentBackground(.hidden)
             .listStyle(.inset)
+            // Section separators are full-bleed and heavier than the inset row hairlines — they
+            // read as a weight change under "Today". One tint, rows only.
+            .listSectionSeparator(.hidden)
+            .listRowSeparatorTint(Color.primary.opacity(0.14))
             .transcriptIssueLegend(shownWhen: model.meetings.contains {
                 model.meetingsWithTranscriptIssues.contains($0.id)
             })
@@ -80,14 +88,14 @@ struct MeetingListView: View {
     @ViewBuilder
     private var upcoming: some View {
         if !model.upcomingLoaded {
-            LoadingStateView(message: "Reading your calendar…")
+            LoadingStateView(message: "Loading calendar…")
         } else if model.calendarAuthorization != .authorized {
             EmptyStateView(
                 symbol: "calendar.badge.exclamationmark",
                 title: "Calendar access is off",
                 // No written-out path: the button below opens the exact pane, so spelling out how
                 // to walk there by hand is instructions for the thing the button already does.
-                message: "Meetings reads your Apple Calendar to show what is coming up.",
+                message: "Allow calendar access to show upcoming meetings.",
                 actionTitle: "Open System Settings",
                 action: {
                     if let url = Permission.calendar.settingsURL { NSWorkspace.shared.open(url) }
@@ -100,8 +108,7 @@ struct MeetingListView: View {
                 // Keeps the fact that does the work. Without it, a full calendar showing an empty
                 // list reads as a bug rather than as the filter doing its job. The window is a
                 // setting now, so the sentence no longer names seven days.
-                message: "Upcoming only lists events with a meeting link. You can still record a "
-                    + "meeting that was never in the calendar."
+                message: "Only events with meeting links appear here."
             )
         } else {
             List(selection: $model.selection) {
@@ -128,6 +135,9 @@ struct MeetingListView: View {
                 }
             }
             .listStyle(.inset)
+            .scrollContentBackground(.hidden)
+            .listSectionSeparator(.hidden)
+            .listRowSeparatorTint(Color.primary.opacity(0.14))
         }
     }
 
@@ -154,7 +164,7 @@ struct MeetingListView: View {
 
     private var emptyTitle: String {
         switch model.scope {
-        case .needsWriteUp: "Nothing is waiting on you"
+        case .needsWriteUp: "No meetings waiting"
         case .unfiled: "No unfiled meetings"
         case .folder: "This folder is empty"
         default: "No meetings yet"
@@ -164,11 +174,11 @@ struct MeetingListView: View {
     private var emptyMessage: String {
         switch model.scope {
         case .needsWriteUp:
-            "Every transcribed meeting has been written up."
+            "All transcribed meetings have been written up."
         case .unfiled:
-            "Meetings that do not belong to a folder collect here."
+            "Unfiled meetings collect here."
         case .folder:
-            "Drag a meeting onto this folder in the sidebar to file it here."
+            "Drag a meeting onto this folder to file it here."
         default:
             "Start a meeting and it appears here."
         }

@@ -102,18 +102,18 @@ public actor TranscriptionService {
     /// The guard is here rather than in the button that was pressed twice, because the button is not
     /// the only caller: Settings has one, and the batch pass prepares models on demand too.
     public func prepareModels(progress: @Sendable @escaping (Double) -> Void) async throws {
-        let observer = UUID()
-        progressObservers[observer] = progress
-        // A joiner is told where the download actually is before it waits, so arriving at 40% does
-        // not draw an empty bar until the next tick.
-        progress(lastProgress)
-        defer { progressObservers[observer] = nil }
-
         if preparation == nil {
             lastProgress = 0
             let id = UUID()
             preparation = (id, Task { try await self.runPreparation() })
         }
+        let observer = UUID()
+        progressObservers[observer] = progress
+        // A joiner is told where the download actually is before it waits, so arriving at 40% does
+        // not draw an empty bar until the next tick. A new run starts at 0 — never a leftover 1.0.
+        progress(lastProgress)
+        defer { progressObservers[observer] = nil }
+
         guard let current = preparation else { return }
 
         do {

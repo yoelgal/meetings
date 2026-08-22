@@ -818,8 +818,8 @@ final class AppModel {
 
     // MARK: - Actions
 
-    /// A meeting that is not on the calendar: the row is created, selected, and recording starts.
-    /// Without this nothing can be recorded at all.
+    /// A meeting that is not on the calendar: the row is created and selected. Recording starts
+    /// only when the user presses Start recording.
     func startAdHocMeeting() async {
         let now = Date()
         let meeting = Meeting(
@@ -838,13 +838,6 @@ final class AppModel {
         }
         refresh()
         selection = meeting.id
-        guard await startRecording(meetingID: meeting.id) else {
-            // Nothing was captured, so leave no half-meeting behind for the user to clean up.
-            _ = try? store.deleteMeeting(id: meeting.id)
-            selection = nil
-            refresh()
-            return
-        }
     }
 
     @discardableResult
