@@ -123,7 +123,7 @@ struct ImportSheet: View {
         case .local:
             "The audio is copied into Meetings and transcribed on this Mac."
         case .cloud:
-            "Audio is uploaded to your configured transcription service. Notes, search, and write-ups stay on this Mac."
+            "Audio is uploaded — the recording leaves it. Notes, search, and write-ups stay on this Mac."
         }
     }
 }
