@@ -910,7 +910,8 @@ private struct VocabularySettings: View {
                     .foregroundStyle(.secondary)
                 }
                 TableColumn("") { term in
-                    HStack(spacing: 4) {
+                    // 12, not 4: at 4 the two borderless labels read as one phrase, "Disable Remove".
+                    HStack(spacing: 12) {
                         Button(term.enabled ? "Disable" : "Enable") {
                             guard let id = term.id else { return }
                             _ = try? model.store.setVocabularyEnabled(id: id, !term.enabled)
@@ -920,7 +921,7 @@ private struct VocabularySettings: View {
                         // outright with no undo, and it sits a few pixels from Disable, which only
                         // parks it — an unlabelled icon beside a labelled one is how somebody
                         // meaning to disable a term destroys it instead.
-                        Button("Remove") {
+                        Button("Remove", role: .destructive) {
                             guard let id = term.id else { return }
                             _ = try? model.store.deleteVocabularyTerm(id: id)
                             reload()
