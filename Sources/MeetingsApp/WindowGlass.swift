@@ -42,13 +42,22 @@ struct WindowGlass: NSViewRepresentable {
 
 extension View {
     func windowGlass(titleVisible: Bool = true) -> some View {
-        containerBackground(for: .window) {
-            ZStack {
-                Rectangle().fill(Material.regular.materialActiveAppearance(.active))
-                Color.black.opacity(0.32)
-            }
+        containerBackground(for: .window) { WindowFrost() }
+            .background(WindowGlass(titleVisible: titleVisible))
+    }
+}
+
+/// The frost itself. The dimming layer is for dark mode only: the same 32% black over the light
+/// material turned every pane a flat mid-grey (~#9E9E9E) with dark text on it — the light window
+/// read as a disabled one.
+private struct WindowFrost: View {
+    @Environment(\.colorScheme) private var scheme
+
+    var body: some View {
+        ZStack {
+            Rectangle().fill(Material.regular.materialActiveAppearance(.active))
+            if scheme == .dark { Color.black.opacity(0.32) }
         }
-        .background(WindowGlass(titleVisible: titleVisible))
     }
 }
 
