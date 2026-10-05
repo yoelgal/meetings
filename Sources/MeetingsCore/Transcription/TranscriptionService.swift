@@ -776,7 +776,6 @@ public actor TranscriptionService {
 
 public enum TranscriptionError: Error, CustomStringConvertible {
     case notImplemented
-    case modelsUnavailable(String)
     case unreadableAudio(URL, String)
     case noAudio(String)
     case remoteFailed(String)
@@ -784,7 +783,6 @@ public enum TranscriptionError: Error, CustomStringConvertible {
     public var description: String {
         switch self {
         case .notImplemented: "transcription is not wired up yet"
-        case .modelsUnavailable(let why): "transcription models unavailable: \(why)"
         case .unreadableAudio(let url, let why): "unreadable audio \(url.lastPathComponent): \(why)"
         case .noAudio(let id): "meeting \(id) has no audio to transcribe"
         case .remoteFailed(let why): "remote transcription failed: \(why)"

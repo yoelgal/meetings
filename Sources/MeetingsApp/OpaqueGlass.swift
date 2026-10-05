@@ -1,26 +1,6 @@
 import AppKit
 import SwiftUI
 
-struct OpaqueGlass: NSViewRepresentable {
-    var material: NSVisualEffectView.Material = .underWindowBackground
-
-    func makeNSView(context: Context) -> NSVisualEffectView {
-        let view = NSVisualEffectView()
-        view.material = material
-        view.blendingMode = .behindWindow
-        view.state = .active
-        view.isEmphasized = true
-        return view
-    }
-
-    func updateNSView(_ view: NSVisualEffectView, context: Context) {
-        view.material = material
-        view.blendingMode = .behindWindow
-        view.state = .active
-        view.isEmphasized = true
-    }
-}
-
 extension NSWindow {
     func installGlassHost<Content: View>(
         _ root: Content,
