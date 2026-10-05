@@ -25,3 +25,17 @@ public enum VocabSource: String, Codable, Sendable, CaseIterable {
 public enum MeetingSource: String, Codable, Sendable, CaseIterable {
     case recorded, imported
 }
+
+extension Channel {
+    /// mic is whoever is sitting at this Mac; system is everything coming out of the speakers.
+    ///
+    /// The transcript is read by an agent asked things like "what did I commit to", so the label has
+    /// to name the *speaker*, not the plumbing: `mic:` and `system:` describe where the audio came
+    /// from and leave the agent to guess which one is the user.
+    public var speakerLabel: String {
+        switch self {
+        case .mic: "You"
+        case .system: "Others"
+        }
+    }
+}

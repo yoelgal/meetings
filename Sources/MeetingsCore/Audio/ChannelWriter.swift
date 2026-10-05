@@ -78,7 +78,7 @@ final class ChannelWriter: @unchecked Sendable {
     }
 
     /// 16-bit LE PCM. `AVAudioFile` quantises the Float32 buffers we hand it on the way in.
-    private static var wavSettings: [String: Any] {
+    static var wavSettings: [String: Any] {
         [
             AVFormatIDKey: kAudioFormatLinearPCM,
             AVSampleRateKey: 16_000.0,

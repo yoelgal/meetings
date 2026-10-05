@@ -70,7 +70,7 @@ public enum CloudPrompt {
         }
         if !segments.isEmpty {
             parts.append("## Transcript\n" + segments
-                .map { "[\(clock($0.tStartMs))] \($0.channel == .mic ? "You" : "Others"): \($0.text)" }
+                .map { "[\(clock($0.tStartMs))] \($0.channel.speakerLabel): \($0.text)" }
                 .joined(separator: "\n"))
         }
         return parts.joined(separator: "\n\n")

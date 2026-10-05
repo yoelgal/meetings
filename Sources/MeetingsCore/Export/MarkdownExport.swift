@@ -118,7 +118,7 @@ public enum MarkdownExport {
     private static func transcriptMarkdown(_ meeting: Meeting, segments: [TranscriptSegment]) -> String? {
         guard !segments.isEmpty else { return nil }
         let lines = segments.map { segment in
-            "**\(timestamp(segment.tStartMs))** \(label(segment.channel)): \(oneLine(segment.text))"
+            "**\(timestamp(segment.tStartMs))** \(segment.channel.speakerLabel): \(oneLine(segment.text))"
         }
         return "# \(meeting.title): transcript\n\n" + lines.joined(separator: "\n\n") + "\n"
     }
@@ -138,16 +138,9 @@ public enum MarkdownExport {
 
     // MARK: -
 
-    /// mic is whoever is at this Mac, system is everything else in the call. The markdown
-    /// says who spoke, not which device heard them.
-    private static func label(_ channel: Channel) -> String {
-        switch channel {
-        case .mic: "You"
-        case .system: "Others"
-        }
-    }
-
-    static func timestamp(_ ms: Int) -> String {
+    /// `m:ss`, or `h:mm:ss` past an hour. The one transcript-offset format: the CLI prints the same,
+    /// so a timestamp read in one place can be passed back in another.
+    public static func timestamp(_ ms: Int) -> String {
         let seconds = max(0, ms) / 1000
         if seconds >= 3600 {
             return String(format: "%d:%02d:%02d", seconds / 3600, (seconds % 3600) / 60, seconds % 60)
