@@ -513,7 +513,9 @@ private struct MeetingChips: View {
     private static let inlineAttendees = 2
 
     var body: some View {
-        HStack(spacing: 6) {
+        // Wrapping, not an HStack: in a narrow window an HStack squeezed every chip to "3 O…",
+        // "10:…", "Dan…" — all of them present, none of them readable.
+        ChipFlow(spacing: 6) {
             if let date = meeting.sortDate {
                 chip(Format.detailDate(date))
                 chip(Format.timeOfDay(date))
@@ -535,7 +537,6 @@ private struct MeetingChips: View {
                 chip("+\(meeting.attendees.count - Self.inlineAttendees) more")
             }
             folderChip
-            Spacer(minLength: 0)
         }
         .font(.caption)
         .foregroundStyle(.secondary)
@@ -576,6 +577,49 @@ private struct MeetingChips: View {
         .padding(.vertical, 3)
         .overlay(Capsule().strokeBorder(.separator))
         .contentShape(.capsule)
+        .fixedSize()
+    }
+}
+
+/// Left-to-right rows that wrap, each child at its ideal size. The one place chips run longer than
+/// a narrow detail column is wide.
+private struct ChipFlow: Layout {
+    var spacing: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let rows = arrange(width: proposal.width ?? .infinity, subviews)
+        let width = rows.map(\.width).max() ?? 0
+        let height = rows.map(\.height).reduce(0, +) + spacing * CGFloat(max(rows.count - 1, 0))
+        return CGSize(width: width, height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var y = bounds.minY
+        for row in arrange(width: bounds.width, subviews) {
+            var x = bounds.minX
+            for index in row.items {
+                let size = subviews[index].sizeThatFits(.unspecified)
+                subviews[index].place(
+                    at: CGPoint(x: x, y: y + (row.height - size.height) / 2), proposal: .unspecified)
+                x += size.width + spacing
+            }
+            y += row.height + spacing
+        }
+    }
+
+    private func arrange(width: CGFloat, _ subviews: Subviews) -> [(items: [Int], width: CGFloat, height: CGFloat)] {
+        var rows: [(items: [Int], width: CGFloat, height: CGFloat)] = []
+        for (index, subview) in subviews.enumerated() {
+            let size = subview.sizeThatFits(.unspecified)
+            if let last = rows.last, last.width + spacing + size.width <= width {
+                rows[rows.count - 1].items.append(index)
+                rows[rows.count - 1].width += spacing + size.width
+                rows[rows.count - 1].height = max(last.height, size.height)
+            } else {
+                rows.append(([index], size.width, size.height))
+            }
+        }
+        return rows
     }
 }
 
