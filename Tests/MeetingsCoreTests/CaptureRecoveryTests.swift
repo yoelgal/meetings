@@ -187,3 +187,22 @@ struct CaptureRecoveryTests {
         }
     }
 }
+
+@Suite("Live transcript with holes")
+struct LiveIncompleteTests {
+    @Test("discarding a channel's live rows keeps corrections and the other channel")
+    func discardKeepsCorrectionsAndOtherChannel() throws {
+        let directory = try TestStore.makeDirectory()
+        defer { TestStore.remove(directory) }
+        let store = try TestStore.open(directory)
+        let meeting = try store.createMeeting(TestStore.meeting(state: .recording))
+        try store.insertSegments([
+            TestStore.segment(meetingID: meeting.id, channel: .mic, from: 0, to: 1_000, text: "lost"),
+            TestStore.segment(
+                meetingID: meeting.id, channel: .mic, from: 1_000, to: 2_000, text: "mine", edited: true),
+            TestStore.segment(meetingID: meeting.id, channel: .system, from: 0, to: 1_000, text: "theirs"),
+        ])
+        try store.discardLiveSegments(meetingID: meeting.id, channel: .mic)
+        #expect(try store.segments(meetingID: meeting.id).map(\.text).sorted() == ["mine", "theirs"])
+    }
+}

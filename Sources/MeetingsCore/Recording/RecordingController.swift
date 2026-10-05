@@ -103,6 +103,10 @@ public final class RecordingController {
     /// The system track's silence is stored once per recording — the first time is the one worth
     /// knowing afterwards. Separate from `reportedCaptureFailures` so it cannot mask a full disk.
     private var systemSilenceRecorded = false
+    /// Channels whose live transcript lost text this session — a segment that would not save, a
+    /// feed the recogniser rejected. With the local engine the live rows *are* the final
+    /// transcript, so a channel with holes is handed to the batch pass whole instead.
+    private var liveIncomplete: Set<Channel> = []
     private var systemWatch = SystemAudioWatch()
     /// When the system track's capture was last asked whether anything is playing. The question is
     /// a Core Audio walk of every process, so it is asked once a second, not on every tick.
@@ -160,6 +164,7 @@ public final class RecordingController {
         lastFailureRetry = nil
         systemSilenceRecorded = false
         systemLostAtMs = nil
+        liveIncomplete = []
         systemAudioLost = nil
         systemWatch = SystemAudioWatch()
         lastPlaybackCheck = nil
@@ -341,6 +346,9 @@ public final class RecordingController {
         // Before the batch pass, not after: it deletes the live rows, so anything still in flight
         // would be written back seconds later and outlive the transcript that replaced it.
         await stopLiveTranscription()
+        for channel in liveIncomplete {
+            try? store.discardLiveSegments(meetingID: meetingID, channel: channel)
+        }
         if let audioDirectory { auditCapturedAudio(meetingID: meetingID, in: audioDirectory) }
 
         do {
@@ -430,6 +438,9 @@ public final class RecordingController {
         let report: @Sendable (Error) -> Void = { [weak self] error in
             Task { @MainActor in self?.noteLiveUnavailable(error) }
         }
+        let lostText: @Sendable () -> Void = { [weak self] in
+            Task { @MainActor in self?.liveIncomplete.insert(channel) }
+        }
         let pump = Task.detached {
             do {
                 try await transcriber.start(channel: channel)
@@ -440,7 +451,7 @@ public final class RecordingController {
                 return
             }
             for await (chunk, atMs) in samples {
-                try? await transcriber.feed(chunk, atMs: atMs)
+                do { try await transcriber.feed(chunk, atMs: atMs) } catch { lostText() }
             }
         }
         live[channel] = LiveChannel(transcriber: transcriber, feed: feed, pump: pump, sink: sink)
@@ -500,7 +511,10 @@ public final class RecordingController {
             tEndMs: segment.endMs,
             text: segment.text,
             pass: .live
-        )) else { return }
+        )) else {
+            liveIncomplete.insert(channel)
+            return
+        }
         liveSegments.append(row)
     }
 

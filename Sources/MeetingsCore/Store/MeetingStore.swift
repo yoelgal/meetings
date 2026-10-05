@@ -421,6 +421,21 @@ public final class MeetingStore: Sendable {
         return updated
     }
 
+    /// Drops one channel's machine-written live rows, so the batch pass transcribes that channel
+    /// from its file instead of promoting a live transcript known to have holes in it. Corrections
+    /// are kept: they are the user's text.
+    public func discardLiveSegments(meetingID: String, channel: Channel) throws {
+        try dbPool.write { db in
+            try db.execute(
+                sql: """
+                    DELETE FROM transcript_segments
+                    WHERE meeting_id = ? AND channel = ? AND pass = 'live' AND edited = 0
+                    """,
+                arguments: [meetingID, channel.rawValue])
+        }
+        StoreChange.post(storePath: dbPool.path, meetingID: meetingID)
+    }
+
     /// Ordered by start offset, both channels interleaved unless one is asked for. Ties break on
     /// `id`, so mic and system segments that begin on the same millisecond keep a stable order.
     public func segments(meetingID: String, channel: Channel? = nil) throws -> [TranscriptSegment] {
