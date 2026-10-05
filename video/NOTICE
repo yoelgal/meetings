@@ -1,0 +1,60 @@
+Third-party terms for the product demo in this directory.
+
+Meetings itself is MIT (see ../LICENSE). Nothing here changes that, and nothing here is linked into
+the app or the CLI — this directory builds a marketing video and is not part of the product.
+
+Remotion — video/film
+---------------------
+video/film is a Remotion project. **Remotion is not open source.** It is source-available under the
+licence in its own repository (remotion-dev/remotion, LICENSE.md), which grants free use to:
+
+  - an individual
+  - a for-profit organisation with up to 3 employees
+  - a non-profit or not-for-profit organisation
+  - anyone evaluating Remotion and not yet using it commercially
+
+Everyone else needs a paid Company Licence from remotion.pro, including for a marketing video.
+
+What that means in practice for this repository:
+
+  - The rendered film is unencumbered. The licence constrains who may *run* Remotion, not what may be
+    done with its output.
+  - Anyone who clones this repository and runs `video/film` must check their own eligibility. A
+    contributor at a company with more than three employees needs a Company Licence to render, even
+    though the rest of the repository is MIT.
+  - Remotion 5.0 tightens the count: contractors will also count toward team size.
+  - The `@remotion/*` scope is mixed. `shapes`, `paths`, `motion-blur`, `media-utils`,
+    `animation-utils` and `transitions` are MIT; `remotion`, `@remotion/cli`, `@remotion/renderer`,
+    `@remotion/player` and `@remotion/fonts` are under the Remotion licence.
+
+Nothing in the film pipeline is required to build, test, install or run Meetings.
+
+Fonts
+-----
+Inter — SIL Open Font License 1.1, via @fontsource-variable/inter. The only typeface embedded in the
+rendered demo, which the OFL permits.
+
+**San Francisco is deliberately not used for any rendered type here.** SF Pro is installed on every Mac
+and would be the obvious choice, and the Apple San Francisco Font License (EA1370) grants use "solely
+for creating mock-ups of user interfaces" and expressly forbids using the font to "create, develop,
+display or otherwise distribute any documentation, artwork, website content or any other work product".
+A demo video is a work product, so every caption and keystroke pill here is Inter.
+
+San Francisco does appear in the demo, inside every screenshot and screen recording of the app. That is
+macOS drawing its own interface with its own copy of its own font, which is what the licence is for.
+
+Cap — parameters only
+---------------------
+The Loom-style camera in video/film/src/loom reproduces the motion language of Cap
+(github.com/CapSoftware/Cap), whose core is **AGPL-3.0**. Its published constants were read and used as
+facts — the 2.0x zoom amount, the -300/+2500 ms segment around a click, the 2500 ms merge gap, the
+spring coefficients, the 130 ms click punch, the keystroke-pill geometry. **No Cap code was copied.**
+The spring solver here is the closed-form solution of a damped harmonic oscillator, written from the
+standard result; the zoom law is a fresh implementation of the documented behaviour.
+
+No Cap binary or source is vendored, invoked or distributed by this repository.
+
+ffmpeg
+------
+Invoked by video/shoot.sh for frame extraction and inspection, and bundled by Remotion for encoding.
+Never linked. Homebrew's build is GPL-configured; calling a program is not linking to it.
