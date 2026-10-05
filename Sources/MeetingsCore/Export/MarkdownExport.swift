@@ -147,7 +147,7 @@ public enum MarkdownExport {
         }
     }
 
-    private static func timestamp(_ ms: Int) -> String {
+    static func timestamp(_ ms: Int) -> String {
         let seconds = max(0, ms) / 1000
         if seconds >= 3600 {
             return String(format: "%d:%02d:%02d", seconds / 3600, (seconds % 3600) / 60, seconds % 60)

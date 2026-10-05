@@ -75,6 +75,13 @@ public final class RecordingController {
     /// The last mic frame count the tick saw, and when it last changed. The mic stalling is how a
     /// device being unplugged looks from here.
     private var micProgress: (frames: Int64, at: Date)?
+    /// Where on the recording clock the mic stopped, while it is stopped. The mic rebuilds itself
+    /// on a route change, so a stall is now usually a gap rather than the end of the track.
+    private var micStalledAtMs: Int?
+    private var micStallWarning: String?
+    /// The system track's silence is stored once per recording — the first time is the one worth
+    /// knowing afterwards. Separate from `reportedCaptureFailures` so it cannot mask a full disk.
+    private var systemSilenceRecorded = false
     private var systemWatch = SystemAudioWatch()
     /// When the system track's capture was last asked whether anything is playing. The question is
     /// a Core Audio walk of every process, so it is asked once a second, not on every tick.
@@ -125,6 +132,9 @@ public final class RecordingController {
         captureWriteFailure = nil
         reportedCaptureFailures = []
         micProgress = nil
+        micStalledAtMs = nil
+        micStallWarning = nil
+        systemSilenceRecorded = false
         systemAudioLost = nil
         systemWatch = SystemAudioWatch()
         lastPlaybackCheck = nil
@@ -538,15 +548,12 @@ public final class RecordingController {
             Task { [system] in await system.restart(because: reason) }
         case .warn:
             systemAudioLost = Self.systemSilentReason
-            FileHandle.standardError.write(Data("Meetings: system capture: \(Self.systemSilentReason)\n".utf8))
             // Stored once: the first time is the one worth knowing about afterwards.
-            if let meetingID, reportedCaptureFailures.insert(.system).inserted {
-                let seconds = elapsedMs / 1000
-                let at = String(format: "%d:%02d", seconds / 60, seconds % 60)
-                try? store.recordTranscriptIssue(TranscriptIssue(
-                    meetingID: meetingID, channel: .system, kind: .capture,
-                    reason: "system audio went silent at \(at) while another app was playing "
-                        + "sound, so part of the other side of this meeting may be missing."))
+            if !systemSilenceRecorded {
+                systemSilenceRecorded = true
+                recordCaptureIssue(.system, "system audio went silent at "
+                    + "\(MarkdownExport.timestamp(elapsedMs)) while another app was playing sound, "
+                    + "so part of the other side of this meeting may be missing.")
             }
         case .clear:
             systemAudioLost = nil
@@ -634,13 +641,30 @@ public final class RecordingController {
     ///
     /// Mic only. The system track legitimately has nothing to deliver when nothing is playing, and
     /// a warning that fires on every in-person meeting is one nobody reads by the time it is true.
+    ///
+    /// A stall is told live and stored; if the mic comes back — it rebuilds itself on a route
+    /// change — the live warning clears and the stored issue is rewritten to name the gap, because
+    /// "nothing more was recorded" would then be false.
     private func noteStalledMic() {
-        guard case .recording = phase, !reportedCaptureFailures.contains(.mic) else { return }
-        guard Self.hasStalled(frames: mic.framesWritten, progress: &micProgress, now: Date())
-        else { return }
-        report(.mic, "the microphone stopped delivering audio, so nothing more was recorded on "
-            + "this channel. The usual cause is the input device changing or being unplugged "
-            + "mid-meeting. Everything recorded up to that point is safe.")
+        guard case .recording = phase else { return }
+        let stalled = Self.hasStalled(frames: mic.framesWritten, progress: &micProgress, now: Date())
+        if stalled, micStalledAtMs == nil {
+            let at = max(0, elapsedMs - Int(Self.captureStallSeconds * 1000))
+            micStalledAtMs = at
+            let reason = "the microphone stopped delivering audio at \(MarkdownExport.timestamp(at)). "
+                + "The usual cause is the input device changing or being unplugged mid-meeting. "
+                + "Meetings keeps trying to reconnect it; everything recorded up to that point is safe."
+            micStallWarning = reason
+            if captureWriteFailure == nil { captureWriteFailure = reason }
+            recordCaptureIssue(.mic, reason)
+        } else if !stalled, let from = micStalledAtMs {
+            micStalledAtMs = nil
+            if captureWriteFailure == micStallWarning { captureWriteFailure = nil }
+            micStallWarning = nil
+            recordCaptureIssue(.mic, "the microphone dropped out from \(MarkdownExport.timestamp(from)) "
+                + "to \(MarkdownExport.timestamp(elapsedMs)), so your side of the meeting is missing "
+                + "for that stretch. The rest was recorded.")
+        }
     }
 
     /// The rule itself, kept pure and separate from the recorder: a microphone cannot be opened in
@@ -671,6 +695,11 @@ public final class RecordingController {
         guard !reportedCaptureFailures.contains(channel) else { return }
         reportedCaptureFailures.insert(channel)
         if captureWriteFailure == nil { captureWriteFailure = reason }
+        recordCaptureIssue(channel, reason)
+    }
+
+    /// The stored half of a report, plus the log line an agent tailing the app sees.
+    private func recordCaptureIssue(_ channel: Channel, _ reason: String) {
         FileHandle.standardError.write(Data(
             "Meetings: \(channel.rawValue) capture: \(reason)\n".utf8))
         guard let meetingID else { return }
