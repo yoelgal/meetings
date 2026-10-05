@@ -40,7 +40,12 @@ struct MenuBarView: View {
                 }
                 Spacer(minLength: 12)
                 if model.isRecording {
-                    Button("Stop") { Task { await model.stopRecording() } }
+                    Button("Stop") {
+                        // Filed first: once the stop begins there is no active meeting to file it
+                        // to, and the note typed just before pressing Stop was silently dropped.
+                        commitQuickNote()
+                        Task { await model.stopRecording() }
+                    }
                         .tint(.red)
                 } else {
                     // "New meeting", not "Start": with a nudge above it, two buttons both saying
