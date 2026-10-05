@@ -106,17 +106,23 @@ public enum RecordingRecovery {
     /// again on the window's own cadence costs one directory listing per fifteen seconds, keeps the
     /// audio as the single source of truth, and cannot go stale the way a pid file can when the pid
     /// is reused. The trade: recovery lands one grace window after the crash rather than instantly.
+    ///
+    /// `onLateRecovery` hears about meetings a *re-sweep* moved to `transcribing`. The launch pass
+    /// needs no such call — the launch queue reads `transcribing` rows right after it — but a
+    /// re-sweep lands fifteen seconds later, after that read, and without this its meeting sat at
+    /// "transcribing" with nothing transcribing it until the next launch.
     @discardableResult
     public static func sweepOnLaunch(
         store: MeetingStore,
         audioRoot: URL = Paths.audioRoot,
         now: Date = Date(),
-        grace: TimeInterval = liveGraceSeconds
+        grace: TimeInterval = liveGraceSeconds,
+        onLateRecovery: (@Sendable ([String]) async -> Void)? = nil
     ) -> [Outcome] {
         let outcomes = sweepReportingFailure(store: store, audioRoot: audioRoot, now: now, grace: grace)
         if outcomes.contains(where: { $0.disposition == .stillLive }) {
             Task.detached { await resweepWhileAnythingLooksLive(
-                store: store, audioRoot: audioRoot, grace: grace) }
+                store: store, audioRoot: audioRoot, grace: grace, onRecovered: onLateRecovery) }
         }
         return outcomes
     }
@@ -138,7 +144,8 @@ public enum RecordingRecovery {
     static func resweepWhileAnythingLooksLive(
         store: MeetingStore,
         audioRoot: URL,
-        grace: TimeInterval
+        grace: TimeInterval,
+        onRecovered: (@Sendable ([String]) async -> Void)? = nil
     ) async {
         while !Task.isCancelled {
             try? await Task.sleep(for: .seconds(grace))
@@ -150,6 +157,8 @@ public enum RecordingRecovery {
             guard FileManager.default.fileExists(atPath: store.dbPool.path) else { return }
             let outcomes = sweepReportingFailure(
                 store: store, audioRoot: audioRoot, now: Date(), grace: grace)
+            let recovered = outcomes.filter { $0.disposition == .recovered }.map(\.meetingID)
+            if !recovered.isEmpty { await onRecovered?(recovered) }
             guard outcomes.contains(where: { $0.disposition == .stillLive }) else { return }
         }
     }

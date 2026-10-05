@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import os
 import Testing
 
 @testable import MeetingsCore
@@ -202,6 +203,21 @@ import Testing
         let recovered = try #require(try store.meeting(id: meeting.id))
         #expect(recovered.endedAt != nil, "ended_at came from the audio on the re-sweep too")
         #expect(try store.transcriptIssues(meetingID: meeting.id).isEmpty)
+    }
+
+    /// The launch queue has already read `transcribing` rows by the time a re-sweep lands, so the
+    /// re-sweep has to hand what it recovered to the queue itself.
+    @Test("a meeting recovered by the re-sweep is handed to the transcription queue")
+    func theResweepQueuesWhatItRecovers() async throws {
+        let meeting = try store.createMeeting(TestStore.meeting(state: .recording))
+        try audio(meeting.id, "mic.wav", seconds: 2, unclosed: true)
+        let queued = OSAllocatedUnfairLock<[String]>(initialState: [])
+        RecordingRecovery.sweepOnLaunch(store: store, audioRoot: audioRoot, grace: 0.1) { ids in
+            queued.withLock { $0 += ids }
+        }
+        try await waitFor("the re-sweep to queue the meeting") {
+            queued.withLock { $0 } == [meeting.id]
+        }
     }
 
     /// And the re-sweep is held to the rule the launch sweep is held to: a recorder that is still
