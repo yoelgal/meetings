@@ -374,6 +374,10 @@ enum Appearance {
     /// whether the recording screen is the one on screen, and therefore whether the toolbar draws
     /// the transport at all — is the shipping logic, unchanged.
     static var forceRecordingChrome: Bool { value("MEETINGS_RECORDING_CHROME") == "1" }
+
+    /// `MEETINGS_CAPTURE_WARNING=<text>` — show that live capture warning, as if the recorder had
+    /// raised it. The real one needs a call whose audio route moves mid-recording.
+    static var captureWarning: String? { value("MEETINGS_CAPTURE_WARNING") }
 }
 
 /// Remembers where the window was and how big it was, across launches.

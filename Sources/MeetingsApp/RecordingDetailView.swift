@@ -64,8 +64,8 @@ struct RecordingDetailView: View {
                 : model.segments,
             unavailable: model.recording.liveTranscriptionUnavailable,
             systemAudioUnavailable: model.recording.systemAudioUnavailable,
-            captureWarning: model.recording.meetingID == meeting.id
-                ? model.recording.liveCaptureWarning : nil
+            captureWarning: model.recording.meetingID == meeting.id || Appearance.forceRecordingChrome
+                ? model.liveCaptureWarning : nil
         )
     }
 
@@ -148,7 +148,7 @@ private struct LiveTranscriptPane: View {
     var body: some View {
         VStack(spacing: 0) {
             if let captureWarning {
-                Notice(symbol: "exclamationmark.triangle", text: captureWarning)
+                Notice(symbol: "exclamationmark.triangle.fill", text: captureWarning, tint: .orange)
                     .padding(.horizontal, 20)
                     .padding(.top, 16)
             }
@@ -209,9 +209,16 @@ private struct LiveTranscriptPane: View {
 private struct Notice: View {
     let symbol: String
     let text: String
+    /// Only for a warning about *now* — the same orange the panel's mark uses, so the two read as
+    /// one signal. Informational notices stay grey.
+    var tint: Color?
 
     var body: some View {
-        Label(text, systemImage: symbol)
+        Label {
+            Text(text)
+        } icon: {
+            Image(systemName: symbol).foregroundStyle(tint.map(AnyShapeStyle.init) ?? AnyShapeStyle(.secondary))
+        }
             .font(.callout)
             .foregroundStyle(.secondary)
             .padding(12)
@@ -237,6 +244,10 @@ struct LiveNotesPane: View {
     @State private var seeded = false
     @FocusState private var focused: Bool
 
+    /// The panel already insets its whole content by 14; padding again here put the note list and
+    /// field 30 pt in from the header above them.
+    private var inset: CGFloat { inPanel ? 0 : 16 }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
@@ -249,8 +260,8 @@ struct LiveNotesPane: View {
                     .foregroundStyle(.tertiary)
                 if let popOut { PopOutButton(action: popOut) }
             }
-            .padding(.horizontal, 16)
-            .padding(.top, 16)
+            .padding(.horizontal, inset)
+            .padding(.top, inPanel ? 4 : 16)
             .padding(.bottom, 8)
 
             ScrollViewReader { proxy in
@@ -268,7 +279,7 @@ struct LiveNotesPane: View {
                             .id(note.id)
                         }
                     }
-                    .padding(.horizontal, 16)
+                    .padding(.horizontal, inset)
                 }
                 .onChange(of: notes.count) {
                     if let last = notes.last?.id { withAnimation { proxy.scrollTo(last) } }
@@ -303,7 +314,8 @@ struct LiveNotesPane: View {
                         .foregroundStyle(.tertiary)
                 }
             }
-            .padding(16)
+            .padding(.horizontal, inset)
+            .padding(.vertical, 16)
         }
         .frame(maxHeight: .infinity, alignment: .top)
         .onAppear {

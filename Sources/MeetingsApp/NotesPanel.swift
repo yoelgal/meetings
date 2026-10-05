@@ -202,7 +202,7 @@ struct NotesPanelView: View {
                 HStack(spacing: 5) {
                     // The panel is what is on screen during a call — the main window is buried
                     // behind it — so a capture problem has to be visible here, not only there.
-                    if let warning = model.recording.liveCaptureWarning {
+                    if let warning = model.liveCaptureWarning {
                         Image(systemName: "exclamationmark.triangle.fill")
                             .foregroundStyle(.orange)
                             .help(warning)
