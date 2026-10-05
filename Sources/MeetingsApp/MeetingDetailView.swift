@@ -361,9 +361,9 @@ private struct WrittenDetailView: View {
     @State private var highlighted: Int64?
     /// The three sections the write-up outranks, each closed until asked for. Held here rather than
     /// inside each section so clicking a note can open the transcript it is about to scroll.
-    @State private var showPreNotes = false
-    @State private var showNotes = false
-    @State private var showTranscript = false
+    @State private var showPreNotes = Appearance.detailOpen.contains("prenotes")
+    @State private var showNotes = Appearance.detailOpen.contains("notes")
+    @State private var showTranscript = Appearance.detailOpen.contains("transcript")
 
     var body: some View {
         ScrollViewReader { proxy in
