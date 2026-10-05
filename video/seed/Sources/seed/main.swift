@@ -43,6 +43,15 @@ func at(_ days: Int, _ hour: Int, _ minutes: Int = 0) -> Date {
     return calendar.date(byAdding: DateComponents(hour: hour, minute: minutes), to: midnight)!
 }
 
+/// "Monday", "Thursday"… for a date. A meeting named after its weekday has to be named *from* its
+/// date: hard-coded, a shoot on a Monday filed "Monday standup" on Sunday.
+func weekday(_ date: Date) -> String {
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.dateFormat = "EEEE"
+    return formatter.string(from: date)
+}
+
 func fail(_ message: String) -> Never {
     FileHandle.standardError.write(Data("seed: \(message)\n".utf8))
     exit(64)
@@ -328,7 +337,7 @@ _ = try store.insertSegments([
 let standupStart = at(-1, 9, 15)
 let standup = try store.createMeeting(Meeting(
     folderID: product.id,
-    title: "Monday standup",
+    title: "\(weekday(standupStart)) standup",
     state: .ready,
     startedAt: standupStart,
     endedAt: standupStart.addingTimeInterval(11 * minute),
@@ -381,7 +390,7 @@ let events = [
         notes: "Kickoff. Ivy asked to see the workspace rather than slides."
     ),
     CalendarEvent(
-        id: "EV-standup-thu", title: "Thursday standup",
+        id: "EV-standup-thu", title: "\(weekday(at(2, 9, 15))) standup",
         start: at(2, 9, 15), end: at(2, 9, 30),
         attendees: [Attendee(name: "Marcus Ell", email: "marcus@example.com")],
         calendarName: "Work", videoLink: URL(string: "https://meet.google.com/abc-defg-hij"), notes: nil
