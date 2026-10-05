@@ -28,6 +28,10 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @un
     private var stream: SCStream?
     private var running = false
     private var restarting = false
+    /// Bumped by every `start`. A restart still in flight from the *previous* recording — asleep
+    /// between attempts when the user stopped and started again — must not install its stream
+    /// over the new session's, so it checks this after every await, not just `running`.
+    private var session = 0
     private var routeObserver: OutputRouteObserver?
     private var restartCount = 0
     /// Everything below is written only on `queue`.
@@ -88,6 +92,7 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @un
         }
         running = true
         restartCount = 0
+        session += 1
         routeObserver = OutputRouteObserver { [weak self] in
             Task { @MainActor in await self?.restart(because: "the audio output changed") }
         }
@@ -144,12 +149,18 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @un
     func restart(because reason: String) async {
         guard running, !restarting else { return }
         restarting = true
-        defer { restarting = false }
+        let mine = session
+        defer { if session == mine { restarting = false } }
+        var current: Bool { running && session == mine }
         Self.log.notice("restarting system audio: \(reason, privacy: .public)")
         if let old = stream {
             stream = nil
+            // Detach first: if `stopCapture` fails the old stream keeps running, and it must not
+            // keep writing into the file the new one is about to write to.
+            try? old.removeStreamOutput(self, type: .audio)
             try? await old.stopCapture()
         }
+        guard current else { return }
         // After `stopCapture` returns no callback is still writing, so the tail and the gap are
         // the writer's alone to deal with.
         queue.sync { writer?.markDiscontinuity() }
@@ -157,11 +168,11 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @un
         var lastError: Error?
         for attempt in 0..<Self.restartAttempts {
             if attempt > 0 { try? await Task.sleep(for: .seconds(2)) }
-            guard running else { return }
+            guard current else { return }
             do {
                 let fresh = try await makeStream()
                 // Stopped while the new stream was starting: it must not outlive the recording.
-                guard running else {
+                guard current else {
                     try? await fresh.stopCapture()
                     return
                 }
@@ -185,6 +196,9 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @un
     func stop() async {
         guard running else { return }
         running = false
+        // A stop clears a restart in flight; its own session check makes it stand down.
+        restarting = false
+        routeObserver?.invalidate()
         routeObserver = nil
         if let stream {
             self.stream = nil
@@ -342,16 +356,23 @@ private final class OutputRouteObserver: @unchecked Sendable {
         queue.sync { watchCurrentDevice() }
     }
 
-    deinit {
-        if let defaultListener {
-            AudioObjectRemovePropertyListenerBlock(
-                AudioObjectID(kAudioObjectSystemObject), [Self.defaultOutput], queue,
-                defaultListener)
+    /// Remove both listeners. On `queue`, which is where every other touch of this state happens —
+    /// and not in `deinit`, which can run on `queue` itself when a listener held the last reference.
+    func invalidate() {
+        queue.sync {
+            if let defaultListener {
+                AudioObjectRemovePropertyListenerBlock(
+                    AudioObjectID(kAudioObjectSystemObject), [Self.defaultOutput], queue,
+                    defaultListener)
+            }
+            if let rateListener, device != kAudioObjectUnknown {
+                AudioObjectRemovePropertyListenerBlock(device, [Self.nominalRate], queue, rateListener)
+            }
+            defaultListener = nil
+            rateListener = nil
+            pending?.cancel()
+            pending = nil
         }
-        if let rateListener, device != kAudioObjectUnknown {
-            AudioObjectRemovePropertyListenerBlock(device, [Self.nominalRate], queue, rateListener)
-        }
-        pending?.cancel()
     }
 
     /// On `queue`. Moves the rate listener to whichever device is the default now.

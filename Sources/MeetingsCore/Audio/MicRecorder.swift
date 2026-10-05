@@ -35,6 +35,9 @@ final class MicRecorder: @unchecked Sendable {
     /// Rebuilds since start. Only the first graph may throw its file away in the raw fallback;
     /// after a rebuild the file already holds the meeting.
     private(set) var rebuilds = 0
+    /// Bumped by every `start`, so a retry scheduled during one recording cannot attach an engine
+    /// in the next.
+    private var session = 0
 
     /// VoiceProcessingIO is a duplex unit, not an input effect. On some routes — mismatched default
     /// input and output devices hit a live macOS `AUVPAggregate` defect — it delivers callbacks full
@@ -64,6 +67,7 @@ final class MicRecorder: @unchecked Sendable {
         self.url = url
         self.origin = origin
         rebuilds = 0
+        session += 1
         fellBackToRaw = false
         try makeWriter()
         try attach(voiceProcessing: true)
@@ -99,10 +103,12 @@ final class MicRecorder: @unchecked Sendable {
 
     /// The route moved and the engine stopped itself. Rebuild against whatever the route is now,
     /// with voice processing if it was on — the new device may well support it — and into the same
-    /// file. A device that is not ready yet gets a few more tries a second apart; after that the
-    /// controller's stall check is what tells the user.
-    private func rebuild(attempt: Int = 0) {
-        guard isRecording else { return }
+    /// file. A device that is not ready yet is retried for as long as the meeting runs: a second
+    /// apart at first, then every five. Giving up would leave nothing that could ever bring the
+    /// mic back, because the observer that triggers a rebuild belongs to an engine that started.
+    /// Meanwhile the controller's stall check is what tells the user.
+    private func rebuild(attempt: Int = 0, session expected: Int? = nil) {
+        guard isRecording, session == (expected ?? session) else { return }
         if attempt == 0 {
             Self.log.notice("mic route changed; rebuilding the capture graph")
             detachEngine()
@@ -113,9 +119,9 @@ final class MicRecorder: @unchecked Sendable {
             try attach(voiceProcessing: !fellBackToRaw)
         } catch {
             Self.log.error("mic rebuild failed: \(String(describing: error), privacy: .public)")
-            guard attempt < 4 else { return }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
-                self?.rebuild(attempt: attempt + 1)
+            let current = session
+            DispatchQueue.main.asyncAfter(deadline: .now() + (attempt < 4 ? 1 : 5)) { [weak self] in
+                self?.rebuild(attempt: attempt + 1, session: current)
             }
         }
     }
