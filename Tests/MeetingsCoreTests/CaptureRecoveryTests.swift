@@ -50,6 +50,20 @@ struct CaptureRecoveryTests {
         #expect(abs(seconds - 8.1) < 0.05, "file is \(seconds) s")
     }
 
+    @Test("a stream restarted before it ever delivered is padded in full, not capped at ten seconds")
+    func restartBeforeFirstBufferKeepsTheWholeGap() throws {
+        let url = directory.appendingPathComponent("late.wav")
+        let origin = Date()
+        let writer = try ChannelWriter(url: url, origin: origin)
+        // The watchdog restarted a stream that never delivered; its first buffer is 14 s in.
+        writer.markDiscontinuity()
+        writer.append(
+            AudioTests.buffer(frames: 4800, rate: 48_000, channels: 1),
+            capturedAt: origin.addingTimeInterval(14))
+        writer.finish()
+        #expect(writer.paddedFrames == 14 * 16_000)
+    }
+
     @Test("a source that resumes on time is not padded, and a writer ahead of the clock is not trimmed")
     func discontinuityNeverPadsBackwards() throws {
         let url = directory.appendingPathComponent("mic.wav")

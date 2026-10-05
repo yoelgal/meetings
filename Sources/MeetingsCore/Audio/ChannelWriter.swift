@@ -42,7 +42,9 @@ final class ChannelWriter: @unchecked Sendable {
     /// Written from the capture thread, read from the main actor for the meter, hence the lock.
     private let meter = OSAllocatedUnfairLock(initialState: Float(0))
 
-    private(set) var framesWritten: Int64 = 0
+    /// Written on the capture thread, read by the controller's tick on main, hence the lock.
+    private let written = OSAllocatedUnfairLock(initialState: Int64(0))
+    var framesWritten: Int64 { written.withLock { $0 } }
     /// How much of `framesWritten` is the leading silence written to reach the origin.
     private(set) var paddedFrames: Int64 = 0
     private(set) var firstBufferAt: Date?
@@ -105,8 +107,11 @@ final class ChannelWriter: @unchecked Sendable {
         if !padded {
             padded = true
             // Ten seconds is the ceiling: past that the gap is a bug, not latency, and writing
-            // minutes of silence would make it look like the meeting simply started quiet.
-            let frames = writePadding(upTo: capturedAt, cap: 10, in: file)
+            // minutes of silence would make it look like the meeting simply started quiet. Unless
+            // the source was already rebuilt before its first buffer — a stream that never
+            // delivered, restarted by the watchdog — when the gap is known and must be kept whole,
+            // or the whole track lands early against the other one.
+            let frames = writePadding(upTo: capturedAt, cap: realignPending ? nil : 10, in: file)
             paddedFrames = frames
         } else if realignPending {
             // No ceiling here. The gap is real — the source was rebuilt — and it is the silence
@@ -133,7 +138,7 @@ final class ChannelWriter: @unchecked Sendable {
         let offsetMs = Int(Double(framesWritten) / 16.0)
         do {
             try file.write(from: out)
-            framesWritten += Int64(out.frameLength)
+            written.withLock { $0 += Int64(out.frameLength) }
         } catch {
             noteWriteFailure(error, frames: Int64(out.frameLength))
             return
@@ -177,7 +182,7 @@ final class ChannelWriter: @unchecked Sendable {
             let offsetMs = Int(Double(framesWritten) / 16.0)
             do {
                 try file.write(from: tail)
-                framesWritten += Int64(tail.frameLength)
+                written.withLock { $0 += Int64(tail.frameLength) }
             } catch {
                 noteWriteFailure(error, frames: Int64(tail.frameLength))
                 return
@@ -258,7 +263,7 @@ final class ChannelWriter: @unchecked Sendable {
         if let cap { seconds = min(seconds, cap) }
         let target = Int64(seconds * Self.target.sampleRate)
         var remaining = target - framesWritten
-        var written: Int64 = 0
+        var added: Int64 = 0
         // In slices, so an hour-long gap does not become an hour-long allocation.
         while remaining > 0 {
             let frames = AVAudioFrameCount(min(remaining, 16_000 * 10))
@@ -272,11 +277,11 @@ final class ChannelWriter: @unchecked Sendable {
                 noteWriteFailure(error, frames: remaining)
                 break
             }
-            framesWritten += Int64(frames)
-            written += Int64(frames)
+            written.withLock { $0 += Int64(frames) }
+            added += Int64(frames)
             remaining -= Int64(frames)
         }
-        return written
+        return added
     }
 
     /// One walk of the converted samples that does two jobs: replace anything not finite with
