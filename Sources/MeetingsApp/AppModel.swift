@@ -349,7 +349,9 @@ final class AppModel {
         // a phantom red dot and a Stop button that throws. It runs after the repair (an unfinalised
         // WAV reads as zero frames, and deciding on that would bin a recoverable meeting) and
         // before `resumePendingOnLaunch()`, which is the queue that picks up what it recovers.
-        RecordingRecovery.sweepOnLaunch(store: store)
+        RecordingRecovery.sweepOnLaunch(store: store) { [transcription] recovered in
+            for id in recovered { await transcription.enqueue(meetingID: id) }
+        }
         // The retention sweep runs on launch. The rule itself lives in MeetingsCore so the
         // CLI applies exactly the same one.
         Retention.sweepOnLaunch(store: store)
@@ -943,8 +945,9 @@ final class AppModel {
     /// one recording, otherwise the row's `started_at`, so a session a crash interrupted still
     /// files its notes at the offset they were actually written at instead of at zero.
     func elapsedMs(for meeting: Meeting) -> Int {
-        if recording.meetingID == meeting.id, case .recording = recording.phase {
-            return recording.elapsedMs
+        if recording.meetingID == meeting.id {
+            if case .recording = recording.phase { return recording.elapsedMs }
+            if let final = recording.finalElapsedMs { return final }
         }
         guard displayState(for: meeting) == .recording, let startedAt = meeting.startedAt else {
             return 0

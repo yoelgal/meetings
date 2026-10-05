@@ -70,6 +70,11 @@ public final class RecordingController {
         return max(0, Int(Date().timeIntervalSince(startedAt) * 1000))
     }
 
+    /// The clock where the last recording stopped, kept for `meetingID` until the next start. A
+    /// note filed *as* the recording stops — the panel's draft saved on its way out, a quick note
+    /// typed then Stop pressed — belongs at the end of the meeting, not at 00:00.
+    public private(set) var finalElapsedMs: Int?
+
     let store: MeetingStore
     let transcription: TranscriptionService
 
@@ -148,6 +153,7 @@ public final class RecordingController {
         captureWriteFailure = nil
         reportedCaptureFailures = []
         micProgress = nil
+        finalElapsedMs = nil
         micStalledAtMs = nil
         micStallWarning = nil
         micGaps = []
@@ -263,13 +269,26 @@ public final class RecordingController {
     /// the whole of ``stop()``: transcribing an hour of audio is not something to start when the
     /// system has asked the process to go away, and `resumePendingOnLaunch` is already the queue for
     /// anything left at `transcribing`.
-    func finaliseForTermination() async {
+    ///
+    /// The live transcript *is* drained, with a ceiling. With the local engine the live rows are
+    /// what the batch pass promotes, so the last second or so the recogniser was still holding is
+    /// otherwise gone for good. Three seconds is the ceiling because the system is waiting on us.
+    public func finaliseForTermination() async {
         guard case .recording = phase, let meetingID else { return }
+        finalElapsedMs = elapsedMs
         phase = .stopping
         meterTask?.cancel()
         meterTask = nil
+        removeTerminationGuard()
         mic.stop()
         await system.stop()
+        let drain = Task { await self.stopLiveTranscription() }
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { await drain.value }
+            group.addTask { try? await Task.sleep(for: .seconds(3)) }
+            await group.next()
+            group.cancelAll()
+        }
         try? store.updateMeeting(id: meetingID) { meeting in
             meeting.state = .transcribing
             meeting.endedAt = Date()
@@ -303,6 +322,7 @@ public final class RecordingController {
     /// meeting is recoverable, so the stop itself succeeded.
     public func stop() async throws {
         guard case .recording = phase, let meetingID else { throw RecordingError.notRecording }
+        finalElapsedMs = elapsedMs
         phase = .stopping
         meterTask?.cancel()
         meterTask = nil
@@ -323,9 +343,17 @@ public final class RecordingController {
         await stopLiveTranscription()
         if let audioDirectory { auditCapturedAudio(meetingID: meetingID, in: audioDirectory) }
 
-        try store.updateMeeting(id: meetingID) { meeting in
-            meeting.state = .transcribing
-            meeting.endedAt = Date()
+        do {
+            try store.updateMeeting(id: meetingID) { meeting in
+                meeting.state = .transcribing
+                meeting.endedAt = Date()
+            }
+        } catch {
+            // The audio is closed and on disk, and the row is still `recording`, which is exactly
+            // what the launch sweep recovers. What must not happen is the phase staying `.stopping`:
+            // nothing can start or stop from there, so the app could not record again until relaunch.
+            phase = .failed(String(describing: error))
+            throw error
         }
 
         phase = .transcribing(progress: 0)
