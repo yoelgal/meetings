@@ -200,6 +200,14 @@ struct NotesPanelView: View {
             // panel rather than being repeated in both.
             if tab == .liveNotes, let meeting = model.notesPanelMeeting, recording(meeting) {
                 HStack(spacing: 5) {
+                    // The panel is what is on screen during a call — the main window is buried
+                    // behind it — so a capture problem has to be visible here, not only there.
+                    if let warning = model.recording.liveCaptureWarning {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                            .help(warning)
+                            .accessibilityLabel(warning)
+                    }
                     RecordingDot(size: 7)
                     TimelineView(.periodic(from: .now, by: 1)) { _ in
                         Text(Format.clock(milliseconds: model.elapsedMs(for: meeting)))
