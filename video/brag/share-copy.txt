@@ -1,0 +1,3 @@
+Meetings records you and everyone else on the call as two separate tracks, so the transcript never has to guess who said "I'll send it by Friday." Live transcription on your Mac, notes pinned to the moment they were said, a notes panel your screen share can't see, and a CLI so your agent writes it up.
+
+curl -fsSL https://raw.githubusercontent.com/yoelgal/meetings/main/install.sh | bash
