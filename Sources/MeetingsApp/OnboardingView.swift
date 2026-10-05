@@ -321,12 +321,19 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
         window.titleVisibility = .hidden
         window.identifier = NSUserInterfaceItemIdentifier(Self.windowID)
         window.isReleasedWhenClosed = false
+        // The main window takes `MEETINGS_APPEARANCE` through SwiftUI; this one is AppKit-hosted
+        // and ignored it, so onboarding could only ever be photographed in the system scheme.
+        if let scheme = Appearance.override {
+            window.appearance = NSAppearance(named: scheme == .dark ? .darkAqua : .aqua)
+        }
         window.installGlassHost(root)
         window.delegate = self
         window.center()
         self.window = window
         window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        // A real first launch brings the wizard forward. A posed one must not: those launches are
+        // `open -g` on a Mac someone is using, and activating took their keyboard focus.
+        if Appearance.panel == nil { NSApp.activate(ignoringOtherApps: true) }
     }
 
     /// Last Continue. Reveal the app first, then close this window.
@@ -553,6 +560,15 @@ private struct DownloadStep: View {
             }
             .frame(maxWidth: .infinity)
             .padding(.top, 40)
+            // The pie is the progress; this is the words for it. Without them a finished download
+            // — or a model already on disk — sat under "Downloading the model" saying nothing.
+            if problem == nil {
+                Text(progress >= 1 ? "Ready." : "\(Int(progress * 100))%")
+                    .font(.callout.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .contentTransition(.numericText())
+                    .frame(maxWidth: .infinity)
+            }
             if let problem {
                 Text(problem).font(.caption).foregroundStyle(Color(nsColor: .systemRed))
             }
