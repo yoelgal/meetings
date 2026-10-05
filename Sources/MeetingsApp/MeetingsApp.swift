@@ -604,6 +604,9 @@ private struct RecordingToolbarStatus: View {
                     .contentTransition(.numericText())
             }
         }
+        // The toolbar draws its glass capsule tight to the item's frame, which left the dot
+        // touching the capsule's left edge.
+        .padding(.horizontal, 6)
         .help(model.activeMeeting.map { "Recording \($0.title)" } ?? "Recording")
     }
 }
