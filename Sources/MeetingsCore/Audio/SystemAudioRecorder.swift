@@ -39,6 +39,8 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @un
     /// Bumped every time a new stream is installed — at start, and by every successful restart,
     /// whoever asked for it. Main actor. The watchdog reads it to give a new stream its start grace.
     private(set) var generation = 0
+    /// A restart asked for while one was running; main actor.
+    private var pendingRestart: String?
     /// The user's stop, read from where the delegate records it first. `stoppedByUser` follows on
     /// the main actor a hop later; until it does, this is the one that is already true.
     var userStoppedCapture: Bool {
@@ -164,10 +166,24 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @un
     /// the new device is least ready. Only when all of them fail is the track declared lost.
     @MainActor
     func restart(because reason: String) async {
-        guard running, !restarting, !stoppedByUser, !userStoppedCapture else { return }
+        guard running, !stoppedByUser, !userStoppedCapture else { return }
+        // A route change landing while a restart is under way is not dropped: the stream being
+        // built may be attaching to the route that just went away. It runs once more after.
+        guard !restarting else {
+            pendingRestart = reason
+            return
+        }
         restarting = true
         let mine = session
-        defer { if session == mine { restarting = false } }
+        defer {
+            if session == mine {
+                restarting = false
+                if let again = pendingRestart {
+                    pendingRestart = nil
+                    Task { @MainActor in await self.restart(because: again) }
+                }
+            }
+        }
         var current: Bool { running && session == mine && !stoppedByUser && !userStoppedCapture }
         Self.log.notice("restarting system audio: \(reason, privacy: .public)")
         if let old = stream {
@@ -216,6 +232,7 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @un
         running = false
         // A stop clears a restart in flight; its own session check makes it stand down.
         restarting = false
+        pendingRestart = nil
         routeObserver?.invalidate()
         routeObserver = nil
         if let stream {

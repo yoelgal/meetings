@@ -47,7 +47,14 @@ public final class RecordingController {
     /// What the recording screen and the floating panel show while recording: the first thing
     /// wrong with capture now, in words a person mid-call can act on.
     public var liveCaptureWarning: String? {
-        systemAudioLost ?? captureWriteFailure
+        // Both, when both: a route change can stall the mic and silence the other side at once,
+        // and the softer "not hearing the other side" must never hide "your own voice stopped".
+        switch (captureWriteFailure, systemAudioLost) {
+        case let (mine?, theirs?): "\(mine) \(theirs)"
+        case let (mine?, nil): mine
+        case let (nil, theirs?): theirs
+        case (nil, nil): nil
+        }
     }
 
     /// Why the live transcript is empty, when it is — most often that the streaming model has not
@@ -85,6 +92,9 @@ public final class RecordingController {
     private var lastFailureRetry: Date?
     private var playbackCheckInFlight = false
     private var seenSystemGeneration = 0
+    /// When system capture failed and could not be restarted, while it is failed; the span is
+    /// stored once a retry brings it back, as mic gaps are.
+    private var systemLostAtMs: Int?
     /// The system track's silence is stored once per recording — the first time is the one worth
     /// knowing afterwards. Separate from `reportedCaptureFailures` so it cannot mask a full disk.
     private var systemSilenceRecorded = false
@@ -143,6 +153,7 @@ public final class RecordingController {
         micGaps = []
         lastFailureRetry = nil
         systemSilenceRecorded = false
+        systemLostAtMs = nil
         systemAudioLost = nil
         systemWatch = SystemAudioWatch()
         lastPlaybackCheck = nil
@@ -183,6 +194,9 @@ public final class RecordingController {
         }
         do {
             try await system.start(writingTo: directory.appendingPathComponent("system.wav"), origin: origin)
+            // The first stream is not a *new* one to the watchdog: it gets the ordinary stall
+            // restart at ten seconds, not a restarted stream's grace.
+            seenSystemGeneration = system.generation
         } catch {
             systemAudioUnavailable = String(describing: error)
             // Nothing will ever arrive on that channel, and a second recogniser waiting for audio
@@ -536,6 +550,11 @@ public final class RecordingController {
                     + "callers are not being recorded for the rest of this meeting."
                 return
             }
+            if systemLostAtMs == nil {
+                systemLostAtMs = elapsedMs
+                recordCaptureIssue(.system, "system audio stopped at \(MarkdownExport.timestamp(elapsedMs)) "
+                    + "and could not be restarted, so other callers are missing from there on.")
+            }
             systemAudioLost = Self.systemRestartFailedPrefix + " (\(failure))"
             // Never given up on: a route that was still settling a minute ago may be ready now.
             if lastFailureRetry.map({ now.timeIntervalSince($0) >= SystemAudioWatch.restartInterval }) ?? true {
@@ -546,6 +565,11 @@ public final class RecordingController {
         }
         // The stream is back — a retry or a route change rebuilt it — so the failure no longer holds.
         if systemAudioLost?.hasPrefix(Self.systemRestartFailedPrefix) == true { systemAudioLost = nil }
+        if let from = systemLostAtMs {
+            systemLostAtMs = nil
+            recordCaptureIssue(.system, "system audio was lost from \(MarkdownExport.timestamp(from)) to "
+                + "\(MarkdownExport.timestamp(elapsedMs)), so other callers are missing for that stretch.")
+        }
         lastFailureRetry = nil
 
         let snapshot = system.watchSnapshot

@@ -73,7 +73,14 @@ final class MicRecorder: @unchecked Sendable {
         session += 1
         fellBackToRaw = false
         try makeWriter()
-        try attach(voiceProcessing: true)
+        do {
+            try attach(voiceProcessing: true)
+        } catch {
+            // Not recording, so `stop()` will not run: close and remove the empty file here.
+            writer = nil
+            try? FileManager.default.removeItem(at: url)
+            throw error
+        }
         isRecording = true
     }
 
