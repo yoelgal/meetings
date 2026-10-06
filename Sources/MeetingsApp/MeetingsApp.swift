@@ -243,11 +243,20 @@ final class MeetingsAppDelegate: NSObject, NSApplicationDelegate {
 enum Appearance {
     /// Any screenshot pose at all. A posed launch is `open -g` on a Mac somebody is using, so
     /// nothing in one may take focus — whichever of the overrides it happens to use.
-    static var isPosed: Bool {
-        ProcessInfo.processInfo.environment.keys.contains {
-            $0.hasPrefix("MEETINGS_") && !["MEETINGS_HOME", "MEETINGS_DB", "MEETINGS_CALENDAR_FIXTURE"].contains($0)
-        }
-    }
+    ///
+    /// An allowlist of the overrides this enum reads, not "any MEETINGS_ variable": `MEETINGS_MD_ROOT`
+    /// and `MEETINGS_HOME` are real settings a user can have in their environment, and treating them
+    /// as a pose left a first launch's setup wizard behind every other window. Empty counts as unset,
+    /// as it does for every override.
+    static var isPosed: Bool { poseKeys.contains { value($0) != nil } }
+
+    static let poseKeys = [
+        "MEETINGS_APPEARANCE", "MEETINGS_CAPTURE_WARNING", "MEETINGS_DETAIL_OPEN", "MEETINGS_IMPORT",
+        "MEETINGS_NOTES_PANEL", "MEETINGS_ONBOARDING", "MEETINGS_PANEL", "MEETINGS_PANEL_CAPTURABLE",
+        "MEETINGS_PANEL_DIAGNOSTICS", "MEETINGS_PANEL_NOTE", "MEETINGS_PANEL_WRITING",
+        "MEETINGS_PRENOTES_DRAFT", "MEETINGS_RECORDING_CHROME", "MEETINGS_SCOPE", "MEETINGS_SEARCH",
+        "MEETINGS_SELECT", "MEETINGS_WINDOW",
+    ]
 
     private static func value(_ key: String) -> String? {
         let value = ProcessInfo.processInfo.environment[key]
