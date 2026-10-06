@@ -22,7 +22,8 @@ video/film/public/shots/
 video/film/public/clips/
 video/film/public/fonts/
 video/film/public/brand/
-# The launch film's footage and score: `video/brag/shoot.sh` and `video/brag/score.py` regenerate them.
+# The launch film's footage, recordings and soundtrack: `video/brag/shoot.sh`, `fetch-sounds.sh` and
+# `finish.sh` regenerate them.
 video/film/public/launch/
 video/brag/work-*
 # A symlink to another checkout's install is a file, which `node_modules/` (directories only) misses.

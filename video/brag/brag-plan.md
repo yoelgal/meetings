@@ -44,6 +44,14 @@ always knows who said it. On-device, notes pinned to the moment, and a CLI so yo
 Readability: every caption holds ≥ 0.3 s/word after settling. Hook line holds 1.2 s before the question.
 
 ## Sound
-Synthesized here (no third-party track, so nothing to licence): 100 BPM, A minor, a soft sub pulse +
-plucked arpeggio + pad, a filtered riser into the reveal, and subtle ticks for the typing, all in key
-and mixed under the music. Cuts land on the beat (0.6 s per beat).
+Real recordings only, all CC0, fetched by `video/brag/fetch-sounds.sh` (sources listed there):
+- **Every cut and click its own object:** marbles on a desk, a table and tile; car keys; a light
+  switch; bottles, a window and a plate of glass; a mechanical keyboard (one key per typed
+  character); a pen click (each answer the terminal prints, and your lines in the transcript).
+- **Melody:** marimba (VCSL), grand piano (VCSL), contrabass pizzicato (VSCO 2 CE), A minor,
+  100 BPM, re-pitched by resampling only.
+- **Timing:** event times come from `timing.json` (which Launch.tsx draws from), the same frame
+  formulas the type-on uses, and the captured clips' own frame changes. Each recording is aligned by
+  its detected attack; fades are placed on the frame they become visible, measured from a silent
+  render. `video/brag/finish.sh` renders, mixes, muxes and then verifies: attack vs frame, codec
+  delay, picture change per event, integrated and short-term loudness (`soundtrack-report.txt`).

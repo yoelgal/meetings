@@ -1,0 +1,51 @@
+{
+  "_": "Every time the launch film puts something on screen, in seconds. Launch.tsx draws from it and video/brag/soundtrack.py scores from it, so a sound cannot land anywhere but on its picture.",
+  "scenes": {
+    "hook": 0,
+    "problem": 3.0,
+    "reveal": 6.6,
+    "live": 10.2,
+    "anchored": 16.2,
+    "share": 20.4,
+    "cli": 24.6,
+    "end": 30.0,
+    "total": 34.0
+  },
+  "hook": {
+    "typeStart": 0.15,
+    "typeEnd": 1.0,
+    "question": 1.8,
+    "line": "“I’ll send it by Friday.”"
+  },
+  "problem": {
+    "lineA": 0.15,
+    "lineAOut": 1.75,
+    "lineB": 2.1
+  },
+  "reveal": {
+    "split": 0.1,
+    "labels": 0.55,
+    "mark": 1.2
+  },
+  "live": {
+    "trim": 0.6
+  },
+  "share": {
+    "panelGone": 1.4
+  },
+  "cli": {
+    "terminal": 3.3,
+    "typing": 3.1,
+    "framesPerChar": 1.4,
+    "typingShare": 0.4,
+    "outputAfter": 0.15,
+    "writeupTrim": 1.9,
+    "lead": 0.35
+  },
+  "end": {
+    "mark": 0.05,
+    "tag": 0.45,
+    "install": 0.9,
+    "meta": 1.3
+  }
+}

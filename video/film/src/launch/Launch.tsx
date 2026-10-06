@@ -13,6 +13,7 @@ import { AppWindow } from '../components/AppWindow';
 import { INTER, MONO, ensureFonts } from '../fonts';
 import { FPS, sec } from '../theme';
 import session from './session.json';
+import TIMING from './timing.json';
 
 /**
  * The launch film: hook → problem → reveal → five features → end card, about thirty-four seconds.
@@ -29,18 +30,9 @@ const INK = '#F5F5F7';
 const DIM = '#8E8E99';
 
 /** Scene boundaries, in seconds. Every cut from the reveal on sits on the score's beat grid —
- * 6.6 s plus a whole number of 0.6 s beats (100 BPM) — and `score.py` uses the same numbers. */
-const T = {
-  hook: 0,
-  problem: 3.0,
-  reveal: 6.6,
-  live: 10.2,
-  anchored: 16.2,
-  share: 20.4,
-  cli: 24.6,
-  end: 30.0,
-  total: 34.0,
-};
+ * 6.6 s plus a whole number of 0.6 s beats (100 BPM) — and `video/brag/soundtrack.py` scores from the same file. */
+const T = TIMING.scenes;
+const H = TIMING.hook, P = TIMING.problem, R = TIMING.reveal, C = TIMING.cli, E = TIMING.end;
 export const LAUNCH_FRAMES = sec(T.total);
 
 const ease = (t: number) => (t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t));
@@ -128,9 +120,9 @@ const Wave: React.FC<{ color: string; width: number; seed: number; energy?: numb
 
 const Hook: React.FC = () => {
   const frame = useCurrentFrame();
-  const line = '“I’ll send it by Friday.”';
-  const typed = Math.floor(interpolate(frame, [sec(0.15), sec(1.0)], [0, line.length], clamp));
-  const question = frame >= sec(1.8);
+  const line = H.line;
+  const typed = Math.floor(interpolate(frame, [sec(H.typeStart), sec(H.typeEnd)], [0, line.length], clamp));
+  const question = frame >= sec(H.question);
   return (
     <AbsoluteFill style={{ justifyContent: 'center', alignItems: 'center' }}>
       {!question ? (
@@ -146,7 +138,7 @@ const Hook: React.FC = () => {
             fontWeight: 750,
             letterSpacing: -4.5,
             color: INK,
-            transform: `scale(${1.06 - 0.06 * ease((frame - sec(1.8)) / sec(0.35))})`,
+            transform: `scale(${1.06 - 0.06 * ease((frame - sec(H.question)) / sec(0.35))})`,
           }}
         >
           Who said that?
@@ -161,10 +153,10 @@ const Problem: React.FC = () => (
     <div style={{ position: 'absolute', top: 300 }}>
       <Wave color="#5d5d6b" width={1100} seed={1.3} energy={0.9} />
     </div>
-    <Headline at={0.15} out={1.75} top={640}>
+    <Headline at={P.lineA} out={P.lineAOut} top={640}>
       Most recorders hear one mixed track.
     </Headline>
-    <Headline at={1.95} top={640}>
+    <Headline at={P.lineB} top={640}>
       Then they guess who’s talking.
     </Headline>
   </AbsoluteFill>
@@ -173,9 +165,9 @@ const Problem: React.FC = () => (
 const Reveal: React.FC = () => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
-  const split = spring({ frame: frame - sec(0.1), fps, config: { damping: 200 } });
-  const label = useReveal(0.55);
-  const mark = useReveal(1.2, undefined, 0);
+  const split = spring({ frame: frame - sec(R.split), fps, config: { damping: 200 } });
+  const label = useReveal(R.labels);
+  const mark = useReveal(R.mark, undefined, 0);
   return (
     <AbsoluteFill style={{ alignItems: 'center' }}>
       {[
@@ -284,7 +276,7 @@ const Push: React.FC<{
 
 const ShareSplit: React.FC = () => {
   const frame = useCurrentFrame();
-  const gone = ease((frame - sec(1.4)) / sec(0.6));
+  const gone = ease((frame - sec(TIMING.share.panelGone)) / sec(0.6));
   const pane = (title: string, withPanel: number) => (
     <div style={{ width: 900 }}>
       <div
@@ -328,7 +320,10 @@ type Step = { command: string; output: string };
 const Terminal: React.FC<{ length: number }> = ({ length }) => {
   const frame = useCurrentFrame();
   const steps = session as Step[];
-  const per = sec(length) / steps.length;
+  // Typing waits for the scene's own fade-in: characters typed at zero opacity are typed unseen,
+  // and their keystroke sounds would land on nothing.
+  const lead = sec(C.lead);
+  const per = (sec(length) - lead) / steps.length;
   return (
     <div
       style={{
@@ -348,11 +343,11 @@ const Terminal: React.FC<{ length: number }> = ({ length }) => {
       }}
     >
       {steps.map((step, i) => {
-        const start = i * per;
+        const start = lead + i * per;
         if (frame < start) return null;
-        const typeEnd = start + Math.min(step.command.length * 1.4, per * 0.4);
+        const typeEnd = start + Math.min(step.command.length * C.framesPerChar, per * C.typingShare);
         const typed = Math.floor(interpolate(frame, [start, typeEnd], [0, step.command.length], clamp));
-        const outAt = typeEnd + sec(0.15);
+        const outAt = typeEnd + sec(C.outputAfter);
         const lines = step.output.split('\n').filter((l) => l.trim() !== '').slice(0, 6);
         return (
           <div key={step.command} style={{ marginBottom: 22 }}>
@@ -371,10 +366,10 @@ const Terminal: React.FC<{ length: number }> = ({ length }) => {
 };
 
 const EndCard: React.FC = () => {
-  const mark = useReveal(0.05, undefined, 0);
-  const tag = useReveal(0.45);
-  const install = useReveal(0.9);
-  const meta = useReveal(1.3);
+  const mark = useReveal(E.mark, undefined, 0);
+  const tag = useReveal(E.tag);
+  const install = useReveal(E.install);
+  const meta = useReveal(E.meta);
   return (
     <AbsoluteFill style={{ justifyContent: 'center', alignItems: 'center' }}>
       <div style={{ ...mark, display: 'flex', alignItems: 'center', marginTop: -80 }}>
@@ -427,7 +422,7 @@ export const Launch: React.FC = () => {
   return (
     <AbsoluteFill style={{ background: '#03030f' }}>
       <Backdrop />
-      <Audio src={staticFile('launch/score.wav')} />
+      <Audio src={staticFile('launch/soundtrack.wav')} />
 
       <Sequence from={at(T.hook)} durationInFrames={len(T.hook, T.problem)}>
         <Hook />
@@ -442,7 +437,7 @@ export const Launch: React.FC = () => {
       <Sequence from={at(T.live)} durationInFrames={len(T.live, T.anchored)}>
         <Feature length={T.anchored - T.live} caption="Transcribed live. On this Mac.">
           <Push length={T.anchored - T.live} to={1.85} fx={0.42} fy={0.08}>
-            <AppWindow src="launch/live.mov" width={1500} trimBefore={sec(0.6)} />
+            <AppWindow src="launch/live.mov" width={1500} trimBefore={sec(TIMING.live.trim)} />
           </Push>
         </Feature>
       </Sequence>
@@ -463,11 +458,11 @@ export const Launch: React.FC = () => {
 
       <Sequence from={at(T.cli)} durationInFrames={len(T.cli, T.end)}>
         <Feature length={T.end - T.cli} caption="No prompts in the app. Your agent writes it up.">
-          <Sequence durationInFrames={sec(3.3)} layout="none">
-            <Terminal length={3.1} />
+          <Sequence durationInFrames={sec(C.terminal)} layout="none">
+            <Terminal length={C.typing} />
           </Sequence>
-          <Sequence from={sec(3.3)} layout="none">
-            <AppWindow src="launch/writeup.mov" width={1500} trimBefore={sec(1.9)} />
+          <Sequence from={sec(C.terminal)} layout="none">
+            <AppWindow src="launch/writeup.mov" width={1500} trimBefore={sec(C.writeupTrim)} />
           </Sequence>
         </Feature>
       </Sequence>
