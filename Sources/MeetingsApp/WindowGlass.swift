@@ -1,8 +1,8 @@
 import AppKit
 import SwiftUI
 
-/// Main-window frost (toolbar title visible). Onboarding uses ``OpaqueGlass`` + hidden title
-/// — same stack as OpenLookAway.
+/// Main-window frost (toolbar title visible). Onboarding hosts its own glass through
+/// `NSWindow.installGlassHost` instead.
 struct WindowGlass: NSViewRepresentable {
     var titleVisible: Bool = true
 
@@ -26,15 +26,7 @@ struct WindowGlass: NSViewRepresentable {
         window.styleMask.insert(.fullSizeContentView)
         window.isMovableByWindowBackground = true
 
-        if let content = window.contentView {
-            for sub in content.subviews {
-                let raw = sub.identifier?.rawValue ?? ""
-                if raw.hasPrefix("meetings-window-glass") {
-                    sub.removeFromSuperview()
-                }
-            }
-            softSplitDividers(in: content)
-        }
+        if let content = window.contentView { softSplitDividers(in: content) }
     }
 
     private static func softSplitDividers(in root: NSView) {

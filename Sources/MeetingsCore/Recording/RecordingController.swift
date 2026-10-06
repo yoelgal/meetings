@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// The recording surface the app and the menu bar item both drive. One instance per process — two
 /// concurrent recordings are not a thing, and the type enforces that by holding a single session.
@@ -70,6 +71,11 @@ public final class RecordingController {
         return max(0, Int(Date().timeIntervalSince(startedAt) * 1000))
     }
 
+    /// The clock where the last recording stopped, kept for `meetingID` until the next start. A
+    /// note filed *as* the recording stops — the panel's draft saved on its way out, a quick note
+    /// typed then Stop pressed — belongs at the end of the meeting, not at 00:00.
+    public private(set) var finalElapsedMs: Int?
+
     let store: MeetingStore
     let transcription: TranscriptionService
 
@@ -98,6 +104,10 @@ public final class RecordingController {
     /// The system track's silence is stored once per recording — the first time is the one worth
     /// knowing afterwards. Separate from `reportedCaptureFailures` so it cannot mask a full disk.
     private var systemSilenceRecorded = false
+    /// Channels whose live transcript lost text this session — a segment that would not save, a
+    /// feed the recogniser rejected. With the local engine the live rows *are* the final
+    /// transcript, so a channel with holes is handed to the batch pass whole instead.
+    private var liveIncomplete: Set<Channel> = []
     private var systemWatch = SystemAudioWatch()
     /// When the system track's capture was last asked whether anything is playing. The question is
     /// a Core Audio walk of every process, so it is asked once a second, not on every tick.
@@ -148,12 +158,14 @@ public final class RecordingController {
         captureWriteFailure = nil
         reportedCaptureFailures = []
         micProgress = nil
+        finalElapsedMs = nil
         micStalledAtMs = nil
         micStallWarning = nil
         micGaps = []
         lastFailureRetry = nil
         systemSilenceRecorded = false
         systemLostAtMs = nil
+        liveIncomplete = []
         systemAudioLost = nil
         systemWatch = SystemAudioWatch()
         lastPlaybackCheck = nil
@@ -263,16 +275,87 @@ public final class RecordingController {
     /// the whole of ``stop()``: transcribing an hour of audio is not something to start when the
     /// system has asked the process to go away, and `resumePendingOnLaunch` is already the queue for
     /// anything left at `transcribing`.
-    func finaliseForTermination() async {
+    ///
+    /// The live transcript *is* drained, with a ceiling. With the local engine the live rows are
+    /// what the batch pass promotes, so the last second or so the recogniser was still holding is
+    /// otherwise gone for good. Three seconds is the ceiling because the system is waiting on us.
+    public func finaliseForTermination() async {
+        // A second signal (or ⌘Q during a SIGTERM's finalise) waits for the first one to finish
+        // rather than finding the phase moved on and letting the process exit mid-close.
+        if let finalising {
+            await finalising.value
+            return
+        }
+        // A Stop already under way owns the close; wait (bounded) for it to move the row.
+        if case .stopping = phase {
+            let deadline = ContinuousClock.now + .seconds(5)
+            while case .stopping = phase, ContinuousClock.now < deadline {
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+            return
+        }
+        let task = Task { await self.finaliseNow() }
+        finalising = task
+        await task.value
+    }
+
+    private var finalising: Task<Void, Never>?
+
+    private func finaliseNow() async {
         guard case .recording = phase, let meetingID else { return }
+        finalElapsedMs = elapsedMs
         phase = .stopping
         meterTask?.cancel()
         meterTask = nil
+        // The same last look `stop()` takes: a disk that filled in the final tick would otherwise
+        // take its explanation with it.
+        noteCaptureFailures()
         mic.stop()
         await system.stop()
+        let streamed = Array(live.keys)
+        let drain = Task { await self.stopLiveTranscription() }
+        // A real race, not a task group: a group waits for every child, so a drain stuck loading a
+        // model held the quit — and a logout — for as long as it took.
+        let drained = await Self.finishes(within: .seconds(3)) { await drain.value }
+        if !drained {
+            // Whatever the recogniser was still holding is gone; the files are not.
+            for channel in streamed { noteLiveTextLost(channel, meetingID: meetingID) }
+        }
+        // And the same audit: a quit used to leave the row for the launch sweep, which reads the
+        // files back; moving it here means reading them here, or a mic that recorded nothing but
+        // zeros reaches `ready` with no warning.
+        if let audioDirectory { auditCapturedAudio(meetingID: meetingID, in: audioDirectory) }
         try? store.updateMeeting(id: meetingID) { meeting in
             meeting.state = .transcribing
             meeting.endedAt = Date()
+        }
+        // Last, not first: until the row has moved, a second SIGTERM must not take the default
+        // action and kill the process halfway through closing the files.
+        removeTerminationGuard()
+    }
+
+    /// Whether `work` finished inside `limit`. Returns as soon as either does, and never waits on
+    /// the other — `work` carries on unobserved if the clock wins.
+    static func finishes(
+        within limit: Duration, _ work: @escaping @Sendable () async -> Void
+    ) async -> Bool {
+        let once = OSAllocatedUnfairLock(initialState: false)
+        return await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+            let resume: @Sendable (Bool) -> Void = { value in
+                let first = once.withLock { done -> Bool in
+                    defer { done = true }
+                    return !done
+                }
+                if first { continuation.resume(returning: value) }
+            }
+            Task { await work(); resume(true) }
+            // The clock is a GCD timer, not a `Task.sleep`: a sleeping task needs a free thread in
+            // the cooperative pool to wake on, and a busy pool (CI's parallel suite measured 13.9 s
+            // for a 200 ms ceiling) is exactly when a quit must not wait on it.
+            let (seconds, attoseconds) = limit.components
+            DispatchQueue.global().asyncAfter(
+                deadline: .now() + Double(seconds) + Double(attoseconds) / 1e18
+            ) { resume(false) }
         }
     }
 
@@ -303,6 +386,7 @@ public final class RecordingController {
     /// meeting is recoverable, so the stop itself succeeded.
     public func stop() async throws {
         guard case .recording = phase, let meetingID else { throw RecordingError.notRecording }
+        finalElapsedMs = elapsedMs
         phase = .stopping
         meterTask?.cancel()
         meterTask = nil
@@ -323,9 +407,42 @@ public final class RecordingController {
         await stopLiveTranscription()
         if let audioDirectory { auditCapturedAudio(meetingID: meetingID, in: audioDirectory) }
 
-        try store.updateMeeting(id: meetingID) { meeting in
-            meeting.state = .transcribing
-            meeting.endedAt = Date()
+        do {
+            try store.updateMeeting(id: meetingID) { meeting in
+                meeting.state = .transcribing
+                meeting.endedAt = Date()
+            }
+        } catch {
+            // The audio is closed and on disk, and the row is still `recording`, which is exactly
+            // what the launch sweep recovers. What must not happen is the phase staying `.stopping`:
+            // nothing can start or stop from there, so the app could not record again until relaunch.
+            let stopFailure = String(describing: error)
+            phase = .failed(stopFailure)
+            // Nor should the row sit at `recording` — a red dot with no Stop that works — until the
+            // next launch. A locked or briefly full database usually comes back; keep trying, and
+            // queue the batch pass the moment it does.
+            let endedAt = Date()
+            Task { @MainActor [weak self, store, transcription] in
+                for _ in 0..<15 {
+                    try? await Task.sleep(for: .seconds(2))
+                    // Only while it is still ours to move: a recovery sweep may have got there
+                    // first, and a finished meeting must not be sent back to `transcribing`.
+                    // A read that fails is the same busy database, not a sign the row has moved on.
+                    guard let row = try? store.meeting(id: meetingID) else { continue }
+                    guard row.state == .recording else { return }
+                    let moved = (try? store.updateMeeting(id: meetingID) { meeting in
+                        meeting.state = .transcribing
+                        meeting.endedAt = endedAt
+                    }) != nil
+                    if moved {
+                        // Only this stop's own failure: a later start that failed has its own.
+                        if case .failed(let why) = self?.phase, why == stopFailure { self?.phase = .idle }
+                        await transcription.enqueue(meetingID: meetingID)
+                        return
+                    }
+                }
+            }
+            throw error
         }
 
         phase = .transcribing(progress: 0)
@@ -402,6 +519,9 @@ public final class RecordingController {
         let report: @Sendable (Error) -> Void = { [weak self] error in
             Task { @MainActor in self?.noteLiveUnavailable(error) }
         }
+        let lostText: @Sendable () -> Void = { [weak self] in
+            Task { @MainActor in self?.noteLiveTextLost(channel, meetingID: meetingID) }
+        }
         let pump = Task.detached {
             do {
                 try await transcriber.start(channel: channel)
@@ -412,7 +532,7 @@ public final class RecordingController {
                 return
             }
             for await (chunk, atMs) in samples {
-                try? await transcriber.feed(chunk, atMs: atMs)
+                do { try await transcriber.feed(chunk, atMs: atMs) } catch { lostText() }
             }
         }
         live[channel] = LiveChannel(transcriber: transcriber, feed: feed, pump: pump, sink: sink)
@@ -472,7 +592,10 @@ public final class RecordingController {
             tEndMs: segment.endMs,
             text: segment.text,
             pass: .live
-        )) else { return }
+        )) else {
+            noteLiveTextLost(channel, meetingID: meetingID)
+            return
+        }
         liveSegments.append(row)
     }
 
@@ -499,6 +622,20 @@ public final class RecordingController {
     /// and not a setting.
     static let livePhraseGapMs = 700
     static let livePhraseMaxWords = 60
+
+    /// Stored the first time, so the batch pass — this one, or the next launch's after a quit or a
+    /// crash — transcribes the channel from its file. See ``TranscriptionService/liveIncompleteReason``.
+    private func noteLiveTextLost(_ channel: Channel, meetingID: String) {
+        guard !liveIncomplete.contains(channel) else { return }
+        // Remembered only once it is stored: the same locked or full database that lost the text
+        // can refuse the marker, and the next loss on this channel must try again.
+        do {
+            try store.recordTranscriptIssue(TranscriptIssue(
+                meetingID: meetingID, channel: channel, kind: .liveIncomplete,
+                reason: TranscriptionService.liveIncompleteReason))
+            liveIncomplete.insert(channel)
+        } catch {}
+    }
 
     /// First reason wins: the mic channel is the one that matters, and it is attached first.
     private func noteLiveUnavailable(_ error: Error) {

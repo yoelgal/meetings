@@ -151,33 +151,6 @@ struct SectionHeader: View {
     }
 }
 
-struct AttendeeList: View {
-    let attendees: [Attendee]
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            SectionHeader(title: "Attendees")
-            if attendees.isEmpty {
-                Text("No attendees.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            } else {
-                ForEach(Array(attendees.enumerated()), id: \.offset) { _, attendee in
-                    HStack(spacing: 8) {
-                        Text(attendee.displayName)
-                            .font(.body)
-                        if let email = attendee.secondaryLine {
-                            Text(email)
-                                .font(.callout)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
 let detailInset = EdgeInsets(top: 24, leading: 32, bottom: 24, trailing: 32)
 
 /// Markdown, rendered with SwiftUI's own parser and no dependency.

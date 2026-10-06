@@ -187,3 +187,22 @@ struct CaptureRecoveryTests {
         }
     }
 }
+
+@Suite("Quit path")
+struct QuitPathTests {
+    /// What this can prove in a parallel suite is *who decided*: the work takes two minutes, so a
+    /// `false` well before then was the ceiling's. A wall-clock bound near the ceiling itself is not
+    /// provable here — CI's runner keeps both the cooperative pool and the main thread busy for
+    /// 10–20 s at a stretch, and three attempts at one measured the suite, not the ceiling. The
+    /// ceiling's own timing is a GCD timer, which neither of those can hold up.
+    @Test("the drain ceiling decides, and the work does not have to finish")
+    func finishesWithinDecidesAtTheCeiling() async {
+        let start = ContinuousClock.now
+        let finished = await RecordingController.finishes(within: .milliseconds(200)) {
+            try? await Task.sleep(for: .seconds(120))
+        }
+        #expect(!finished)
+        #expect(ContinuousClock.now - start < .seconds(100), "returned only when the work did")
+        #expect(await RecordingController.finishes(within: .seconds(60)) {})
+    }
+}

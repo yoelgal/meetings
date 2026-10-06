@@ -17,9 +17,8 @@ final class ChannelWriter: @unchecked Sendable {
     static let target = AVAudioFormat(
         commonFormat: .pcmFormatFloat32, sampleRate: 16_000, channels: 1, interleaved: false)!
 
-    /// A live transcriber would hang off this: 16 kHz mono samples plus their offset in ms from the
-    /// recording origin, which is exactly a `StreamingTranscriber.feed` call. Wave 1 leaves it nil —
-    /// the point is that wiring one up later needs no change to either recorder.
+    /// Live transcription's tap: 16 kHz mono samples plus their offset in ms from the recording
+    /// origin, which is exactly a `StreamingTranscriber.feed` call.
     var onSamples16k: (([Float], Int) -> Void)?
 
     let url: URL
@@ -47,7 +46,6 @@ final class ChannelWriter: @unchecked Sendable {
     var framesWritten: Int64 { written.withLock { $0 } }
     /// How much of `framesWritten` is the leading silence written to reach the origin.
     private(set) var paddedFrames: Int64 = 0
-    private(set) var firstBufferAt: Date?
 
     /// Why the track stopped growing, the first time a write failed, and how much audio has been
     /// dropped since. Locked for the same reason the meter is: written on the capture thread, read
@@ -80,7 +78,7 @@ final class ChannelWriter: @unchecked Sendable {
     }
 
     /// 16-bit LE PCM. `AVAudioFile` quantises the Float32 buffers we hand it on the way in.
-    private static var wavSettings: [String: Any] {
+    static var wavSettings: [String: Any] {
         [
             AVFormatIDKey: kAudioFormatLinearPCM,
             AVSampleRateKey: 16_000.0,
@@ -103,7 +101,6 @@ final class ChannelWriter: @unchecked Sendable {
     /// against the recording clock: the first buffer, and the first one after a discontinuity.
     func append(_ input: AVAudioPCMBuffer, capturedAt: Date = Date()) {
         guard let file, input.frameLength > 0 else { return }
-        if firstBufferAt == nil { firstBufferAt = capturedAt }
         if !padded {
             padded = true
             // Ten seconds is the ceiling: past that the gap is a bug, not latency, and writing

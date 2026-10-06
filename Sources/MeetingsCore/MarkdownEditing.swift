@@ -178,13 +178,6 @@ public enum MarkdownEditing {
     public enum Label: Equatable, Sendable {
         case symbol(String)
         case text(String)
-
-        /// The SF Symbol name, or nil for a text label. Nil is not a fallback: a caller that draws
-        /// text draws text.
-        public var symbolName: String? {
-            if case .symbol(let name) = self { return name }
-            return nil
-        }
     }
 
     /// One item of the menu `/` opens.

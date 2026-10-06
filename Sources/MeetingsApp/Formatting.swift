@@ -174,10 +174,4 @@ extension Attendee {
         if let email, !email.isEmpty { return email }
         return "Unnamed attendee"
     }
-
-    /// The email, but only when it is not already the display name.
-    var secondaryLine: String? {
-        guard let email, !email.isEmpty, email != displayName else { return nil }
-        return email
-    }
 }

@@ -52,7 +52,7 @@ public enum AudioIngest {
         } catch {
             throw AudioIngestError.unreadable(source, error.localizedDescription)
         }
-        let target = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16_000, channels: 1, interleaved: false)!
+        let target = ChannelWriter.target
         guard let converter = AVAudioConverter(from: input.processingFormat, to: target) else {
             throw AudioIngestError.unconvertible(source, "\(input.processingFormat)")
         }
@@ -60,7 +60,10 @@ public enum AudioIngest {
         // the converter pick channel one and throw the rest of the room away.
         converter.downmix = true
 
-        let output = try AVAudioFile(forWriting: destination, settings: wavSettings)
+        let output = try AVAudioFile(
+            // The settings recording uses, so an imported file and a recorded one are
+            // indistinguishable to everything downstream.
+            forWriting: destination, settings: ChannelWriter.wavSettings)
         let inputFrames: AVAudioFrameCount = 16_384
         let ratio = target.sampleRate / input.processingFormat.sampleRate
         let outputFrames = AVAudioFrameCount(Double(inputFrames) * ratio) + 1_024
@@ -106,20 +109,6 @@ public enum AudioIngest {
                 throw AudioIngestError.unconvertible(source, "unexpected converter status")
             }
         }
-    }
-
-    /// The same settings `ChannelWriter` records with, so an imported file and a recorded one are
-    /// indistinguishable to everything downstream.
-    private static var wavSettings: [String: Any] {
-        [
-            AVFormatIDKey: kAudioFormatLinearPCM,
-            AVSampleRateKey: 16_000.0,
-            AVNumberOfChannelsKey: 1,
-            AVLinearPCMBitDepthKey: 16,
-            AVLinearPCMIsFloatKey: false,
-            AVLinearPCMIsBigEndianKey: false,
-            AVLinearPCMIsNonInterleaved: false,
-        ]
     }
 }
 

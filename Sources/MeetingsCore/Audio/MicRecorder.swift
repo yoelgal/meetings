@@ -60,7 +60,6 @@ final class MicRecorder: @unchecked Sendable {
     var framesWritten: Int64 { writer?.framesWritten ?? 0 }
     /// Why this track stopped growing, when it has. See ``ChannelWriter/writeFailure``.
     var writeFailure: ChannelWriter.WriteFailure? { writer?.writeFailure }
-    var firstBufferAt: Date? { writer?.firstBufferAt }
     /// Set when the graph fell back to raw capture, so a run can report that echo cancellation was
     /// not in play and the mic track may carry bleed from the speakers.
     private(set) var fellBackToRaw = false

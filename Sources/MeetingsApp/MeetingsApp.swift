@@ -175,6 +175,33 @@ final class MeetingsAppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Quitting — ⌘Q, the Dock, a logout — reaches a Cocoa app as this, not as the SIGTERM the
+    /// recorder's termination guard answers, so until this existed a quit mid-meeting skipped every
+    /// finalising step: WAV headers unwritten, live transcript undrained, row left at `recording`
+    /// for the next launch's sweep.
+    ///
+    /// Also the quit path for notes. Resigning first responder is what files a half-written live
+    /// note (its field commits when it loses focus), and the short wait lets a pre-notes or summary
+    /// edit still inside its 600 ms autosave debounce land before the process goes.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        for window in sender.windows { window.makeFirstResponder(nil) }
+        guard case .ready(let model) = launch else { return .terminateNow }
+        Task { @MainActor in
+            await model.recording.finaliseForTermination()
+            // An import mid-decode finishes rather than orphaning its audio. Bounded, because the
+            // system is waiting on us: a two-hour file decodes in well under this.
+            let deadline = Date().addingTimeInterval(120)
+            while !model.importsInFlight.isEmpty, Date() < deadline {
+                try? await Task.sleep(for: .milliseconds(200))
+            }
+            // ponytail: a fixed wait rather than asking every editor whether it is dirty; 0.7 s on
+            // quit is the price, and it is longer than the debounce it waits out.
+            try? await Task.sleep(for: .milliseconds(700))
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
+    }
+
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         guard needsOnboarding, case .ready(let model) = launch else { return true }
         hideMainWindows()

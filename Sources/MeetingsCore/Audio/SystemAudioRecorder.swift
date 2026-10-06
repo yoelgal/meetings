@@ -46,20 +46,21 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @un
     var userStoppedCapture: Bool {
         queue.sync { (stopError as? SCStreamError)?.code == .userStopped }
     }
-    private var restartCount = 0
     /// Everything below is written only on `queue`.
     private var writer: ChannelWriter?
     private var bufferCount = 0
-    private var lastFormat: AVAudioFormat?
     private var stopError: Error?
 
     /// A silent check — unlike `SCShareableContent`, which *prompts* when the state is
     /// notDetermined and is therefore a request dressed up as a query.
     static var isAuthorized: Bool { CGPreflightScreenCaptureAccess() }
 
-    /// Live transcription's tap on the resampled 16 kHz stream, forwarded to the writer when the
-    /// stream starts. Set before `start`; the writer only exists from then on.
-    var onSamples16k: (([Float], Int) -> Void)?
+    /// Live transcription's tap on the resampled 16 kHz stream. Handed to the writer as it is
+    /// created, and forwarded on the sample queue after that, so clearing it at stop actually
+    /// detaches the running writer — the same contract `MicRecorder.onSamples16k` keeps.
+    var onSamples16k: (([Float], Int) -> Void)? {
+        didSet { queue.sync { [onSamples16k] in writer?.onSamples16k = onSamples16k } }
+    }
 
     var level: Float { writer?.level ?? 0 }
     var framesWritten: Int64 { queue.sync { writer?.framesWritten ?? 0 } }
@@ -70,15 +71,11 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @un
     var watchSnapshot: (buffers: Int, lastSignalAt: Date?) {
         queue.sync { (bufferCount, writer?.lastSignalAt) }
     }
-    /// The ASBD actually delivered, which is not necessarily the one we asked for.
-    var deliveredFormat: AVAudioFormat? { queue.sync { lastFormat } }
     /// Set when the stream is gone for good — the user stopped it from the menu bar, or every
     /// attempt to restart it failed.
     var failure: Error? { queue.sync { stopError } }
     /// When a buffer with any sound in it last arrived. See ``ChannelWriter/lastSignalAt``.
     var lastSignalAt: Date? { queue.sync { writer?.lastSignalAt } }
-    /// How many times the stream has been rebuilt this recording. Main actor.
-    @MainActor var restarts: Int { restartCount }
 
     @MainActor
     func start(writingTo url: URL, origin: Date) async throws {
@@ -110,7 +107,6 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @un
         }
         running = true
         stoppedByUser = false
-        restartCount = 0
         session += 1
         routeObserver = OutputRouteObserver { [weak self] in
             Task { @MainActor in await self?.restart(because: "the audio output changed") }
@@ -214,7 +210,6 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @un
                 }
                 stream = fresh
                 generation += 1
-                restartCount += 1
                 queue.sync { stopError = nil }
                 return
             } catch {
@@ -260,7 +255,6 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @un
             let pcm = Self.pcmBuffer(from: sampleBuffer)
         else { return }
         bufferCount += 1
-        lastFormat = pcm.format
         writer?.append(pcm, capturedAt: Self.captureDate(of: sampleBuffer))
     }
 

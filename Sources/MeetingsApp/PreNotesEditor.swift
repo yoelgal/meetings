@@ -186,6 +186,10 @@ struct SharedFieldEditor: View {
     @State private var external: String?
     @State private var saving = false
     @State private var saveTask: Task<Void, Never>?
+    /// The save of the field this editor was last pointed at. The editor is reused when the meeting
+    /// changes, and by the time it hears about that `save` already writes to the *new* meeting — so
+    /// an edit still inside the 600 ms debounce has to go out through this one, or it is lost.
+    @State private var adoptedSave: ((String) -> Void)?
     /// Holds an injected draft unsaved so the *touched* branch of `receive` can be photographed; a
     /// real edit autosaves after 600 ms.
     @State private var autosaveSuspended = false
@@ -280,8 +284,16 @@ struct SharedFieldEditor: View {
             }
         }
         .task(id: identity) {
+            // Before the size guard, which is about the field being adopted: an oversized next
+            // meeting must not cost the previous one its unsaved edit.
+            if touched, !autosaveSuspended, text != baseline { adoptedSave?(text) }
+            // Spent: an oversized field below is not adopted, and a stale save must not run again
+            // over whatever the previous meeting holds by the time of the next switch.
+            touched = false
+            adoptedSave = nil
             guard !tooLargeToEdit else { return }
             adopt(value)
+            adoptedSave = save
             // Screenshot seam, inert unless the environment variable is set — see `Appearance`.
             if let draft {
                 autosaveSuspended = true

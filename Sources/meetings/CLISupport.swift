@@ -322,14 +322,7 @@ extension String {
 enum Format {
     /// `m:ss`, or `h:mm:ss` once a meeting runs over an hour. Used for every transcript offset, so a
     /// timestamp printed in one command is the timestamp you can pass back to another.
-    static func offset(ms: Int) -> String {
-        let seconds = max(0, ms) / 1000
-        let hours = seconds / 3600
-        if hours > 0 {
-            return String(format: "%d:%02d:%02d", hours, (seconds % 3600) / 60, seconds % 60)
-        }
-        return String(format: "%d:%02d", seconds / 60, seconds % 60)
-    }
+    static func offset(ms: Int) -> String { MarkdownExport.timestamp(ms) }
 
     /// SRT wants `hh:mm:ss,mmm` — comma, not point, and the hours field is never dropped.
     static func srtTimestamp(ms: Int) -> String {
@@ -481,22 +474,6 @@ enum Parse {
 
     private static func badOffset(_ raw: String) -> CLIError {
         CLIError.usage("Cannot read \(raw) as a time. Use 12:30, 1:05:00, 12m, 750s or a number of seconds.")
-    }
-}
-
-// MARK: - Channel labels
-
-extension Channel {
-    /// mic is whoever is sitting at this Mac; system is everything coming out of the speakers.
-    ///
-    /// The transcript is read by an agent asked things like "what did I commit to", so the label has
-    /// to name the *speaker*, not the plumbing: `mic:` and `system:` describe where the audio came
-    /// from and leave the agent to guess which one is the user.
-    var speakerLabel: String {
-        switch self {
-        case .mic: "You"
-        case .system: "Others"
-        }
     }
 }
 

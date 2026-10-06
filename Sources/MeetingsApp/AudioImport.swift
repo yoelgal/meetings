@@ -134,6 +134,9 @@ extension AppModel {
     static let importableAudioTypes: [UTType] = [.audio, .mpeg4Audio, .mp3, .wav, .aiff]
 
     func beginImport(of url: URL) {
+        // The decode runs in the background now, so a second drop of the same file while the first
+        // is still decoding would otherwise make a second meeting of it.
+        guard !importsInFlight.contains(url) else { return }
         pendingImport = PendingImport(url: url)
     }
 
@@ -151,16 +154,18 @@ extension AppModel {
             importedFrom: pending.url.lastPathComponent
         )
         let directory = Paths.audioDirectory(meetingID: meeting.id)
+        let source = pending.url
+        importsInFlight.insert(source)
+        defer { importsInFlight.remove(source) }
         do {
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             // An imported file is one mixed track, so it lands on the mic channel: that is the only
             // track the batch pass reads when there is no second file, and inventing a third
             // channel value would be a schema change. The detail view knows an imported meeting has
             // no channel split and stops claiming one — see `WrittenDetailView`.
-            try Self.convertToWAV16k(
-                source: pending.url,
-                destination: directory.appendingPathComponent("mic.wav")
-            )
+            //
+            // Off the main actor: decoding a two-hour m4a is tens of seconds of work, and on the
+            // main actor that is tens of seconds of a frozen window.
+            try await Task.detached { try AudioIngest.install(source, forMeeting: meeting.id) }.value
             var stored = meeting
             stored.audioPath = directory.path
             try store.createMeeting(stored)
@@ -173,66 +178,5 @@ extension AppModel {
         refresh()
         selection = meeting.id
         await transcription.enqueue(meetingID: meeting.id)
-    }
-
-    /// Decodes anything Core Audio can open — m4a, mp3, aiff, wav — into the exact format Parakeet
-    /// wants. Resampling here rather than in the engine means the stored audio is the same shape a
-    /// recorded meeting's is, so nothing downstream has to know where it came from.
-    nonisolated static func convertToWAV16k(source: URL, destination: URL) throws {
-        let input = try AVAudioFile(forReading: source)
-        guard let outputFormat = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32, sampleRate: 16_000, channels: 1, interleaved: false
-        ), let converter = AVAudioConverter(from: input.processingFormat, to: outputFormat) else {
-            throw ImportError.unsupported(source.lastPathComponent)
-        }
-        let output = try AVAudioFile(forWriting: destination, settings: [
-            AVFormatIDKey: kAudioFormatLinearPCM,
-            AVSampleRateKey: 16_000,
-            AVNumberOfChannelsKey: 1,
-            AVLinearPCMBitDepthKey: 16,
-            AVLinearPCMIsFloatKey: false,
-            AVLinearPCMIsBigEndianKey: false,
-        ])
-
-        let frames: AVAudioFrameCount = 16_384
-        // The converter calls its input block synchronously, on this thread, before `convert`
-        // returns — so one reusable buffer is correct here despite the block being `@Sendable`.
-        nonisolated(unsafe) let scratch = AVAudioPCMBuffer(
-            pcmFormat: input.processingFormat, frameCapacity: frames
-        )
-        guard let scratch else { throw ImportError.unsupported(source.lastPathComponent) }
-
-        while true {
-            guard let converted = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: frames)
-            else { throw ImportError.unsupported(source.lastPathComponent) }
-            var failure: NSError?
-            let status = converter.convert(to: converted, error: &failure) { _, inputStatus in
-                do {
-                    try input.read(into: scratch)
-                } catch {
-                    inputStatus.pointee = .endOfStream
-                    return nil
-                }
-                guard scratch.frameLength > 0 else {
-                    inputStatus.pointee = .endOfStream
-                    return nil
-                }
-                inputStatus.pointee = .haveData
-                return scratch
-            }
-            if let failure { throw failure }
-            if converted.frameLength > 0 { try output.write(from: converted) }
-            if status == .endOfStream || status == .error { break }
-        }
-    }
-}
-
-enum ImportError: Error, LocalizedError {
-    case unsupported(String)
-
-    var errorDescription: String? {
-        switch self {
-        case .unsupported(let name): "\(name) is not an audio file this Mac can decode"
-        }
     }
 }
