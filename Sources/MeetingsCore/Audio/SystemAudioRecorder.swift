@@ -33,6 +33,9 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @un
     /// over the new session's, so it checks this after every await, not just `running`.
     private var session = 0
     private var routeObserver: OutputRouteObserver?
+    /// The user stopped capture from the system's own control. Main actor. Honoured for the rest
+    /// of the recording: no route change, watchdog or retry brings the stream back.
+    private(set) var stoppedByUser = false
     private var restartCount = 0
     /// Everything below is written only on `queue`.
     private var writer: ChannelWriter?
@@ -53,6 +56,10 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @un
     /// Why this track stopped growing, when it has. See ``ChannelWriter/writeFailure``.
     var writeFailure: ChannelWriter.WriteFailure? { queue.sync { writer?.writeFailure } }
     var buffersReceived: Int { queue.sync { bufferCount } }
+    /// The watchdog's two reads in one hop onto the sample queue rather than two.
+    var watchSnapshot: (buffers: Int, lastSignalAt: Date?) {
+        queue.sync { (bufferCount, writer?.lastSignalAt) }
+    }
     /// The ASBD actually delivered, which is not necessarily the one we asked for.
     var deliveredFormat: AVAudioFormat? { queue.sync { lastFormat } }
     /// Set when the stream is gone for good — the user stopped it from the menu bar, or every
@@ -91,6 +98,7 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @un
             throw error
         }
         running = true
+        stoppedByUser = false
         restartCount = 0
         session += 1
         routeObserver = OutputRouteObserver { [weak self] in
@@ -147,7 +155,7 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @un
     /// the new device is least ready. Only when all of them fail is the track declared lost.
     @MainActor
     func restart(because reason: String) async {
-        guard running, !restarting else { return }
+        guard running, !restarting, !stoppedByUser else { return }
         restarting = true
         let mine = session
         defer { if session == mine { restarting = false } }
@@ -248,6 +256,11 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @un
     func stream(_ stream: SCStream, didStopWithError error: Error) {
         if (error as? SCStreamError)?.code == .userStopped {
             queue.async { self.stopError = error }
+            Task { @MainActor in
+                self.stoppedByUser = true
+                self.routeObserver?.invalidate()
+                self.routeObserver = nil
+            }
             return
         }
         let stopped = ObjectIdentifier(stream)

@@ -114,6 +114,10 @@ final class MicRecorder: @unchecked Sendable {
             detachEngine()
             writer?.markDiscontinuity()
             rebuilds += 1
+            // A fresh route gets a fresh chance at echo cancellation. One bad moment on the last
+            // route must not cost voice processing — and with it channel separation — for the rest
+            // of the meeting.
+            fellBackToRaw = false
         }
         do {
             try attach(voiceProcessing: !fellBackToRaw)
@@ -240,6 +244,16 @@ final class MicRecorder: @unchecked Sendable {
         } else {
             writer?.markDiscontinuity()
         }
-        try? attach(voiceProcessing: false)
+        fellBackToRaw = true
+        do {
+            try attach(voiceProcessing: false)
+        } catch {
+            // The device the rebuild just found may still be settling. Leaving it here would leave
+            // no engine and no observer to ever trigger another try, so join the rebuild's retry.
+            let current = session
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+                self?.rebuild(attempt: 1, session: current)
+            }
+        }
     }
 }

@@ -132,11 +132,15 @@ struct CaptureRecoveryTests {
         if case .restart = actions[0].1 {} else { Issue.record("expected a restart, got \(actions[0].1)") }
         #expect(actions[1].0 == 102 && actions[1].1 == .warn)
 
-        // Another restart is tried a minute after the first, and sound returning clears the warning.
+        // One silence restart per quiet episode: a minute on, a muted listener must not cost another.
         tick(141, signal: t0 + 60)
-        if case .restart = actions.last?.1 {} else { Issue.record("expected a second restart") }
-        tick(150, signal: t0 + 150)
+        tick(200, signal: t0 + 60)
+        #expect(actions.count == 2, "a second silence restart in the same episode: \(actions)")
+        // Sound returning clears the warning and re-arms the restart for the next episode.
+        tick(210, signal: t0 + 210)
         #expect(actions.last?.1 == .clear)
+        for s in stride(from: 211.0, through: 240, by: 1) { tick(s, signal: t0 + 210) }
+        if case .restart = actions.last?.1 {} else { Issue.record("a new quiet episode should restart again") }
     }
 
     @Test("a stream that stops delivering buffers is restarted without a warning")
