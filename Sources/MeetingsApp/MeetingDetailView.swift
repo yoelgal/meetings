@@ -558,8 +558,7 @@ private struct MeetingChips: View {
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
-        .fixedSize()
-        // With no folders in the store the only destination is Unfiled, and an unfiled meeting is
+                // With no folders in the store the only destination is Unfiled, and an unfiled meeting is
         // already there — the same rule the context menu applies.
         .disabled(folders.isEmpty && meeting.folderID == nil)
     }

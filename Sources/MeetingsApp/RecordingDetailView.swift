@@ -282,7 +282,10 @@ struct LiveNotesPane: View {
                             .id(note.id)
                         }
                     }
-                    .padding(.horizontal, inset)
+                    .padding(.leading, inset)
+                    // Room for the overlay scroller even in the panel, where the pane's own inset is 0:
+                    // a scroller over the last characters of every note is not an inset of zero.
+                    .padding(.trailing, inPanel ? 10 : inset)
                 }
                 .onChange(of: notes.count) {
                     if let last = notes.last?.id { withAnimation { proxy.scrollTo(last) } }
@@ -318,7 +321,9 @@ struct LiveNotesPane: View {
                 }
             }
             .padding(.horizontal, inset)
-            .padding(.vertical, 16)
+            .padding(.top, 16)
+            // The panel's own 14 pt is the bottom edge there; 16 more doubled it, as the sides were.
+            .padding(.bottom, inPanel ? 0 : 16)
         }
         .frame(maxHeight: .infinity, alignment: .top)
         .onAppear {

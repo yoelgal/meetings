@@ -241,6 +241,14 @@ final class MeetingsAppDelegate: NSObject, NSApplicationDelegate {
 /// window has to be photographed in a given state without ever being clicked or brought forward —
 /// the same reason `MEETINGS_CALENDAR_FIXTURE` exists in `MeetingsCore`.
 enum Appearance {
+    /// Any screenshot pose at all. A posed launch is `open -g` on a Mac somebody is using, so
+    /// nothing in one may take focus — whichever of the overrides it happens to use.
+    static var isPosed: Bool {
+        ProcessInfo.processInfo.environment.keys.contains {
+            $0.hasPrefix("MEETINGS_") && !["MEETINGS_HOME", "MEETINGS_DB", "MEETINGS_CALENDAR_FIXTURE"].contains($0)
+        }
+    }
+
     private static func value(_ key: String) -> String? {
         let value = ProcessInfo.processInfo.environment[key]
         return (value?.isEmpty ?? true) ? nil : value

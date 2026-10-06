@@ -333,7 +333,7 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
         window.makeKeyAndOrderFront(nil)
         // A real first launch brings the wizard forward. A posed one must not: those launches are
         // `open -g` on a Mac someone is using, and activating took their keyboard focus.
-        if Appearance.panel == nil && !Appearance.forceOnboarding { NSApp.activate(ignoringOtherApps: true) }
+        if !Appearance.isPosed { NSApp.activate(ignoringOtherApps: true) }
     }
 
     /// Last Continue. Reveal the app first, then close this window.
@@ -545,6 +545,9 @@ private struct DownloadStep: View {
     let model: AppModel
     @Binding var downloading: Bool
     @State private var progress = 0.0
+    /// Set when `prepareModels` returns, not when the byte count reaches 100%: the model still
+    /// loads after its last byte lands, and "Ready." beside a disabled Continue is a lie.
+    @State private var done = false
     @State private var problem: String?
 
     var body: some View {
@@ -563,7 +566,7 @@ private struct DownloadStep: View {
             // The pie is the progress; this is the words for it. Without them a finished download
             // — or a model already on disk — sat under "Downloading the model" saying nothing.
             if problem == nil {
-                Text(progress >= 1 ? "Ready." : "\(Int(progress * 100))%")
+                Text(done ? "Ready." : "\(Int(min(progress, 0.99) * 100))%")
                     .font(.callout.monospacedDigit())
                     .foregroundStyle(.secondary)
                     .contentTransition(.numericText())
@@ -580,12 +583,14 @@ private struct DownloadStep: View {
         downloading = true
         problem = nil
         progress = 0
+        done = false
         Task {
             do {
                 try await model.transcription.prepareModels { value in
                     Task { @MainActor in progress = max(progress, value) }
                 }
                 progress = 1
+                done = true
             } catch {
                 problem = "The download failed: \(error.localizedDescription)"
             }
