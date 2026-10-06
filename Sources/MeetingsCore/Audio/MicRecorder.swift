@@ -38,6 +38,9 @@ final class MicRecorder: @unchecked Sendable {
     /// Bumped by every `start`, so a retry scheduled during one recording cannot attach an engine
     /// in the next.
     private var session = 0
+    /// Bumped by every `attach`. The liveness check's fallback names the graph that tripped it, so a
+    /// trip queued just before a route-change rebuild cannot tear down the rebuild's new graph.
+    private var graph = 0
 
     /// VoiceProcessingIO is a duplex unit, not an input effect. On some routes — mismatched default
     /// input and output devices hit a live macOS `AUVPAggregate` defect — it delivers callbacks full
@@ -135,6 +138,7 @@ final class MicRecorder: @unchecked Sendable {
     /// Build the graph and start capture into the current writer. Called once at start, again with
     /// `voiceProcessing: false` if the liveness check trips, and again on every route change.
     private func attach(voiceProcessing: Bool) throws {
+        graph += 1
         engine = AVAudioEngine()
         let input = engine.inputNode
 
@@ -192,6 +196,7 @@ final class MicRecorder: @unchecked Sendable {
     }
 
     private func installVoiceTap(on input: AVAudioInputNode, format: AVAudioFormat) {
+        let tripped = graph
         let checkFrames = Int(format.sampleRate)  // one second
         input.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, when in
             guard let self else { return }
@@ -204,7 +209,7 @@ final class MicRecorder: @unchecked Sendable {
                 if self.livenessFrames >= checkFrames {
                     self.livenessSettled = true
                     if self.livenessPeak == 0 {
-                        DispatchQueue.main.async { self.fallBackToRaw() }
+                        DispatchQueue.main.async { self.fallBackToRaw(graph: tripped) }
                         return
                     }
                 }
@@ -234,8 +239,8 @@ final class MicRecorder: @unchecked Sendable {
     /// that lost one channel still beats a meeting that stopped mid-sentence.
     ///
     /// After a rebuild the file already holds the meeting so far, so it is kept and the gap padded.
-    private func fallBackToRaw() {
-        guard isRecording else { return }
+    private func fallBackToRaw(graph tripped: Int) {
+        guard isRecording, tripped == graph else { return }
         detachEngine()
         if rebuilds == 0 {
             writer = nil

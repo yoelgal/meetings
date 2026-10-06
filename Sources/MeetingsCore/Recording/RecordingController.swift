@@ -84,6 +84,7 @@ public final class RecordingController {
     /// When a failed system restart was last retried; the stream is never given up on.
     private var lastFailureRetry: Date?
     private var playbackCheckInFlight = false
+    private var seenSystemGeneration = 0
     /// The system track's silence is stored once per recording — the first time is the one worth
     /// knowing afterwards. Separate from `reportedCaptureFailures` so it cannot mask a full disk.
     private var systemSilenceRecorded = false
@@ -530,7 +531,7 @@ public final class RecordingController {
         guard case .recording = phase, systemAudioUnavailable == nil else { return }
         let now = Date()
         if let failure = system.failure {
-            if system.stoppedByUser {
+            if system.stoppedByUser || system.userStoppedCapture {
                 systemAudioLost = "System audio capture was stopped from the menu bar, so other "
                     + "callers are not being recorded for the rest of this meeting."
                 return
@@ -548,6 +549,12 @@ public final class RecordingController {
         lastFailureRetry = nil
 
         let snapshot = system.watchSnapshot
+        // A stream installed since the last tick — a retry, a route change — is new, and gets the
+        // start grace a new stream gets rather than being judged on its predecessor's silence.
+        if system.generation != seenSystemGeneration {
+            seenSystemGeneration = system.generation
+            systemWatch.noteNewStream(at: now, buffers: snapshot.buffers)
+        }
         let lastSignal = snapshot.lastSignalAt
         // Only worth asking while the track has been quiet long enough for the answer to matter, and
         // asked off the main actor: it walks every Core Audio process object.
@@ -563,7 +570,11 @@ public final class RecordingController {
                 self?.playbackCheckInFlight = false
             }
         }
-        if quietFor <= SystemAudioWatch.quietSeconds { playing = false }
+        if quietFor <= SystemAudioWatch.quietSeconds {
+            playing = false
+            // An answer from a previous quiet episode is about a different moment of the meeting.
+            lastPlaybackCheck = nil
+        }
         switch systemWatch.evaluate(
             now: now, lastSignalAt: lastSignal, buffers: snapshot.buffers,
             othersPlaying: playing)
@@ -574,7 +585,9 @@ public final class RecordingController {
         case .warn:
             systemAudioLost = Self.systemSilentReason
             // Stored once: the first time is the one worth knowing about afterwards.
-            if !systemSilenceRecorded {
+            // Not over a full disk's own report: that row is the truer cause, and this one would
+            // replace it (one stored row per channel and kind).
+            if !systemSilenceRecorded, system.writeFailure == nil {
                 systemSilenceRecorded = true
                 // From the last sound, not from now: the warning lands a restart and two quiet
                 // windows after the silence began, and the user has to find the start of it.
@@ -634,6 +647,14 @@ public final class RecordingController {
 
         init(startedAt: Date = Date()) { self.startedAt = startedAt }
 
+        /// A stream was installed (a retry, a route change). It gets the grace any new stream
+        /// gets: the stall clock starts now, and its quiet is not the old stream's quiet.
+        mutating func noteNewStream(at now: Date, buffers count: Int) {
+            buffers = (count, now)
+            lastRestartAt = now
+            silenceRestartSpent = true
+        }
+
         mutating func evaluate(now: Date, lastSignalAt: Date?, buffers count: Int, othersPlaying: Bool)
             -> Action
         {
@@ -648,7 +669,9 @@ public final class RecordingController {
                     lastRestartAt = nil
                     silenceRestartSpent = false
                 }
-                if warned && quietFor < 1 {
+                // Sound came back, or nothing is playing any more: either way the warning's claim —
+                // an app is playing and nothing arrives — is no longer true.
+                if warned {
                     warned = false
                     return .clear
                 }
@@ -696,7 +719,10 @@ public final class RecordingController {
         if stalled, micStalledAtMs == nil {
             let at = max(0, elapsedMs - Int(Self.captureStallSeconds * 1000))
             micStalledAtMs = at
-            let reason = "the microphone stopped delivering audio at \(MarkdownExport.timestamp(at)). "
+            let earlier = micGaps.isEmpty ? "" : "It had already dropped out from " + micGaps.map {
+                "\(MarkdownExport.timestamp($0.from)) to \(MarkdownExport.timestamp($0.to))"
+            }.joined(separator: ", ") + ". "
+            let reason = "the microphone stopped delivering audio at \(MarkdownExport.timestamp(at)). " + earlier
                 + "The usual cause is the input device changing or being unplugged mid-meeting. "
                 + "Meetings keeps trying to reconnect it; everything recorded up to that point is safe."
             micStallWarning = reason
@@ -744,7 +770,11 @@ public final class RecordingController {
     private func report(_ channel: Channel, _ reason: String) {
         guard !reportedCaptureFailures.contains(channel) else { return }
         reportedCaptureFailures.insert(channel)
-        if captureWriteFailure == nil { captureWriteFailure = reason }
+        // A write failure outranks a stall: the stall's text says "reconnecting", the disk is full.
+        if captureWriteFailure == nil || captureWriteFailure == micStallWarning {
+            captureWriteFailure = reason
+            micStallWarning = nil
+        }
         recordCaptureIssue(channel, reason)
     }
 

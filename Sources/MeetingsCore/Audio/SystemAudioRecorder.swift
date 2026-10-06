@@ -36,6 +36,14 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @un
     /// The user stopped capture from the system's own control. Main actor. Honoured for the rest
     /// of the recording: no route change, watchdog or retry brings the stream back.
     private(set) var stoppedByUser = false
+    /// Bumped every time a new stream is installed — at start, and by every successful restart,
+    /// whoever asked for it. Main actor. The watchdog reads it to give a new stream its start grace.
+    private(set) var generation = 0
+    /// The user's stop, read from where the delegate records it first. `stoppedByUser` follows on
+    /// the main actor a hop later; until it does, this is the one that is already true.
+    var userStoppedCapture: Bool {
+        queue.sync { (stopError as? SCStreamError)?.code == .userStopped }
+    }
     private var restartCount = 0
     /// Everything below is written only on `queue`.
     private var writer: ChannelWriter?
@@ -92,6 +100,7 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @un
         }
         do {
             stream = try await makeStream()
+            generation += 1
         } catch {
             queue.sync { self.writer = nil }
             try? FileManager.default.removeItem(at: url)
@@ -155,11 +164,11 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @un
     /// the new device is least ready. Only when all of them fail is the track declared lost.
     @MainActor
     func restart(because reason: String) async {
-        guard running, !restarting, !stoppedByUser else { return }
+        guard running, !restarting, !stoppedByUser, !userStoppedCapture else { return }
         restarting = true
         let mine = session
         defer { if session == mine { restarting = false } }
-        var current: Bool { running && session == mine }
+        var current: Bool { running && session == mine && !stoppedByUser && !userStoppedCapture }
         Self.log.notice("restarting system audio: \(reason, privacy: .public)")
         if let old = stream {
             stream = nil
@@ -185,6 +194,7 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @un
                     return
                 }
                 stream = fresh
+                generation += 1
                 restartCount += 1
                 queue.sync { stopError = nil }
                 return
