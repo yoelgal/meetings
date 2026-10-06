@@ -349,7 +349,13 @@ public final class RecordingController {
                 if first { continuation.resume(returning: value) }
             }
             Task { await work(); resume(true) }
-            Task { try? await Task.sleep(for: limit); resume(false) }
+            // The clock is a GCD timer, not a `Task.sleep`: a sleeping task needs a free thread in
+            // the cooperative pool to wake on, and a busy pool (CI's parallel suite measured 13.9 s
+            // for a 200 ms ceiling) is exactly when a quit must not wait on it.
+            let (seconds, attoseconds) = limit.components
+            DispatchQueue.global().asyncAfter(
+                deadline: .now() + Double(seconds) + Double(attoseconds) / 1e18
+            ) { resume(false) }
         }
     }
 
