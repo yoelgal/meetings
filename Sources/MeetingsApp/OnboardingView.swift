@@ -333,7 +333,7 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
         window.makeKeyAndOrderFront(nil)
         // A real first launch brings the wizard forward. A posed one must not: those launches are
         // `open -g` on a Mac someone is using, and activating took their keyboard focus.
-        if Appearance.panel == nil { NSApp.activate(ignoringOtherApps: true) }
+        if Appearance.panel == nil && !Appearance.forceOnboarding { NSApp.activate(ignoringOtherApps: true) }
     }
 
     /// Last Continue. Reveal the app first, then close this window.

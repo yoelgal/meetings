@@ -64,8 +64,10 @@ struct RecordingDetailView: View {
                 : model.segments,
             unavailable: model.recording.liveTranscriptionUnavailable,
             systemAudioUnavailable: model.recording.systemAudioUnavailable,
-            captureWarning: model.recording.meetingID == meeting.id || Appearance.forceRecordingChrome
-                ? model.liveCaptureWarning : nil
+            // The real warning is only ever this meeting's; the pose seam stands in only for a pose.
+            captureWarning: model.recording.meetingID == meeting.id
+                ? model.recording.liveCaptureWarning
+                : Appearance.forceRecordingChrome ? Appearance.captureWarning : nil
         )
     }
 
@@ -236,7 +238,8 @@ struct LiveNotesPane: View {
     let elapsedMs: @MainActor () -> Int
     /// Nil inside the panel, where the content is already out.
     var popOut: (() -> Void)?
-    /// True inside the panel. It gates one screenshot seam and nothing else.
+    /// True inside the panel: drops the pane's own inset (the panel has one) and gates one
+    /// screenshot seam.
     var inPanel = false
     let commit: (String) -> Void
 
