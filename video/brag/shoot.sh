@@ -208,7 +208,8 @@ cat > "$WORK/writeup.md" <<'MD'
 - [ ] Send Marcus the pricing wording
 - [ ] Ship the migration note with the invite
 MD
-"$CLI" list --state ready > "$WORK/step1.out" 2>&1 || true
+"$CLI" list --state ready > "$WORK/step1.out" 2>&1 \
+    || { echo "shoot: list failed: $(cat "$WORK/step1.out")" >&2; exit 1; }
 pose --env "MEETINGS_SCOPE=all" --env "MEETINGS_SELECT=ready"
 # The CLI's exit status is checked after the clip, never swallowed: a failing `summary set` would
 # otherwise be filmed as an empty write-up and typed on screen as the agent's output.

@@ -18,7 +18,9 @@ B="$ROOT/video/brag"
     --color-space=bt709 --muted --log=error )
 python3 "$B/soundtrack.py" --picture "$B/work-render.mp4"
 # The poster is the reveal, settled: it says what the product does in one frame. Baked in as
-# frame 0 (replacing it, not adding one) so every platform's idle thumbnail is that frame.
+# frame 0 (replacing it, not adding one) so every platform's idle thumbnail is that frame — a
+# deliberate trade: playback opens with that one frame (16.7 ms) before the black hook, which is
+# the price of the thumbnail being the reveal on platforms that ignore cover art.
 ffmpeg -loglevel error -y -ss 9.6 -i "$B/work-render.mp4" -frames:v 1 "$B/work-poster.png"
 ffmpeg -loglevel error -y -i "$B/work-poster.png" -q:v 2 "$B/brag.jpg"
 ffmpeg -loglevel error -y -i "$B/work-render.mp4" -i "$B/work-poster.png" \

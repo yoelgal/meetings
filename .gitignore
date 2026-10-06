@@ -28,3 +28,4 @@ video/film/public/launch/
 video/brag/work-*
 # A symlink to another checkout's install is a file, which `node_modules/` (directories only) misses.
 video/film/node_modules
+__pycache__/

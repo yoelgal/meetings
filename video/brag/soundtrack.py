@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 """The launch film's soundtrack, built only from real recordings — and checked, not listened to.
 
-    video/brag/fetch-sounds.sh                 # the CC0 recordings, once
-    python3 video/brag/soundtrack.py           # -> video/film/public/launch/soundtrack.wav
-    python3 video/brag/soundtrack.py --verify video/brag/brag.mp4   # after the render
+    video/brag/fetch-sounds.sh       # the CC0 recordings, once
+    video/brag/finish.sh             # render, score, mux, verify — the way to build the film
+
+or by hand, with a silent render of the picture to place fades by:
+
+    python3 video/brag/soundtrack.py --picture video/brag/work-render.mp4
+    python3 video/brag/soundtrack.py --picture video/brag/work-render.mp4 --verify video/brag/brag.mp4
 
 Every cut and every click in the film gets its own sound: a marble, a key, a switch, a glass, a
 keystroke, a pen. The melody is a marimba, a grand piano and a contrabass played by people, re-pitched
@@ -208,8 +212,8 @@ def piano(midis, t, gain_db, hold, pan=0.0):
         place(note("piano", PIANO, m, hold), t, gain_db - 3 * math.log2(len(midis)), pan, kind="note")
 
 
-def pizz(midi, t, gain_db):
-    place(note("pizz", PIZZ, midi, 1.2), t, gain_db, -0.05, kind="note")
+def pizz(midi, t, gain_db, seconds=1.2):
+    place(note("pizz", PIZZ, midi, round(seconds, 3)), t, gain_db, -0.05, kind="note")
 
 
 # MARK: - The hits
@@ -315,12 +319,15 @@ def clip_changes(name, min_delta=1500):
     return [t for (t, s), (_, prev) in zip(rows[1:], rows) if abs(s - prev) > min_delta]
 
 
-def type_frames(start_f, end_f, length):
-    """The frames on which a type-on adds characters: Launch.tsx's
-    floor(interpolate(frame, [start, end], [0, length])), solved for each new count."""
+def type_frames(start, end, length):
+    """The frames on which a type-on adds characters: exactly Launch.tsx's
+    `frame < start ? nothing : floor(interpolate(frame, [start, end], [0, length]))` — clamped, in
+    floats, so a fractional start or end lands on the same frame it does on screen."""
     out, last = [], 0
-    for f in range(start_f, end_f + 2):
-        typed = min(length, max(0, math.floor((f - start_f) / (end_f - start_f) * length))) if end_f > start_f else length
+    for f in range(math.floor(start), math.ceil(end) + 2):
+        if f < start:
+            continue
+        typed = length if end <= start else math.floor(min(1.0, max(0.0, (f - start) / (end - start))) * length)
         if typed > last:
             out.append(f)
             last = typed
@@ -337,33 +344,41 @@ place(DESK_MARBLE, H["question"], -12, 0.0, "hook: Who said that?", "hit")
 piano([45], H["question"], -14, 2.6)
 
 # Cuts: each its own object.
-cut_sounds = [MARBLE_TILE[0], MARBLES[2], MARBLE_TILE[1], MARBLES[5], MARBLE_TILE[2], MARBLES[8], GLASS_PLACE]
+cut_sounds = [cycle(MARBLE_TILE, 0), cycle(MARBLES, 2), cycle(MARBLE_TILE, 1), cycle(MARBLES, 5), cycle(MARBLE_TILE, 2), cycle(MARBLES, 8), GLASS_PLACE]
 for n, t in enumerate(CUTS):
     place(cut_sounds[n], visible(t), -16 if n < 6 else -17, (-0.2, 0.2)[n % 2], f"cut {t:.1f}s", "cut")
 
 # Problem: each line switches on.
 P = TIMING["problem"]
-place(SWITCH[0], visible(S["problem"] + P["lineA"]), -15, -0.15, "problem line A", "fade")
+place(cycle(SWITCH, 0), visible(S["problem"] + P["lineA"]), -15, -0.15, "problem line A", "fade")
 place(FLICK, visible(S["problem"] + P["lineB"]), -15, 0.15, "problem line B", "fade")
 
 # Reveal: the split, the two labels, the mark.
 Rv = TIMING["reveal"]
 place(KEYS_PICKUP, visible(S["reveal"] + Rv["split"]), -16, 0.0, "reveal: tracks split", "fade")
-place(GLASS_TAP[0], visible(S["reveal"] + Rv["labels"]), -15, -0.3, "reveal: You / Others", "fade")
+place(cycle(GLASS_TAP, 0), visible(S["reveal"] + Rv["labels"]), -15, -0.3, "reveal: You / Others", "fade")
 place(GLASS_WINDOW, visible(S["reveal"] + Rv["mark"]), -13, 0.1, "reveal: Meetings records them", "fade")
 
 # Live: each transcript line as the app draws it — glass for the other side, a pen for you.
 # The seeded dialogue alternates system, mic, system, …, starting with the other side.
 trim = TIMING["live"]["trim"]
 live_len = S["anchored"] - S["live"]
-lines = [t for t in clip_changes("live.mov") if trim <= t < trim + live_len and t > 1.0]
+# shoot.sh seeds six lines a beat apart, other side first; the first frame-size jump after the
+# recording chrome settles is the first of them. Anything else — a missed line, an extra jump — and
+# Others and You would trade sounds for the rest of the beat, so the count is checked, not assumed.
+SEEDED_LINES = 6
+arrivals = [t for t in clip_changes("live.mov") if t > 1.0]
+if len(arrivals) != SEEDED_LINES:
+    sys.exit(f"soundtrack: live.mov shows {len(arrivals)} line arrivals, shoot.sh seeds {SEEDED_LINES}: "
+             f"{[round(t, 3) for t in arrivals]}")
+lines = [t for t in arrivals if trim <= t < trim + live_len]
 for n, t in enumerate(lines):
     other = n % 2 == 0
     place(cycle(GLASS_TAP, n) if other else cycle(PEN, n), S["live"] + t - trim, -17,
           -0.35 if other else 0.35, f"live line {n + 1} ({'Others' if other else 'You'})", "click")
 
 # Share: the panel leaves the shared screen.
-place(SWITCH[1], visible(S["share"] + TIMING["share"]["panelGone"]), -15, 0.3, "share: panel hidden", "fade")
+place(cycle(SWITCH, 1), visible(S["share"] + TIMING["share"]["panelGone"]), -15, 0.3, "share: panel hidden", "fade")
 
 # CLI: keystrokes on the frames characters appear (no two closer than two frames — at the
 # terminal's speed a key per frame is a buzz, not typing), a pen click as each answer appears,
@@ -375,25 +390,29 @@ for i, step in enumerate(SESSION):
     start = lead + i * per
     type_end = start + min(len(step["command"]) * C["framesPerChar"], per * C["typingShare"])
     last = -10
-    for n, f in enumerate(type_frames(math.ceil(start), math.floor(type_end), len(step["command"]))):
+    for n, f in enumerate(type_frames(start, type_end, len(step["command"]))):
         if f - last >= 2:
             place(cycle(KEYS, 7 * i + n), S["cli"] + frame_time(f), -24, rng.uniform(-0.3, 0.3),
                   f"cli step {i + 1} key", "key")
             last = f
     out_f = math.ceil(type_end + sec_frames(C["outputAfter"]))
     place(cycle(PEN, i + 3), visible(S["cli"] + frame_time(out_f)), -18, 0.2, f"cli step {i + 1} output", "fade")
-place(MARBLES[11], S["cli"] + C["terminal"], -14, -0.2, "cli: back to the app", "cut")
-landing = [t for t in clip_changes("writeup.mov") if t >= C["writeupTrim"]][0]
+place(cycle(MARBLES, 11), S["cli"] + C["terminal"], -14, -0.2, "cli: back to the app", "cut")
+on_screen = S["end"] - S["cli"] - C["terminal"]
+landed = [t for t in clip_changes("writeup.mov") if C["writeupTrim"] <= t < C["writeupTrim"] + on_screen]
+if not landed:
+    sys.exit("soundtrack: the write-up never lands while writeup.mov is on screen — re-shoot it")
+landing = landed[0]
 land_t = S["cli"] + C["terminal"] + landing - C["writeupTrim"]
 place(KEYS_JINGLE, land_t, -15, 0.15, "cli: write-up lands", "hit")
-place(GLASS_TAP[1], land_t, -16, -0.2, "", "hit")
+place(cycle(GLASS_TAP, 1), land_t, -16, -0.2, "", "hit")
 
 # End card: the mark, the line, the install command, the small print.
 E = TIMING["end"]
 place(GLASS_WINDOW, visible(S["end"] + E["mark"]), -16, 0.0, "end: Meetings", "fade")
 place(cycle(GLASS_TAP, 2), visible(S["end"] + E["tag"]), -16, -0.2, "end: tagline", "fade")
 place(cycle(KEYS, 3), visible(S["end"] + E["install"]), -15, 0.2, "end: install line", "fade")
-place(SWITCH[2] if len(SWITCH) > 2 else FLICK, visible(S["end"] + E["meta"]), -17, 0.0, "end: macOS 26 …", "fade")
+place(cycle(SWITCH, 2), visible(S["end"] + E["meta"]), -17, 0.0, "end: macOS 26 …", "fade")
 
 
 # The hits alone, kept for verification before the music is added on top of them.
@@ -418,12 +437,13 @@ bar = 0
 while S["reveal"] + bar * BAR < S["end"] - 0.01:
     t0 = S["reveal"] + bar * BAR
     root, triad = CHORDS[bar % 4]
-    piano([m - 12 for m in triad], t0, -16, BAR + 0.3, pan=-0.15)
+    # Held to the next bar, but never past the end card's downbeat, which is the card's alone.
+    piano([m - 12 for m in triad], t0, -16, min(BAR + 0.3, S["end"] - t0), pan=-0.15)
     for b in range(4):
         tb = t0 + b * BEAT
         if tb >= S["end"] - 0.01:
             break
-        pizz(root if b % 2 == 0 else root + 7, tb, -11)
+        pizz(root if b % 2 == 0 else root + 7, tb, -11, min(1.2, S["end"] - tb))
         for e in range(2):
             m = (triad + tuple(x + 12 for x in triad))[(b * 2 + e) % 6] + 12
             marimba(m, tb + e * BEAT / 2, -18 if e else -16, 0.25 if e else -0.25)
@@ -504,9 +524,10 @@ def master():
 
 # MARK: - Verification
 
-def stem_attack(mono, t, before=0.008, after=0.016):
+def stem_attack(mono, t, before=0.02, after=0.016):
     """The attack nearest `t` in a hits-only stem: first sample over 20% of the local peak in a
-    window too short to reach the next keystroke (33 ms away at the fastest)."""
+    window that looks further back than the pass mark (half a frame), so a sound that lands early
+    reads as early instead of at the window's edge."""
     a, b = max(0, int((t - before) * SR)), min(len(mono), int((t + after) * SR))
     seg = mono[a:b]
     p = peak(seg)
@@ -611,13 +632,14 @@ def verify(video):
         v = sorted(x for t, x in st if a + 0.5 <= t < b and x > -70)
         if v:
             print(f"    {n:9s} {a:5.1f}–{b:5.1f}s   median {v[len(v) // 2]:6.1f}   max {v[-1]:6.1f}")
-    return worst, lags, seen, i, tp
+    return alone, lags, seen, i, tp
 
 
 if __name__ == "__main__":
     if "--verify" in sys.argv:
-        worst, lags, seen, i, tp = verify(Path(sys.argv[sys.argv.index("--verify") + 1]))
-        if worst > 0.5 / FPS or max(abs(x) for x in lags) > 0.002 or seen < len(PLACED) \
+        # Gated on each sound read back alone: the in-stem figure includes neighbours still ringing.
+        alone, lags, seen, i, tp = verify(Path(sys.argv[sys.argv.index("--verify") + 1]))
+        if alone > 0.5 / FPS or max(abs(x) for x in lags) > 0.002 or seen < len(PLACED) \
                 or abs(i - TARGET_LUFS) > 0.7 or tp > CEILING_DBTP:
             sys.exit("soundtrack: verification failed")
     else:
