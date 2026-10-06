@@ -218,6 +218,8 @@ private struct StubEngine: TranscriptionEngine, Sendable {
             .runBatchPass(meetingID: meeting.id, progress: { _ in })
 
         #expect(try store.segments(meetingID: meeting.id, channel: .system).map(\.text) == ["Thurs"])
+        // Promoted, not left at `live`: the app shows final rows once any exist, and would hide them.
+        #expect(try store.segments(meetingID: meeting.id, channel: .system).allSatisfy { $0.pass == .final })
         #expect(try store.transcriptIssues(meetingID: meeting.id).map(\.channel) == [.system])
         // The marker stays alongside the real failure, so a later re-run tries the file again.
         #expect(try store.liveIncompleteChannels(meetingID: meeting.id) == [.system])
