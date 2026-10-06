@@ -349,7 +349,12 @@ final class AppModel {
         // a phantom red dot and a Stop button that throws. It runs after the repair (an unfinalised
         // WAV reads as zero frames, and deciding on that would bin a recoverable meeting) and
         // before `resumePendingOnLaunch()`, which is the queue that picks up what it recovers.
-        RecordingRecovery.sweepOnLaunch(store: store)
+        RecordingRecovery.sweepOnLaunch(
+            store: store,
+            owning: { [weak self] in await self?.recordingInThisProcess() ?? [] }
+        ) { [transcription] recovered in
+            for id in recovered { await transcription.enqueue(meetingID: id) }
+        }
         // The retention sweep runs on launch. The rule itself lives in MeetingsCore so the
         // CLI applies exactly the same one.
         Retention.sweepOnLaunch(store: store)
@@ -936,6 +941,24 @@ final class AppModel {
         }
     }
 
+    /// Files being decoded into the store right now. Quit waits for these: a decode cut off by the
+    /// process exiting leaves audio on disk with no meeting row pointing at it.
+    var importsInFlight: Set<URL> = []
+
+    /// The meeting this process is recording, if any, for the recovery re-sweep to leave alone.
+    func recordingInThisProcess() -> Set<String> {
+        guard let id = recording.meetingID else { return [] }
+        switch recording.phase {
+        case .starting, .recording, .stopping: return [id]
+        case .idle, .transcribing, .failed: return []
+        }
+    }
+
+    /// The recorder's live capture warning, or the screenshot seam's.
+    var liveCaptureWarning: String? {
+        recording.liveCaptureWarning ?? Appearance.captureWarning
+    }
+
     /// The recording clock for a meeting, in milliseconds — the offset a live note anchors at, and
     /// the number the panel and the recording bar both display.
     ///
@@ -943,8 +966,9 @@ final class AppModel {
     /// one recording, otherwise the row's `started_at`, so a session a crash interrupted still
     /// files its notes at the offset they were actually written at instead of at zero.
     func elapsedMs(for meeting: Meeting) -> Int {
-        if recording.meetingID == meeting.id, case .recording = recording.phase {
-            return recording.elapsedMs
+        if recording.meetingID == meeting.id {
+            if case .recording = recording.phase { return recording.elapsedMs }
+            if let final = recording.finalElapsedMs { return final }
         }
         guard displayState(for: meeting) == .recording, let startedAt = meeting.startedAt else {
             return 0

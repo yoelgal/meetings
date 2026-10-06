@@ -1,8 +1,8 @@
 import AppKit
 import SwiftUI
 
-/// Main-window frost (toolbar title visible). Onboarding uses ``OpaqueGlass`` + hidden title
-/// — same stack as OpenLookAway.
+/// Main-window frost (toolbar title visible). Onboarding hosts its own glass through
+/// `NSWindow.installGlassHost` instead.
 struct WindowGlass: NSViewRepresentable {
     var titleVisible: Bool = true
 
@@ -26,15 +26,7 @@ struct WindowGlass: NSViewRepresentable {
         window.styleMask.insert(.fullSizeContentView)
         window.isMovableByWindowBackground = true
 
-        if let content = window.contentView {
-            for sub in content.subviews {
-                let raw = sub.identifier?.rawValue ?? ""
-                if raw.hasPrefix("meetings-window-glass") {
-                    sub.removeFromSuperview()
-                }
-            }
-            softSplitDividers(in: content)
-        }
+        if let content = window.contentView { softSplitDividers(in: content) }
     }
 
     private static func softSplitDividers(in root: NSView) {
@@ -50,13 +42,22 @@ struct WindowGlass: NSViewRepresentable {
 
 extension View {
     func windowGlass(titleVisible: Bool = true) -> some View {
-        containerBackground(for: .window) {
-            ZStack {
-                Rectangle().fill(Material.regular.materialActiveAppearance(.active))
-                Color.black.opacity(0.32)
-            }
+        containerBackground(for: .window) { WindowFrost() }
+            .background(WindowGlass(titleVisible: titleVisible))
+    }
+}
+
+/// The frost itself. The dimming layer is for dark mode only: the same 32% black over the light
+/// material turned every pane a flat mid-grey (~#9E9E9E) with dark text on it — the light window
+/// read as a disabled one.
+private struct WindowFrost: View {
+    @Environment(\.colorScheme) private var scheme
+
+    var body: some View {
+        ZStack {
+            Rectangle().fill(Material.regular.materialActiveAppearance(.active))
+            if scheme == .dark { Color.black.opacity(0.32) }
         }
-        .background(WindowGlass(titleVisible: titleVisible))
     }
 }
 

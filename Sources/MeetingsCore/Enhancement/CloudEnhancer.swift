@@ -101,12 +101,14 @@ public struct CloudEnhancer: Sendable {
             throw CloudEnhancementError.http(http.statusCode, String(decoding: data.prefix(512), as: UTF8.self))
         }
         let decoded = try JSONDecoder().decode(ChatResponse.self, from: data)
-        return decoded.choices.first?.message.content.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return decoded.choices.first?.message.content?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     }
 
     private struct ChatResponse: Decodable {
         struct Choice: Decodable {
-            struct Message: Decodable { let content: String }
+            // Optional: some providers (reasoning models among them) answer `"content": null`, which
+            // is an empty write-up, not a decoding error.
+            struct Message: Decodable { let content: String? }
             let message: Message
         }
         let choices: [Choice]

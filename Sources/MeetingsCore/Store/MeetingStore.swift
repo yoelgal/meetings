@@ -824,7 +824,7 @@ extension Meeting {
     ///
     /// JSON encoding does escape a NUL rather than emitting one, so `actions` and `attendees` never
     /// truncated their column the way a plain text field would — but the escape *round-trips*. A
-    /// `"ship the thing"` an agent piped into `actions set` came back out of `--json` as a raw
+    /// `"ship␀the thing"` an agent piped into `actions set` came back out of `--json` as a raw
     /// NUL in the next agent's stdin, and out of the app into an `NSString`, having survived the one
     /// place in the system that exists to stop it. Sanitising is the trust boundary, not truncation
     /// avoidance: the byte is never meaningful in a title, an action or a person's name, wherever it

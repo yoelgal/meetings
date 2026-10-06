@@ -63,7 +63,11 @@ struct RecordingDetailView: View {
                 ? model.recording.liveSegments
                 : model.segments,
             unavailable: model.recording.liveTranscriptionUnavailable,
-            systemAudioUnavailable: model.recording.systemAudioUnavailable
+            systemAudioUnavailable: model.recording.systemAudioUnavailable,
+            // The real warning is only ever this meeting's; the pose seam stands in only for a pose.
+            captureWarning: model.recording.meetingID == meeting.id
+                ? model.recording.liveCaptureWarning
+                : Appearance.forceRecordingChrome ? Appearance.captureWarning : nil
         )
     }
 
@@ -139,9 +143,17 @@ private struct LiveTranscriptPane: View {
     let segments: [TranscriptSegment]
     let unavailable: String?
     let systemAudioUnavailable: String?
+    /// Capture going wrong *now* — the other side gone silent, a track that stopped growing. It is
+    /// the sentence itself, written for someone mid-call, so it is shown rather than tooltipped.
+    let captureWarning: String?
 
     var body: some View {
         VStack(spacing: 0) {
+            if let captureWarning {
+                Notice(symbol: "exclamationmark.triangle.fill", text: captureWarning, tint: .orange)
+                    .padding(.horizontal, 20)
+                    .padding(.top, 16)
+            }
             // A degraded channel is news whether or not anything has been said yet, so it stays
             // pinned above whatever the pane is showing.
             if let systemAudioUnavailable {
@@ -199,9 +211,16 @@ private struct LiveTranscriptPane: View {
 private struct Notice: View {
     let symbol: String
     let text: String
+    /// Only for a warning about *now* — the same orange the panel's mark uses, so the two read as
+    /// one signal. Informational notices stay grey.
+    var tint: Color?
 
     var body: some View {
-        Label(text, systemImage: symbol)
+        Label {
+            Text(text)
+        } icon: {
+            Image(systemName: symbol).foregroundStyle(tint.map(AnyShapeStyle.init) ?? AnyShapeStyle(.secondary))
+        }
             .font(.callout)
             .foregroundStyle(.secondary)
             .padding(12)
@@ -219,13 +238,18 @@ struct LiveNotesPane: View {
     let elapsedMs: @MainActor () -> Int
     /// Nil inside the panel, where the content is already out.
     var popOut: (() -> Void)?
-    /// True inside the panel. It gates one screenshot seam and nothing else.
+    /// True inside the panel: drops the pane's own inset (the panel has one) and gates one
+    /// screenshot seam.
     var inPanel = false
     let commit: (String) -> Void
 
     @State private var draft = ""
     @State private var seeded = false
     @FocusState private var focused: Bool
+
+    /// The panel already insets its whole content by 14; padding again here put the note list and
+    /// field 30 pt in from the header above them.
+    private var inset: CGFloat { inPanel ? 0 : 16 }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -239,8 +263,8 @@ struct LiveNotesPane: View {
                     .foregroundStyle(.tertiary)
                 if let popOut { PopOutButton(action: popOut) }
             }
-            .padding(.horizontal, 16)
-            .padding(.top, 16)
+            .padding(.horizontal, inset)
+            .padding(.top, inPanel ? 4 : 16)
             .padding(.bottom, 8)
 
             ScrollViewReader { proxy in
@@ -258,7 +282,10 @@ struct LiveNotesPane: View {
                             .id(note.id)
                         }
                     }
-                    .padding(.horizontal, 16)
+                    .padding(.leading, inset)
+                    // Room for the overlay scroller even in the panel, where the pane's own inset is 0:
+                    // a scroller over the last characters of every note is not an inset of zero.
+                    .padding(.trailing, inPanel ? 10 : inset)
                 }
                 .onChange(of: notes.count) {
                     if let last = notes.last?.id { withAnimation { proxy.scrollTo(last) } }
@@ -293,7 +320,10 @@ struct LiveNotesPane: View {
                         .foregroundStyle(.tertiary)
                 }
             }
-            .padding(16)
+            .padding(.horizontal, inset)
+            .padding(.top, 16)
+            // The panel's own 14 pt is the bottom edge there; 16 more doubled it, as the sides were.
+            .padding(.bottom, inPanel ? 0 : 16)
         }
         .frame(maxHeight: .infinity, alignment: .top)
         .onAppear {

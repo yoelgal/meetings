@@ -106,17 +106,25 @@ public enum RecordingRecovery {
     /// again on the window's own cadence costs one directory listing per fifteen seconds, keeps the
     /// audio as the single source of truth, and cannot go stale the way a pid file can when the pid
     /// is reused. The trade: recovery lands one grace window after the crash rather than instantly.
+    ///
+    /// `onLateRecovery` hears about meetings a *re-sweep* moved to `transcribing`. The launch pass
+    /// needs no such call — the launch queue reads `transcribing` rows right after it — but a
+    /// re-sweep lands fifteen seconds later, after that read, and without this its meeting sat at
+    /// "transcribing" with nothing transcribing it until the next launch.
     @discardableResult
     public static func sweepOnLaunch(
         store: MeetingStore,
         audioRoot: URL = Paths.audioRoot,
         now: Date = Date(),
-        grace: TimeInterval = liveGraceSeconds
+        grace: TimeInterval = liveGraceSeconds,
+        owning: (@Sendable () async -> Set<String>)? = nil,
+        onLateRecovery: (@Sendable ([String]) async -> Void)? = nil
     ) -> [Outcome] {
         let outcomes = sweepReportingFailure(store: store, audioRoot: audioRoot, now: now, grace: grace)
         if outcomes.contains(where: { $0.disposition == .stillLive }) {
             Task.detached { await resweepWhileAnythingLooksLive(
-                store: store, audioRoot: audioRoot, grace: grace) }
+                store: store, audioRoot: audioRoot, grace: grace, owning: owning,
+                onRecovered: onLateRecovery) }
         }
         return outcomes
     }
@@ -138,7 +146,9 @@ public enum RecordingRecovery {
     static func resweepWhileAnythingLooksLive(
         store: MeetingStore,
         audioRoot: URL,
-        grace: TimeInterval
+        grace: TimeInterval,
+        owning: (@Sendable () async -> Set<String>)? = nil,
+        onRecovered: (@Sendable ([String]) async -> Void)? = nil
     ) async {
         while !Task.isCancelled {
             try? await Task.sleep(for: .seconds(grace))
@@ -148,20 +158,26 @@ public enum RecordingRecovery {
             // app runs. Either way there is nothing left to recover, and hammering a deleted file
             // just logs a disk I/O error once a grace window forever.
             guard FileManager.default.fileExists(atPath: store.dbPool.path) else { return }
+            // Asked every pass, not once: the loop can outlive the launch by a whole meeting, and a
+            // recording this process starts meanwhile is its own, however quiet its files go.
+            let owned = await owning?() ?? []
             let outcomes = sweepReportingFailure(
-                store: store, audioRoot: audioRoot, now: Date(), grace: grace)
+                store: store, owning: owned, audioRoot: audioRoot, now: Date(), grace: grace)
+            let recovered = outcomes.filter { $0.disposition == .recovered }.map(\.meetingID)
+            if !recovered.isEmpty { await onRecovered?(recovered) }
             guard outcomes.contains(where: { $0.disposition == .stillLive }) else { return }
         }
     }
 
     private static func sweepReportingFailure(
         store: MeetingStore,
+        owning owned: Set<String> = [],
         audioRoot: URL,
         now: Date,
         grace: TimeInterval
     ) -> [Outcome] {
         do {
-            let outcomes = try sweep(store: store, audioRoot: audioRoot, now: now, grace: grace)
+            let outcomes = try sweep(store: store, owning: owned, audioRoot: audioRoot, now: now, grace: grace)
             let acted = outcomes.filter { $0.disposition != .stillLive }
             if !acted.isEmpty {
                 FileHandle.standardError.write(Data(

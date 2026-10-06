@@ -399,6 +399,8 @@ public actor TranscriptionService {
         for channel in transcribed {
             try store.clearTranscriptIssue(meetingID: meetingID, channel: channel)
             try store.clearTranscriptIssue(meetingID: meetingID, channel: channel, kind: .vocabulary)
+            // The file has been read, which is all the live-incomplete marker asks for.
+            try store.clearTranscriptIssue(meetingID: meetingID, channel: channel, kind: .liveIncomplete)
         }
         for failure in failures {
             try store.recordTranscriptIssue(TranscriptIssue(
@@ -431,6 +433,15 @@ public actor TranscriptionService {
     ///
     /// Per channel, because a term is scored against the audio it was said in: the microphone's
     /// samples cannot tell you where a word in the system audio was spoken.
+    /// Recorded on a channel the moment its live transcript loses text (a segment that would not
+    /// save, a feed the recogniser rejected). With the local engine the live rows *are* the final
+    /// transcript, so the batch pass reads this as "do not promote these rows — transcribe the file",
+    /// and swaps the result in the same transaction as every other channel. Stored rather than held
+    /// in memory so a quit, a crash or a relaunch cannot forget it; cleared like any other
+    /// transcription verdict once the file has been read.
+    public static let liveIncompleteReason =
+        "the live transcript lost text while recording, so this channel is transcribed again from its recording."
+
     private func promoteLiveSegments(
         meetingID: String,
         stored: [TranscriptSegment],
@@ -445,6 +456,7 @@ public actor TranscriptionService {
         // rather than `unedited`, because "no unedited rows" and "no rows" are not the same channel:
         // one produced nothing, the other produced nothing but corrections the user typed.
         let channelsWithRows = Set(stored.map(\.channel))
+        let incomplete = (try? store.liveIncompleteChannels(meetingID: meetingID)) ?? []
         let vocabulary = (try? store.vocabularyInEffect(meetingID: meetingID)) ?? []
         let entries = VocabularyBiasing.entries(for: vocabulary)
         progress(0.1)
@@ -492,7 +504,14 @@ public actor TranscriptionService {
             // because `replaceLiveSegments` drops a new segment only where a correction *wholly*
             // covers it — so any recognised span whose boundaries differ survives, and the same
             // speech appears twice. A channel that has said its piece, however edited, is done.
-            if rows.isEmpty, !channelsWithRows.contains(file.channel) {
+            // …or one whose live transcript is known to have holes in it. If the file cannot be read
+            // either, the channel is not in `written` and its live rows are kept: holes beat nothing.
+            // Not over a correction, though: a re-read keeps only the recognised spans a correction
+            // wholly covers, so a channel somebody has already corrected keeps its live rows.
+            let corrected = stored.contains { $0.channel == file.channel && $0.edited }
+            var readFileFailed = false
+            if (rows.isEmpty && !channelsWithRows.contains(file.channel))
+                || (incomplete.contains(file.channel) && !corrected) {
                 do {
                     let engine = try resolvedEngine()
                     // On a fresh install this is the download, and the promote path is normally the
@@ -518,9 +537,17 @@ public actor TranscriptionService {
                     // in `transcript_issues`, which is what makes the half transcript legible as a
                     // half transcript rather than as a finished one.
                     failures.append((file.channel, error))
+                    // A marked channel whose file will not read either still has its live rows,
+                    // holes and all. They are promoted below rather than left at `live`, where the
+                    // app — which shows final rows once any exist — would hide that side entirely.
+                    if !rows.isEmpty {
+                        readFileFailed = true
+                    }
                 }
-                progress(base + span)
-                continue
+                if !readFileFailed {
+                    progress(base + span)
+                    continue
+                }
             }
 
             let outcome = await biased(
@@ -561,6 +588,7 @@ public actor TranscriptionService {
         // repaired file has to take last week's warning down with it.
         for channel in retranscribed {
             try store.clearTranscriptIssue(meetingID: meetingID, channel: channel)
+            try store.clearTranscriptIssue(meetingID: meetingID, channel: channel, kind: .liveIncomplete)
         }
         for failure in failures {
             try store.recordTranscriptIssue(TranscriptIssue(
@@ -776,7 +804,6 @@ public actor TranscriptionService {
 
 public enum TranscriptionError: Error, CustomStringConvertible {
     case notImplemented
-    case modelsUnavailable(String)
     case unreadableAudio(URL, String)
     case noAudio(String)
     case remoteFailed(String)
@@ -784,7 +811,6 @@ public enum TranscriptionError: Error, CustomStringConvertible {
     public var description: String {
         switch self {
         case .notImplemented: "transcription is not wired up yet"
-        case .modelsUnavailable(let why): "transcription models unavailable: \(why)"
         case .unreadableAudio(let url, let why): "unreadable audio \(url.lastPathComponent): \(why)"
         case .noAudio(let id): "meeting \(id) has no audio to transcribe"
         case .remoteFailed(let why): "remote transcription failed: \(why)"
