@@ -307,6 +307,9 @@ public final class RecordingController {
         phase = .stopping
         meterTask?.cancel()
         meterTask = nil
+        // The same last look `stop()` takes: a disk that filled in the final tick would otherwise
+        // take its explanation with it.
+        noteCaptureFailures()
         mic.stop()
         await system.stop()
         let streamed = Array(live.keys)
@@ -318,6 +321,10 @@ public final class RecordingController {
             // Whatever the recogniser was still holding is gone; the files are not.
             for channel in streamed { noteLiveTextLost(channel, meetingID: meetingID) }
         }
+        // And the same audit: a quit used to leave the row for the launch sweep, which reads the
+        // files back; moving it here means reading them here, or a mic that recorded nothing but
+        // zeros reaches `ready` with no warning.
+        if let audioDirectory { auditCapturedAudio(meetingID: meetingID, in: audioDirectory) }
         try? store.updateMeeting(id: meetingID) { meeting in
             meeting.state = .transcribing
             meeting.endedAt = Date()
