@@ -9,7 +9,8 @@
     "audit": "bun scripts/audit-camera.mjs",
     "master": "bun scripts/audit-camera.mjs && remotion render Demo out/meetings-demo-master.mov --codec=prores --prores-profile=hq --scale=2 --color-space=bt709 && node scripts/tag-colour.mjs out/meetings-demo-master.mov",
     "render": "bun scripts/audit-camera.mjs && remotion render Demo out/meetings-demo.mp4 --codec=h264 --crf=17 --color-space=bt709 && node scripts/tag-colour.mjs out/meetings-demo.mp4",
-    "still": "remotion still Demo out/frame.png"
+    "still": "remotion still Demo out/frame.png",
+    "launch": "remotion render Launch out/launch.mp4 --codec=h264 --crf=17 --color-space=bt709 && node scripts/tag-colour.mjs out/launch.mp4"
   },
   "dependencies": {
     "@fontsource-variable/inter": "5.2.8",

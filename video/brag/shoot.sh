@@ -181,6 +181,7 @@ PANEL="$(panel_window)"
 [ -n "$PANEL" ] || { echo "shoot: the notes panel never came on screen" >&2; exit 1; }
 still "$PANEL" panel-live
 keepalive_stop
+"$SEED" drop "$LIVE"
 
 # ---------------------------------------------------------------- 3. notes anchored in the transcript
 
@@ -209,12 +210,15 @@ cat > "$WORK/writeup.md" <<'MD'
 MD
 "$CLI" list --state ready > "$WORK/step1.out" 2>&1 || true
 pose --env "MEETINGS_SCOPE=all" --env "MEETINGS_SELECT=ready"
-( sleep 3; "$CLI" summary set "$STANDUP" --file "$WORK/writeup.md" > "$WORK/step2.out" 2>&1 || true ) &
+# The CLI's exit status is checked after the clip, never swallowed: a failing `summary set` would
+# otherwise be filmed as an empty write-up and typed on screen as the agent's output.
+( sleep 3; "$CLI" summary set "$STANDUP" --file "$WORK/writeup.md" > "$WORK/step2.out" 2>&1; echo $? > "$WORK/step2.status" ) &
 DRIVER=$!
 "$WINCAP" --window-id "$APP_WINDOW" --out "$OUT/writeup.mov" --seconds 8 --fps 60
 wait "$DRIVER"
 stop_app
-"$CLI" show "$STANDUP" --summary > "$WORK/step3.out" 2>&1 || true
+[ "$(cat "$WORK/step2.status")" = 0 ] || { echo "shoot: summary set failed: $(cat "$WORK/step2.out")" >&2; exit 1; }
+"$CLI" show "$STANDUP" --summary > "$WORK/step3.out" 2>&1
 
 python3 - "$STANDUP" "$WORK" > "$SESSION_JSON" <<'PY'
 import json, re, sys

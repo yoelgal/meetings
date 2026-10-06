@@ -145,6 +145,20 @@ if args.first == "live" {
 
 // Appends a tenth of a second of audio to both tracks, which is what makes the row read as live.
 // Called on a timer by `video/shoot.sh` for the length of a recording shot.
+// MARK: - seed drop <ref>
+//
+// The live meeting, gone once its shots are taken. `meetings delete` refuses a meeting at
+// `recording`, by design; the fixture is the one writer that may end a recording nobody is making,
+// and leaving it in the list put "Catch-up with Marcus · Recording" into every later shot.
+if args.first == "drop" {
+    guard args.count == 2 else { fail("usage: seed drop <ref>") }
+    // The store refuses to delete a meeting at `recording` (audio may still be going into it), so
+    // the fixture closes it first — it knows nothing is.
+    try store.updateMeeting(id: args[1]) { $0.state = .complete }
+    _ = try store.deleteMeeting(id: args[1])
+    exit(0)
+}
+
 if args.first == "keepalive" {
     guard args.count == 2 else { fail("usage: seed keepalive <ref>") }
     let directory = liveAudioDirectory(args[1])

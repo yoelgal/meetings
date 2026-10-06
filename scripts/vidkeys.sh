@@ -47,6 +47,10 @@ esac
 
 # Only ever a directory this script made: an existing one must be empty or carry its manifest.
 # `vidkeys.sh take.mov .` used to delete the current directory, whatever was in it.
+if [ -e "$OUT" ] && [ ! -d "$OUT" ]; then
+    echo "vidkeys: $OUT exists and is not a directory; refusing to replace it" >&2
+    exit 1
+fi
 if [ -d "$OUT" ] && [ -n "$(ls -A "$OUT")" ] && [ ! -f "$OUT/manifest.txt" ]; then
     echo "vidkeys: $OUT is not empty and is not a previous vidkeys output; refusing to clear it" >&2
     exit 1

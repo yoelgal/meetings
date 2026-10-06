@@ -311,6 +311,7 @@ DRIVER=$!
 "$WINCAP" --window-id "$APP_WINDOW" --out "$CLIPS/live.mov" --seconds 12 --fps 60
 wait "$DRIVER"
 keepalive_stop
+"$SEED" drop "$LIVE"
 
 # 2 — the write-up landing, written from outside the app.
 #
@@ -377,7 +378,8 @@ step() {
     STEP=$((STEP + 1))
     local label="$1"; shift
     printf '%s\n' "$label" > "$SESSION/$STEP.cmd"
-    "$@" > "$SESSION/$STEP.out" 2>&1 || true
+    # Not `|| true`: a failing step would be typed on screen as the agent's output.
+    "$@" > "$SESSION/$STEP.out" 2>&1 || { echo "shoot: step failed: $label" >&2; cat "$SESSION/$STEP.out" >&2; exit 1; }
     printf '    %s\n' "$label"
 }
 
