@@ -257,6 +257,40 @@ public enum MarkdownEditing {
         return start..<caret
     }
 
+    /// A `## ` heading the jump bar offers: its text, and where its line starts as a UTF-16 offset —
+    /// the unit `NSTextView` measures in, so the editor can scroll to it without converting.
+    public struct Heading: Equatable, Sendable {
+        public let title: String
+        public let offset: Int
+    }
+
+    /// Every `## ` line, in document order. Only h2, because that is the level a long set of notes is
+    /// sectioned at; `#` is a title and `###` is too fine to be worth a button.
+    ///
+    /// A `## ` inside a fenced code block is code, not a section, so fences are tracked — by their
+    /// opening marker only, which is the whole of the CommonMark rule that matters for a toggle.
+    public static func headings(in text: String) -> [Heading] {
+        var found: [Heading] = []
+        var fence: Substring?
+        var offset = 0
+        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            defer { offset += line.utf16.count + 1 }
+            let trimmed = line.drop { $0 == " " }
+            if let marker = fence {
+                if trimmed.hasPrefix(marker) { fence = nil }
+                continue
+            }
+            if trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~") {
+                fence = trimmed.prefix(3)
+                continue
+            }
+            guard line.hasPrefix("## ") else { continue }
+            let title = line.dropFirst(3).trimmingCharacters(in: .whitespaces)
+            if !title.isEmpty { found.append(Heading(title: title, offset: offset)) }
+        }
+        return found
+    }
+
     /// The commands a query matches, in menu order. An empty query is every command — `/` on its
     /// own is somebody who wants to see the list.
     public static func slashMatches(_ query: some StringProtocol) -> [SlashCommand] {

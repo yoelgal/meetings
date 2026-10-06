@@ -12,6 +12,30 @@ import Testing
 /// engine is the one holding.
 @Suite struct MarkdownEditingTests {
 
+    // MARK: - The heading jump bar
+
+    /// h2 only, never one inside a code fence, and offsets in UTF-16 — what `NSTextView` scrolls by.
+    @Test func theJumpBarListsEachH2OutsideCode() {
+        let notes = """
+            # Interview
+            pitch — and an emoji 🎯
+            ## Think Deeper
+            ### detail
+            ```
+            ## not a heading
+            ```
+            ##no space
+            ## Questions for Victor
+            """
+        let headings = MarkdownEditing.headings(in: notes)
+        #expect(headings.map(\.title) == ["Think Deeper", "Questions for Victor"])
+        let utf16 = notes as NSString
+        #expect(headings.map(\.offset) == [
+            utf16.range(of: "## Think").location, utf16.range(of: "## Questions").location,
+        ])
+        #expect(MarkdownEditing.headings(in: "no sections here").isEmpty)
+    }
+
     // MARK: - The slash menu
 
     @Test func aSlashOpensTheMenuOnlyWhereItStartsAWord() {

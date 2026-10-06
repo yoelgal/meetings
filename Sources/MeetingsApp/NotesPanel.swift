@@ -225,6 +225,7 @@ struct NotesPanelView: View {
             }
             .buttonStyle(.borderless)
             .help("Return notes to window")
+            .accessibilityLabel("Return notes to window")
         }
     }
 
@@ -402,6 +403,9 @@ struct PopOutButton: View {
         }
         .buttonStyle(.borderless)
         .help("Float notes above other windows")
+        // Named outright: an icon-only button is read by its symbol, and VoiceOver called this one
+        // "Minimise Video".
+        .accessibilityLabel("Pop out notes")
     }
 }
 
