@@ -28,17 +28,18 @@ const PINK = '#FF375F'; // systemPink: the system channel, "Others"
 const INK = '#F5F5F7';
 const DIM = '#8E8E99';
 
-/** Scene boundaries, in seconds. Cuts sit on the score's beat (0.6 s at 100 BPM) where it matters. */
+/** Scene boundaries, in seconds. Every cut from the reveal on sits on the score's beat grid —
+ * 6.6 s plus a whole number of 0.6 s beats (100 BPM) — and `score.py` uses the same numbers. */
 const T = {
   hook: 0,
   problem: 3.0,
   reveal: 6.6,
   live: 10.2,
   anchored: 16.2,
-  share: 20.6,
-  cli: 24.8,
-  end: 30.2,
-  total: 34.2,
+  share: 20.4,
+  cli: 24.6,
+  end: 30.0,
+  total: 34.0,
 };
 export const LAUNCH_FRAMES = sec(T.total);
 

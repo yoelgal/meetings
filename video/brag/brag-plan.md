@@ -28,18 +28,18 @@ always knows who said it. On-device, notes pinned to the moment, and a CLI so yo
 - Accents: systemBlue `#0A84FF` = You (mic), systemPink `#FF375F` = Others (system), from `ChannelStyle.swift`.
 - App footage: the real app (dark), captured by `video/brag/shoot.sh` from a throwaway store of invented data.
 
-## Storyboard (≈32 s, 1920×1080, 60 fps)
+## Storyboard (34 s, 1920×1080, 60 fps; cuts from 6.6 s on sit on the 0.6 s beat)
 
 | # | t | Scene | On screen | Motion / cut |
 |---|---|---|---|---|
 | 1 | 0.0–3.0 | **Hook** | A lone transcript line types in: `"I'll send it by Friday."` → beat → big: **Who said that?** | Type-on, then hard cut to the question on the downbeat |
-| 2 | 3.0–6.2 | **Problem** | One grey waveform. "Most recorders hear one mixed track." → "Then they guess who's talking." | Waveform pulses; second line replaces the first |
-| 3 | 6.2–9.4 | **Reveal** | The waveform splits into two: blue **You** (mic) / pink **Others** (Mac audio). Logo + "Meetings records them separately." | Split animation, logo snaps in |
-| 4 | 9.4–15.0 | **Live, on device** | Real app: recording view, live transcript lines arriving in blue/pink. Caption: "Transcribed live. On this Mac." | Window slides up, slow push-in on the transcript |
-| 5 | 15.0–19.4 | **Anchored notes** | Real app: a written meeting with Your notes + Transcript open. Caption: "Every note lands where it was said." | Pan from notes to transcript |
-| 6 | 19.4–23.4 | **Hidden from screen share** | Split: "Your screen" (app + floating notes panel) / "What they see" (app, no panel). Caption: "Your notes stay off the screen share." | Panel fades out of the right half |
-| 7 | 23.4–28.4 | **A CLI for your agent** | Terminal card typing a real `meetings` session over the app, then the real write-up landing in the window. Caption: "No prompts in the app. Your agent writes it up." | Terminal over app, scrim, then the write-up clip |
-| 8 | 28.4–32.5 | **End card** | Logo + **Meetings**, "An app for you. A CLI for your agent.", the install line in mono, "macOS 26 · Apple Silicon · MIT" | Hero reveal, hold |
+| 2 | 3.0–6.6 | **Problem** | One grey waveform. "Most recorders hear one mixed track." → "Then they guess who's talking." | Waveform pulses; second line replaces the first |
+| 3 | 6.6–10.2 | **Reveal** | The waveform splits into two: blue **You** (mic) / pink **Others** (Mac audio). Logo + "Meetings records them separately." | Split animation, logo snaps in |
+| 4 | 10.2–16.2 | **Live, on device** | Real app: recording view, live transcript lines arriving in blue/pink. Caption: "Transcribed live. On this Mac." | Window slides up, slow push-in on the transcript |
+| 5 | 16.2–20.4 | **Anchored notes** | Real app: a written meeting with Your notes + Transcript open. Caption: "Every note lands where it was said." | Pan from notes to transcript |
+| 6 | 20.4–24.6 | **Hidden from screen share** | Split: "Your screen" (app + floating notes panel) / "What they see" (app, no panel). Caption: "Your notes stay off the screen share." | Panel fades out of the right half |
+| 7 | 24.6–30.0 | **A CLI for your agent** | Terminal card typing a real `meetings` session over the app, then the real write-up landing in the window. Caption: "No prompts in the app. Your agent writes it up." | Terminal over app, scrim, then the write-up clip |
+| 8 | 30.0–34.0 | **End card** | Logo + **Meetings**, "An app for you. A CLI for your agent.", the install line in mono, "macOS 26 · Apple Silicon · MIT" | Hero reveal, hold |
 
 Readability: every caption holds ≥ 0.3 s/word after settling. Hook line holds 1.2 s before the question.
 

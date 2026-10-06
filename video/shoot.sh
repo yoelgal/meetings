@@ -99,9 +99,23 @@ done
 say "staging $APP"
 rm -rf "$APP"
 ditto "$ROOT/dist/Meetings.app" "$APP"
+# The identity build-app.sh signed with, chosen the same way: the local certificate if this Mac
+# has one, ad hoc otherwise. Hard-coding the certificate made a Mac without it exit here silently.
+SIGN_IDENTITY="${MEETINGS_SIGN_IDENTITY:-}"
+if [ -z "$SIGN_IDENTITY" ]; then
+    if security find-identity -v -p codesigning 2>/dev/null | grep -qF "Meetings Local Signing"; then
+        SIGN_IDENTITY="Meetings Local Signing"
+    else
+        SIGN_IDENTITY="-"
+    fi
+fi
+# The bundle's own CLI drives the store from outside it — the same build as the app on screen, not
+# whatever `meetings` happens to be on PATH (or none, which killed the shoot under set -e).
+cp "$APP/Contents/Helpers/meetings" "$WORK/meetings"
+meetings() { "$WORK/meetings" "$@"; }
 rm -f "$APP/Contents/Helpers/meetings"
-codesign --force --sign "Meetings Local Signing" \
-    --entitlements "$ROOT/Packaging/Meetings.entitlements" --options runtime "$APP" 2>/dev/null
+codesign --force --sign "$SIGN_IDENTITY" \
+    --entitlements "$ROOT/Packaging/Meetings.entitlements" --options runtime "$APP"
 codesign --verify --deep --strict "$APP"
 
 # A slept display has no window backing stores, and both screencapture and ScreenCaptureKit fail on
@@ -225,7 +239,7 @@ still library --env "MEETINGS_SCOPE=all" --env "MEETINGS_SELECT=complete"
 # selects it, and its detail pane is the better frame anyway: Start recording, the call link, the
 # attendees and the pre-notes all at once.
 still upcoming --env "MEETINGS_SCOPE=folder:Clients" --env "MEETINGS_SELECT=scheduled" \
-    --env "MEETINGS_DETAIL_SECTIONS=pre"
+    --env "MEETINGS_DETAIL_OPEN=prenotes"
 
 # The notes beat is gone from the cut, and so is its still. The demo now runs as one continuous take of
 # six window states, and "notes keep their place" was the weakest of the seven it used to have: it needed

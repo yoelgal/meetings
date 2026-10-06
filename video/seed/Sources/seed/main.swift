@@ -52,6 +52,15 @@ func weekday(_ date: Date) -> String {
     return formatter.string(from: date)
 }
 
+/// The nearest working day `days` from today, stepping further out (in the direction of `days`) past
+/// a weekend. Standups are held on weekdays; named from their date, a weekend one reads as staged.
+func workday(_ days: Int) -> Int {
+    var day = days
+    let step = days < 0 ? -1 : 1
+    while Calendar.current.isDateInWeekend(at(day, 12)) { day += step }
+    return day
+}
+
 func fail(_ message: String) -> Never {
     FileHandle.standardError.write(Data("seed: \(message)\n".utf8))
     exit(64)
@@ -334,7 +343,7 @@ _ = try store.insertSegments([
                       pass: .final),
 ])
 
-let standupStart = at(-1, 9, 15)
+let standupStart = at(workday(-1), 9, 15)
 let standup = try store.createMeeting(Meeting(
     folderID: product.id,
     title: "\(weekday(standupStart)) standup",
@@ -390,8 +399,8 @@ let events = [
         notes: "Kickoff. Ivy asked to see the workspace rather than slides."
     ),
     CalendarEvent(
-        id: "EV-standup-thu", title: "\(weekday(at(2, 9, 15))) standup",
-        start: at(2, 9, 15), end: at(2, 9, 30),
+        id: "EV-standup-thu", title: "\(weekday(at(workday(2), 9, 15))) standup",
+        start: at(workday(2), 9, 15), end: at(workday(2), 9, 30),
         attendees: [Attendee(name: "Marcus Ell", email: "marcus@example.com")],
         calendarName: "Work", videoLink: URL(string: "https://meet.google.com/abc-defg-hij"), notes: nil
     ),

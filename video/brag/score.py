@@ -15,7 +15,7 @@ import sys
 import wave
 
 SR = 48_000
-DUR = 34.2
+DUR = 34.0
 BEAT = 0.6
 N = int(SR * DUR)
 L = [0.0] * N
@@ -110,6 +110,9 @@ def noise_sweep(length, rising=True):
 CHORDS = [(57, 60, 64), (53, 57, 60), (48, 52, 55), (55, 59, 62)]
 ROOTS = [45, 41, 36, 43]
 BAR = 4 * BEAT
+# The end card's downbeat: 6.6 s + 39 beats. The groove stops *before* it, so the card's hit
+# is the only kick there — not a second one a fifth of a second after the groove's last.
+END = 30.0  # 6.6 + 39 * BEAT, written out so float rounding cannot put a beat on either side
 
 # --- Hook (0 - 3.0): a held tonic, typing ticks, then the question lands on a low boom.
 add(0.0, pad([hz(57), hz(64)], 3.2, attack=0.4), 0.30)
@@ -124,17 +127,17 @@ for b in range(6):
 add(3.0, lowpass(pad([hz(57), hz(60), hz(64)], 3.6), 900), 0.35)
 add(5.4, noise_sweep(1.2), 0.18)
 
-# --- Reveal onwards (6.6 - 30.2): the groove, one chord per bar.
+# --- Reveal onwards (6.6 - 30.0): the groove, one chord per bar.
 start = 6.6
 bar = 0
-while start + bar * BAR < 30.2:
+while start + bar * BAR < END - 0.01:
     t0 = start + bar * BAR
     ci = bar % 4
     chord = CHORDS[ci]
     add(t0, pad([hz(m) for m in chord], BAR + 0.4), 0.26, pan=-0.15)
     for b in range(4):
         tb = t0 + b * BEAT
-        if tb >= 30.2:
+        if tb >= END - 0.01:
             break
         add(tb, kick(), 0.32)
         add(tb, bass(hz(ROOTS[ci]), BEAT * 0.95), 0.22)
@@ -145,19 +148,19 @@ while start + bar * BAR < 30.2:
 add(6.6, kick(), 0.6)  # the downbeat the reveal cuts on
 
 # Scene cuts get a soft breath, under the music.
-for cut in (10.2, 16.2, 20.6, 24.8):
+for cut in (10.2, 16.2, 20.4, 24.6):
     add(cut - 0.35, noise_sweep(0.45), 0.07)
 
-# Terminal typing (24.8 - 27.5), pitched to the key and quiet.
+# Terminal typing (24.6 - 27.3), pitched to the key and quiet.
 for i in range(40):
-    add(24.85 + i * 0.065, tick(hz((69, 72, 76)[i % 3] + 12)), 0.035, pan=rng.uniform(-0.4, 0.4))
+    add(24.65 + i * 0.065, tick(hz((69, 72, 76)[i % 3] + 12)), 0.035, pan=rng.uniform(-0.4, 0.4))
 
-# --- End card (30.2 - 34.2): resolve to the tonic and let it ring out.
-add(30.2, kick(), 0.5)
-add(30.2, bass(hz(33), 2.5), 0.28)
-add(30.2, pad([hz(57), hz(60), hz(64), hz(69)], 4.0, attack=0.1, release=2.6), 0.34)
+# --- End card (30.0 - 34.0): resolve to the tonic and let it ring out.
+add(END, kick(), 0.5)
+add(END, bass(hz(33), 2.5), 0.28)
+add(END, pad([hz(57), hz(60), hz(64), hz(69)], 4.0, attack=0.1, release=2.6), 0.34)
 for i, m in enumerate((69, 72, 76, 81)):
-    add(30.2 + i * 0.15, pluck(hz(m), 1.4, 0.2), 0.12)
+    add(END + i * 0.15, pluck(hz(m), 1.4, 0.2), 0.12)
 
 # Master: fade the tail, gentle saturation, peak at about -1 dBFS.
 for i in range(N):

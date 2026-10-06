@@ -73,12 +73,24 @@ fi
 # The CLI comes out of the bundle and drives the store from outside it. Left inside, the app compares
 # its own copy against /usr/local/bin/meetings, finds a different file and puts a "the meetings
 # command is not installed" card on the write-up — false on a Mac that has it, and on screen.
+# The identity build-app.sh signed with, chosen the same way: the local certificate if this Mac
+# has one, ad hoc otherwise. Hard-coding the certificate made a Mac without it exit here silently.
+SIGN_IDENTITY="${MEETINGS_SIGN_IDENTITY:-}"
+if [ -z "$SIGN_IDENTITY" ]; then
+    if security find-identity -v -p codesigning 2>/dev/null | grep -qF "Meetings Local Signing"; then
+        SIGN_IDENTITY="Meetings Local Signing"
+    else
+        SIGN_IDENTITY="-"
+    fi
+fi
 if [ -f "$APP/Contents/Helpers/meetings" ]; then
     cp "$APP/Contents/Helpers/meetings" "$CLI"
     rm -f "$APP/Contents/Helpers/meetings"
-    codesign --force --sign "Meetings Local Signing" \
-        --entitlements "$ROOT/Packaging/Meetings.entitlements" --options runtime "$APP" 2>/dev/null
+    codesign --force --sign "$SIGN_IDENTITY" \
+        --entitlements "$ROOT/Packaging/Meetings.entitlements" --options runtime "$APP"
 fi
+# Footage from an earlier shoot must never stand in for a capture that failed this time.
+rm -f "$OUT"/*.png "$OUT"/*.mov
 
 caffeinate -u -t 900 &
 CAFFEINATE=$!
@@ -166,7 +178,8 @@ pose --env "MEETINGS_RECORDING_CHROME=1" --env "MEETINGS_SELECT=recording" \
     --env "MEETINGS_PANEL_NOTE=Ask about the seat count before pricing."
 still "$APP_WINDOW" recording-window
 PANEL="$(panel_window)"
-[ -n "$PANEL" ] && still "$PANEL" panel-live
+[ -n "$PANEL" ] || { echo "shoot: the notes panel never came on screen" >&2; exit 1; }
+still "$PANEL" panel-live
 keepalive_stop
 
 # ---------------------------------------------------------------- 3. notes anchored in the transcript

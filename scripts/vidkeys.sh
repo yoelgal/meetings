@@ -45,6 +45,12 @@ case "$SENS" in
   *) echo "vidkeys: sensitivity must be low, mid or high (got '$SENS')" >&2; exit 1 ;;
 esac
 
+# Only ever a directory this script made: an existing one must be empty or carry its manifest.
+# `vidkeys.sh take.mov .` used to delete the current directory, whatever was in it.
+if [ -d "$OUT" ] && [ -n "$(ls -A "$OUT")" ] && [ ! -f "$OUT/manifest.txt" ]; then
+    echo "vidkeys: $OUT is not empty and is not a previous vidkeys output; refusing to clear it" >&2
+    exit 1
+fi
 rm -rf "$OUT"; mkdir -p "$OUT/all"
 
 # Scale to 1512 wide: a 2x retina capture carries no extra information for this and halves the work.

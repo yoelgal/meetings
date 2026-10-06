@@ -28,7 +28,7 @@ Every frame of app footage is the shipping app, running against that throwaway s
 without anybody touching the keyboard or the mouse. Nothing is a mock-up or a redraw.
 
 - **The window states are posed with the launch-time overrides in `Appearance`** (`MEETINGS_SCOPE`,
-  `MEETINGS_SELECT`, `MEETINGS_SEARCH`, `MEETINGS_DETAIL_SECTIONS`, `MEETINGS_RECORDING_CHROME`, …),
+  `MEETINGS_SELECT`, `MEETINGS_SEARCH`, `MEETINGS_DETAIL_OPEN`, `MEETINGS_RECORDING_CHROME`, …),
   which exist so a window can be photographed in a given state without being clicked. Nothing is
   activated, raised, focused, moved or resized.
 - **The two clips are the app reacting to a real write.** The store posts a change notification on
