@@ -349,7 +349,10 @@ final class AppModel {
         // a phantom red dot and a Stop button that throws. It runs after the repair (an unfinalised
         // WAV reads as zero frames, and deciding on that would bin a recoverable meeting) and
         // before `resumePendingOnLaunch()`, which is the queue that picks up what it recovers.
-        RecordingRecovery.sweepOnLaunch(store: store) { [transcription] recovered in
+        RecordingRecovery.sweepOnLaunch(
+            store: store,
+            owning: { [weak self] in await self?.recordingInThisProcess() ?? [] }
+        ) { [transcription] recovered in
             for id in recovered { await transcription.enqueue(meetingID: id) }
         }
         // The retention sweep runs on launch. The rule itself lives in MeetingsCore so the
@@ -935,6 +938,19 @@ final class AppModel {
             refresh()
         } catch {
             errorMessage = "That note could not be saved: \(PlainText.sentence(for: error))"
+        }
+    }
+
+    /// Files being decoded into the store right now. Quit waits for these: a decode cut off by the
+    /// process exiting leaves audio on disk with no meeting row pointing at it.
+    var importsInFlight: Set<URL> = []
+
+    /// The meeting this process is recording, if any, for the recovery re-sweep to leave alone.
+    func recordingInThisProcess() -> Set<String> {
+        guard let id = recording.meetingID else { return [] }
+        switch recording.phase {
+        case .starting, .recording, .stopping: return [id]
+        case .idle, .transcribing, .failed: return []
         }
     }
 

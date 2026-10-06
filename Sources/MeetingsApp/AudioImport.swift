@@ -134,6 +134,9 @@ extension AppModel {
     static let importableAudioTypes: [UTType] = [.audio, .mpeg4Audio, .mp3, .wav, .aiff]
 
     func beginImport(of url: URL) {
+        // The decode runs in the background now, so a second drop of the same file while the first
+        // is still decoding would otherwise make a second meeting of it.
+        guard !importsInFlight.contains(url) else { return }
         pendingImport = PendingImport(url: url)
     }
 
@@ -152,6 +155,8 @@ extension AppModel {
         )
         let directory = Paths.audioDirectory(meetingID: meeting.id)
         let source = pending.url
+        importsInFlight.insert(source)
+        defer { importsInFlight.remove(source) }
         do {
             // An imported file is one mixed track, so it lands on the mic channel: that is the only
             // track the batch pass reads when there is no second file, and inventing a third

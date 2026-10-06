@@ -180,6 +180,44 @@ private struct StubEngine: TranscriptionEngine, Sendable {
         #expect(try store.meeting(id: meeting.id)?.state == .ready)
     }
 
+    /// A channel whose live transcript lost text while recording is transcribed from its file, its
+    /// holey live rows replaced in the same pass, and the marker taken down afterwards.
+    @Test func aChannelMarkedIncompleteIsTranscribedFromItsFile() async throws {
+        let meeting = try store.createMeeting(TestStore.meeting(state: .recording))
+        try writeAudio(meetingID: meeting.id, names: ["mic.wav", "system.wav"])
+        _ = try store.insertSegment(TestStore.segment(
+            meetingID: meeting.id, from: 0, to: 900, text: "rough live mic text", pass: .live))
+        _ = try store.insertSegment(TestStore.segment(
+            meetingID: meeting.id, channel: .system, from: 1_000, to: 1_500, text: "Thurs", pass: .live))
+        try store.recordTranscriptIssue(TranscriptIssue(
+            meetingID: meeting.id, channel: .system, reason: TranscriptionService.liveIncompleteReason))
+
+        let engine = StubEngine(results: [
+            "system.wav": [EngineSegment(startMs: 1_000, endMs: 2_400, text: "Thursday onwards, yes.")],
+        ])
+        try await localService(engine).runBatchPass(meetingID: meeting.id, progress: { _ in })
+
+        #expect(try store.segments(meetingID: meeting.id).map(\.text)
+            == ["rough live mic text", "Thursday onwards, yes."])
+        #expect(try store.transcriptIssues(meetingID: meeting.id).isEmpty)
+    }
+
+    /// …and if that file cannot be read, the live rows it had are kept: holes beat nothing.
+    @Test func anIncompleteChannelWhoseFileFailsKeepsItsLiveRows() async throws {
+        let meeting = try store.createMeeting(TestStore.meeting(state: .recording))
+        try writeAudio(meetingID: meeting.id, names: ["mic.wav", "system.wav"])
+        _ = try store.insertSegment(TestStore.segment(
+            meetingID: meeting.id, channel: .system, from: 1_000, to: 1_500, text: "Thurs", pass: .live))
+        try store.recordTranscriptIssue(TranscriptIssue(
+            meetingID: meeting.id, channel: .system, reason: TranscriptionService.liveIncompleteReason))
+
+        try await localService(StubEngine(failing: ["system.wav"]))
+            .runBatchPass(meetingID: meeting.id, progress: { _ in })
+
+        #expect(try store.segments(meetingID: meeting.id, channel: .system).map(\.text) == ["Thurs"])
+        #expect(try store.transcriptIssues(meetingID: meeting.id).map(\.channel) == [.system])
+    }
+
     /// The other outcome for the same channel: nothing could be read off disk either, so the meeting
     /// still finishes on the strength of the channel that streamed — and says which half is missing.
     /// Reaching `ready` with a channel absent and a recorded reason is honest; reaching it silently

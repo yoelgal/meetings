@@ -76,8 +76,13 @@ public enum CloudPrompt {
         return parts.joined(separator: "\n\n")
     }
 
+    /// `mm:ss`, and `h:mm:ss` past an hour — a model reading `75:03` has to do arithmetic the CLI
+    /// and the markdown export (`1:15:03`) never ask of it.
     private static func clock(_ milliseconds: Int) -> String {
         let total = max(0, milliseconds) / 1000
+        if total >= 3600 {
+            return String(format: "%d:%02d:%02d", total / 3600, (total % 3600) / 60, total % 60)
+        }
         return String(format: "%02d:%02d", total / 60, total % 60)
     }
 }

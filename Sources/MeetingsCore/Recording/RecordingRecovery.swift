@@ -117,12 +117,14 @@ public enum RecordingRecovery {
         audioRoot: URL = Paths.audioRoot,
         now: Date = Date(),
         grace: TimeInterval = liveGraceSeconds,
+        owning: (@Sendable () async -> Set<String>)? = nil,
         onLateRecovery: (@Sendable ([String]) async -> Void)? = nil
     ) -> [Outcome] {
         let outcomes = sweepReportingFailure(store: store, audioRoot: audioRoot, now: now, grace: grace)
         if outcomes.contains(where: { $0.disposition == .stillLive }) {
             Task.detached { await resweepWhileAnythingLooksLive(
-                store: store, audioRoot: audioRoot, grace: grace, onRecovered: onLateRecovery) }
+                store: store, audioRoot: audioRoot, grace: grace, owning: owning,
+                onRecovered: onLateRecovery) }
         }
         return outcomes
     }
@@ -145,6 +147,7 @@ public enum RecordingRecovery {
         store: MeetingStore,
         audioRoot: URL,
         grace: TimeInterval,
+        owning: (@Sendable () async -> Set<String>)? = nil,
         onRecovered: (@Sendable ([String]) async -> Void)? = nil
     ) async {
         while !Task.isCancelled {
@@ -155,8 +158,11 @@ public enum RecordingRecovery {
             // app runs. Either way there is nothing left to recover, and hammering a deleted file
             // just logs a disk I/O error once a grace window forever.
             guard FileManager.default.fileExists(atPath: store.dbPool.path) else { return }
+            // Asked every pass, not once: the loop can outlive the launch by a whole meeting, and a
+            // recording this process starts meanwhile is its own, however quiet its files go.
+            let owned = await owning?() ?? []
             let outcomes = sweepReportingFailure(
-                store: store, audioRoot: audioRoot, now: Date(), grace: grace)
+                store: store, owning: owned, audioRoot: audioRoot, now: Date(), grace: grace)
             let recovered = outcomes.filter { $0.disposition == .recovered }.map(\.meetingID)
             if !recovered.isEmpty { await onRecovered?(recovered) }
             guard outcomes.contains(where: { $0.disposition == .stillLive }) else { return }
@@ -165,12 +171,13 @@ public enum RecordingRecovery {
 
     private static func sweepReportingFailure(
         store: MeetingStore,
+        owning owned: Set<String> = [],
         audioRoot: URL,
         now: Date,
         grace: TimeInterval
     ) -> [Outcome] {
         do {
-            let outcomes = try sweep(store: store, audioRoot: audioRoot, now: now, grace: grace)
+            let outcomes = try sweep(store: store, owning: owned, audioRoot: audioRoot, now: now, grace: grace)
             let acted = outcomes.filter { $0.disposition != .stillLive }
             if !acted.isEmpty {
                 FileHandle.standardError.write(Data(

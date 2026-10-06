@@ -212,12 +212,34 @@ import Testing
         let meeting = try store.createMeeting(TestStore.meeting(state: .recording))
         try audio(meeting.id, "mic.wav", seconds: 2, unclosed: true)
         let queued = OSAllocatedUnfairLock<[String]>(initialState: [])
-        RecordingRecovery.sweepOnLaunch(store: store, audioRoot: audioRoot, grace: 0.1) { ids in
-            queued.withLock { $0 += ids }
-        }
+        // A whole second of grace, so a loaded machine cannot let the *launch* sweep recover it —
+        // which would leave nothing for the re-sweep to do and the wait below to time out.
+        let atLaunch = RecordingRecovery.sweepOnLaunch(
+            store: store, audioRoot: audioRoot, grace: 1.0,
+            onLateRecovery: { ids in queued.withLock { $0 += ids } }
+        )
+        #expect(atLaunch.map(\.disposition) == [.stillLive])
         try await waitFor("the re-sweep to queue the meeting") {
             queued.withLock { $0 } == [meeting.id]
         }
+    }
+
+    /// The re-sweep can outlive the launch by a whole meeting. A recording this process starts in
+    /// the meantime is its own, however long its files go quiet, and is never swept or queued.
+    @Test("the re-sweep leaves this process's own recording alone")
+    func theResweepLeavesAnOwnedRecordingAlone() async throws {
+        let orphan = try store.createMeeting(TestStore.meeting(state: .recording))
+        try audio(orphan.id, "mic.wav", seconds: 2, unclosed: true)
+        let ours = try store.createMeeting(TestStore.meeting(state: .recording))
+        try audio(ours.id, "mic.wav", seconds: 2, unclosed: true)
+        let queued = OSAllocatedUnfairLock<[String]>(initialState: [])
+        RecordingRecovery.sweepOnLaunch(
+            store: store, audioRoot: audioRoot, grace: 1.0,
+            owning: { [ours.id] },
+            onLateRecovery: { ids in queued.withLock { $0 += ids } }
+        )
+        try await waitFor("the orphan to be recovered") { queued.withLock { $0 } == [orphan.id] }
+        #expect(try store.meeting(id: ours.id)?.state == .recording)
     }
 
     /// And the re-sweep is held to the rule the launch sweep is held to: a recorder that is still

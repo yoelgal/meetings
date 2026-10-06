@@ -431,6 +431,15 @@ public actor TranscriptionService {
     ///
     /// Per channel, because a term is scored against the audio it was said in: the microphone's
     /// samples cannot tell you where a word in the system audio was spoken.
+    /// Recorded on a channel the moment its live transcript loses text (a segment that would not
+    /// save, a feed the recogniser rejected). With the local engine the live rows *are* the final
+    /// transcript, so the batch pass reads this as "do not promote these rows — transcribe the file",
+    /// and swaps the result in the same transaction as every other channel. Stored rather than held
+    /// in memory so a quit, a crash or a relaunch cannot forget it; cleared like any other
+    /// transcription verdict once the file has been read.
+    public static let liveIncompleteReason =
+        "the live transcript lost text while recording, so this channel is transcribed again from its recording."
+
     private func promoteLiveSegments(
         meetingID: String,
         stored: [TranscriptSegment],
@@ -445,6 +454,9 @@ public actor TranscriptionService {
         // rather than `unedited`, because "no unedited rows" and "no rows" are not the same channel:
         // one produced nothing, the other produced nothing but corrections the user typed.
         let channelsWithRows = Set(stored.map(\.channel))
+        let incomplete = Set(((try? store.transcriptIssues(meetingID: meetingID)) ?? [])
+            .filter { $0.kind == .transcription && $0.reason == Self.liveIncompleteReason }
+            .map(\.channel))
         let vocabulary = (try? store.vocabularyInEffect(meetingID: meetingID)) ?? []
         let entries = VocabularyBiasing.entries(for: vocabulary)
         progress(0.1)
@@ -492,7 +504,9 @@ public actor TranscriptionService {
             // because `replaceLiveSegments` drops a new segment only where a correction *wholly*
             // covers it — so any recognised span whose boundaries differ survives, and the same
             // speech appears twice. A channel that has said its piece, however edited, is done.
-            if rows.isEmpty, !channelsWithRows.contains(file.channel) {
+            // …or one whose live transcript is known to have holes in it. If the file cannot be read
+            // either, the channel is not in `written` and its live rows are kept: holes beat nothing.
+            if (rows.isEmpty && !channelsWithRows.contains(file.channel)) || incomplete.contains(file.channel) {
                 do {
                     let engine = try resolvedEngine()
                     // On a fresh install this is the download, and the promote path is normally the

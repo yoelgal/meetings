@@ -188,6 +188,12 @@ final class MeetingsAppDelegate: NSObject, NSApplicationDelegate {
         guard case .ready(let model) = launch else { return .terminateNow }
         Task { @MainActor in
             await model.recording.finaliseForTermination()
+            // An import mid-decode finishes rather than orphaning its audio. Bounded, because the
+            // system is waiting on us: a two-hour file decodes in well under this.
+            let deadline = Date().addingTimeInterval(120)
+            while !model.importsInFlight.isEmpty, Date() < deadline {
+                try? await Task.sleep(for: .milliseconds(200))
+            }
             // ponytail: a fixed wait rather than asking every editor whether it is dirty; 0.7 s on
             // quit is the price, and it is longer than the debounce it waits out.
             try? await Task.sleep(for: .milliseconds(700))
