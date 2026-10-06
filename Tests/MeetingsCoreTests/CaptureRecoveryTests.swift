@@ -190,18 +190,19 @@ struct CaptureRecoveryTests {
 
 @Suite("Quit path")
 struct QuitPathTests {
-    /// On the main actor, because that is where the quit path awaits it: its resumption is the main
-    /// queue's, not a thread in the cooperative pool — which CI's parallel suite keeps saturated,
-    /// and which made a pool-isolated version of this test measure the suite instead of the ceiling.
-    @Test("the drain ceiling returns on time even when the work never finishes")
-    @MainActor
-    func finishesWithinReturnsAtTheCeiling() async {
+    /// What this can prove in a parallel suite is *who decided*: the work takes two minutes, so a
+    /// `false` well before then was the ceiling's. A wall-clock bound near the ceiling itself is not
+    /// provable here — CI's runner keeps both the cooperative pool and the main thread busy for
+    /// 10–20 s at a stretch, and three attempts at one measured the suite, not the ceiling. The
+    /// ceiling's own timing is a GCD timer, which neither of those can hold up.
+    @Test("the drain ceiling decides, and the work does not have to finish")
+    func finishesWithinDecidesAtTheCeiling() async {
         let start = ContinuousClock.now
         let finished = await RecordingController.finishes(within: .milliseconds(200)) {
-            try? await Task.sleep(for: .seconds(30))
+            try? await Task.sleep(for: .seconds(120))
         }
         #expect(!finished)
-        #expect(ContinuousClock.now - start < .seconds(5))
-        #expect(await RecordingController.finishes(within: .seconds(5)) {})
+        #expect(ContinuousClock.now - start < .seconds(100), "returned only when the work did")
+        #expect(await RecordingController.finishes(within: .seconds(60)) {})
     }
 }
