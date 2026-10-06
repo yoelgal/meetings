@@ -142,6 +142,15 @@ where (w[kCGWindowOwnerPID as String] as? Int32) == pid && (w[kCGWindowLayer as 
 
 still() { screencapture -x -o -l "$1" "$OUT/$2.png"; echo "    $2.png"; }
 
+# A capture that stops delivering frames partway — the window's Space not on screen, the display
+# asleep — still writes a valid, short file. Caught here, by its length, rather than downstream.
+check_clip() {  # <file> <seconds>
+    local got
+    got="$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$1")"
+    python3 -c 'import sys; sys.exit(0 if float(sys.argv[1]) >= float(sys.argv[2]) - 0.5 else 1)' "$got" "$2" \
+        || { echo "shoot: $(basename "$1") stalled at ${got}s of $2s — was the window's Space off screen? Re-run." >&2; exit 1; }
+}
+
 LIVE="$("$SEED" live)"
 keepalive_start() { ( while :; do "$SEED" keepalive "$LIVE" >/dev/null 2>&1 || true; sleep 4; done ) & KEEPALIVE=$!; }
 keepalive_stop() { [ -n "${KEEPALIVE:-}" ] && kill "$KEEPALIVE" 2>/dev/null; KEEPALIVE=""; }
@@ -181,6 +190,7 @@ rm -f "$WORK/wincap.log"
 DRIVER=$!
 # Long enough for all six lines and the note after the driver's wait.
 "$WINCAP" --window-id "$APP_WINDOW" --out "$OUT/live.mov" --seconds 12 --fps 60 > "$WORK/wincap.log" 2>&1
+check_clip "$OUT/live.mov" 12
 wait "$DRIVER" || { echo "shoot: the live-transcript driver failed (seed say / note add)" >&2; exit 1; }
 
 # ---------------------------------------------------------------- 2. the panel, and screen share
@@ -228,10 +238,17 @@ pose --env "MEETINGS_SCOPE=all" --env "MEETINGS_SELECT=ready"
 # otherwise be filmed as an empty write-up and typed on screen as the agent's output.
 # `|| rc=$?`, because the subshell inherits `set -e`: a bare failing command would end it before
 # the status is written, and the check below would never get to say why.
-( sleep 3; rc=0; "$CLI" summary set "$STANDUP" --file "$WORK/writeup.md" > "$WORK/step2.out" 2>&1 || rc=$?
+# Timed from wincap actually recording, as the live clip is: a fixed sleep from launch left about
+# half a second before the trim, and a slow shutter would have filmed the write-up already there.
+rm -f "$WORK/wincap-writeup.log"
+( rc=0
+  for _ in $(seq 100); do grep -q "recording window" "$WORK/wincap-writeup.log" 2>/dev/null && break; sleep 0.1; done
+  sleep 2.5
+  "$CLI" summary set "$STANDUP" --file "$WORK/writeup.md" > "$WORK/step2.out" 2>&1 || rc=$?
   echo "$rc" > "$WORK/step2.status" ) &
 DRIVER=$!
-"$WINCAP" --window-id "$APP_WINDOW" --out "$OUT/writeup.mov" --seconds 8 --fps 60
+"$WINCAP" --window-id "$APP_WINDOW" --out "$OUT/writeup.mov" --seconds 8 --fps 60 > "$WORK/wincap-writeup.log" 2>&1
+check_clip "$OUT/writeup.mov" 8
 wait "$DRIVER"
 stop_app
 [ "$(cat "$WORK/step2.status")" = 0 ] || { echo "shoot: summary set failed: $(cat "$WORK/step2.out")" >&2; exit 1; }

@@ -33,11 +33,11 @@
   7.200   +0.00 ms   changes  reveal: You / Others
   7.817   +0.00 ms   changes  reveal: Meetings records them
  10.200   +0.00 ms   changes  cut 10.2s
- 10.537   -0.00 ms   changes  live line 1 (Others)
- 11.827   -0.00 ms   changes  live line 2 (You)
- 13.112   -0.00 ms   changes  live line 3 (Others)
- 14.387   -0.00 ms   changes  live line 4 (You)
- 15.688   +0.00 ms   changes  live line 5 (Others)
+ 10.592   -0.00 ms   changes  live line 1 (Others)
+ 12.098   +0.00 ms   changes  live line 2 (You)
+ 13.088   +0.00 ms   changes  live line 3 (Others)
+ 14.602   -0.00 ms   changes  live line 4 (You)
+ 15.590   +0.00 ms   changes  live line 5 (Others)
  16.233   +0.00 ms   changes  cut 16.2s
  20.450   +0.00 ms   changes  cut 20.4s
  21.833   +0.00 ms   changes  share: panel hidden
@@ -79,7 +79,7 @@
  27.133  -20.00 ms   changes  cli step 3 key
  27.300   +0.00 ms   changes  cli step 3 output
  27.900   -0.00 ms   changes  cli: back to the app
- 28.475   -0.00 ms   changes  cli: write-up lands
+ 28.498   +0.00 ms   changes  cli: write-up lands
  30.000   +0.00 ms   changes  cut 30.0s
  30.067   +0.00 ms   changes  end: Meetings
  30.467   +0.00 ms   changes  end: tagline

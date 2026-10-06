@@ -1,14 +1,14 @@
 [
   {
     "command": "meetings list --state ready",
-    "output": "211E6870  2026-10-05 09:15  11m  ready  Product  Monday standup\n1331F465  2026-10-01 11:30  16m  ready  Product  Design review"
+    "output": "28870FC8  2026-10-05 09:15  11m  ready  Product  Monday standup\n0496CB9B  2026-10-01 11:30  16m  ready  Product  Design review"
   },
   {
-    "command": "meetings summary set 211E6870 --file writeup.md",
-    "output": "Summary written on 211E6870. Monday standup is complete"
+    "command": "meetings summary set 28870FC8 --file writeup.md",
+    "output": "Summary written on 28870FC8. Monday standup is complete"
   },
   {
-    "command": "meetings show 211E6870 --summary",
+    "command": "meetings show 28870FC8 --summary",
     "output": "## What we decided\n\n- The migration note goes out with the Northwind invite rather than after it, and Marcus has the pricing wording today.\n\n## Actions\n\n- [x] Pull the funnel numbers for the invite step\n- [ ] Send Marcus the pricing wording\n- [ ] Ship the migration note with the invite"
   }
 ]
