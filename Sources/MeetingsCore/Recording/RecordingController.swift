@@ -35,6 +35,28 @@ public final class RecordingController {
     /// meeting in the same breath so the sidebar, `meetings show` and the CLI all say it too.
     public private(set) var captureWriteFailure: String?
 
+    /// Set while the system track looks lost *right now*: another app is playing sound and nothing
+    /// but zeros has reached `system.wav` for a while, even after the stream was rebuilt — or the
+    /// stream is gone and could not be brought back. Clears itself the moment sound comes through
+    /// again, because the usual end of this is the route moving back and the track recovering.
+    ///
+    /// This is the failure real calls hit: the stream kept running and delivered bit-exact silence
+    /// for the rest of the meeting, and nothing said so until the transcript came back one-sided.
+    public private(set) var systemAudioLost: String?
+
+    /// What the recording screen and the floating panel show while recording: the first thing
+    /// wrong with capture now, in words a person mid-call can act on.
+    public var liveCaptureWarning: String? {
+        // Both, when both: a route change can stall the mic and silence the other side at once,
+        // and the softer "not hearing the other side" must never hide "your own voice stopped".
+        switch (captureWriteFailure, systemAudioLost) {
+        case let (mine?, theirs?): "\(mine) \(theirs)"
+        case let (mine?, nil): mine
+        case let (nil, theirs?): theirs
+        case (nil, nil): nil
+        }
+    }
+
     /// Why the live transcript is empty, when it is — most often that the streaming model has not
     /// been downloaded yet. Recording is the thing that cannot be redone; a transcript can, because
     /// the batch pass on stop reads the same WAVs. So a live transcriber that will not start is a
@@ -60,6 +82,26 @@ public final class RecordingController {
     /// The last mic frame count the tick saw, and when it last changed. The mic stalling is how a
     /// device being unplugged looks from here.
     private var micProgress: (frames: Int64, at: Date)?
+    /// Where on the recording clock the mic stopped, while it is stopped. The mic rebuilds itself
+    /// on a route change, so a stall is now usually a gap rather than the end of the track.
+    private var micStalledAtMs: Int?
+    private var micStallWarning: String?
+    /// Every mic gap this recording, so the stored issue names all of them rather than the last.
+    private var micGaps: [(from: Int, to: Int)] = []
+    /// When a failed system restart was last retried; the stream is never given up on.
+    private var lastFailureRetry: Date?
+    private var playbackCheckInFlight = false
+    private var seenSystemGeneration = 0
+    /// When system capture failed and could not be restarted, while it is failed; the span is
+    /// stored once a retry brings it back, as mic gaps are.
+    private var systemLostAtMs: Int?
+    /// The system track's silence is stored once per recording — the first time is the one worth
+    /// knowing afterwards. Separate from `reportedCaptureFailures` so it cannot mask a full disk.
+    private var systemSilenceRecorded = false
+    private var systemWatch = SystemAudioWatch()
+    /// When the system track's capture was last asked whether anything is playing. The question is
+    /// a Core Audio walk of every process, so it is asked once a second, not on every tick.
+    private var lastPlaybackCheck: (at: Date, playing: Bool)?
     private var live: [Channel: LiveChannel] = [:]
     /// Where this session's WAVs are going, so `stop()` can read back what actually landed in them.
     private var audioDirectory: URL?
@@ -106,6 +148,15 @@ public final class RecordingController {
         captureWriteFailure = nil
         reportedCaptureFailures = []
         micProgress = nil
+        micStalledAtMs = nil
+        micStallWarning = nil
+        micGaps = []
+        lastFailureRetry = nil
+        systemSilenceRecorded = false
+        systemLostAtMs = nil
+        systemAudioLost = nil
+        systemWatch = SystemAudioWatch()
+        lastPlaybackCheck = nil
         self.meetingID = meetingID
 
         let directory = Paths.audioDirectory(meetingID: meetingID)
@@ -143,6 +194,9 @@ public final class RecordingController {
         }
         do {
             try await system.start(writingTo: directory.appendingPathComponent("system.wav"), origin: origin)
+            // The first stream is not a *new* one to the watchdog: it gets the ordinary stall
+            // restart at ten seconds, not a restarted stream's grace.
+            seenSystemGeneration = system.generation
         } catch {
             systemAudioUnavailable = String(describing: error)
             // Nothing will ever arrive on that channel, and a second recogniser waiting for audio
@@ -166,6 +220,7 @@ public final class RecordingController {
         }
 
         phase = .recording(startedAt: origin)
+        systemWatch = SystemAudioWatch(startedAt: origin)
         startMetering()
         installTerminationGuard()
     }
@@ -255,6 +310,7 @@ public final class RecordingController {
         // otherwise take its explanation with it — the system recorder drops its writer on stop.
         noteCaptureFailures()
         removeTerminationGuard()
+        systemAudioLost = nil
 
         mic.stop()
         await system.stop()
@@ -481,6 +537,195 @@ public final class RecordingController {
             if let failure { report(channel, failure.reason) }
         }
         noteStalledMic()
+        watchSystemAudio()
+    }
+
+    /// Drive ``SystemAudioWatch`` from the tick, and act on what it says.
+    private func watchSystemAudio() {
+        guard case .recording = phase, systemAudioUnavailable == nil else { return }
+        let now = Date()
+        if let failure = system.failure {
+            if system.stoppedByUser || system.userStoppedCapture {
+                systemAudioLost = "System audio capture was stopped from the menu bar, so other "
+                    + "callers are not being recorded for the rest of this meeting."
+                return
+            }
+            if systemLostAtMs == nil {
+                let at = elapsedMs
+                systemLostAtMs = at
+                // Not over a full disk's own report (one stored row per channel and kind).
+                if system.writeFailure == nil {
+                    recordCaptureIssue(.system, "system audio stopped at \(MarkdownExport.timestamp(at)) "
+                        + "and could not be restarted, so other callers are missing from there on.")
+                }
+            }
+            systemAudioLost = Self.systemRestartFailedPrefix + " (\(failure))"
+            // Never given up on: a route that was still settling a minute ago may be ready now.
+            if lastFailureRetry.map({ now.timeIntervalSince($0) >= SystemAudioWatch.restartInterval }) ?? true {
+                lastFailureRetry = now
+                Task { [system] in await system.restart(because: "retrying after a failed restart") }
+            }
+            return
+        }
+        // The stream is back — a retry or a route change rebuilt it — so the failure no longer holds.
+        if systemAudioLost?.hasPrefix(Self.systemRestartFailedPrefix) == true { systemAudioLost = nil }
+        if let from = systemLostAtMs {
+            systemLostAtMs = nil
+            if system.writeFailure == nil { recordCaptureIssue(.system, "system audio was lost from \(MarkdownExport.timestamp(from)) to "
+                + "\(MarkdownExport.timestamp(elapsedMs)), so other callers are missing for that stretch.") }
+        }
+        lastFailureRetry = nil
+
+        let snapshot = system.watchSnapshot
+        // A stream installed since the last tick — a retry, a route change — is new, and gets the
+        // start grace a new stream gets rather than being judged on its predecessor's silence.
+        if system.generation != seenSystemGeneration {
+            seenSystemGeneration = system.generation
+            systemWatch.noteNewStream(at: now, buffers: snapshot.buffers)
+        }
+        let lastSignal = snapshot.lastSignalAt
+        // Only worth asking while the track has been quiet long enough for the answer to matter, and
+        // asked off the main actor: it walks every Core Audio process object.
+        let quietFor = now.timeIntervalSince(lastSignal ?? systemWatch.startedAt)
+        var playing = lastPlaybackCheck?.playing ?? false
+        if quietFor > SystemAudioWatch.quietSeconds, !playbackCheckInFlight,
+           lastPlaybackCheck.map({ now.timeIntervalSince($0.at) >= 1 }) ?? true
+        {
+            playbackCheckInFlight = true
+            Task { @MainActor [weak self] in
+                let answer = await Task.detached { SystemAudioRecorder.othersArePlayingAudio() }.value
+                self?.lastPlaybackCheck = (Date(), answer)
+                self?.playbackCheckInFlight = false
+            }
+        }
+        if quietFor <= SystemAudioWatch.quietSeconds {
+            playing = false
+            // An answer from a previous quiet episode is about a different moment of the meeting.
+            lastPlaybackCheck = nil
+        }
+        switch systemWatch.evaluate(
+            now: now, lastSignalAt: lastSignal, buffers: snapshot.buffers,
+            othersPlaying: playing)
+        {
+        case .none: break
+        case .restart(let reason):
+            Task { [system] in await system.restart(because: reason) }
+        case .warn:
+            systemAudioLost = Self.systemSilentReason
+            // Stored once: the first time is the one worth knowing about afterwards.
+            // Not over a full disk's own report: that row is the truer cause, and this one would
+            // replace it (one stored row per channel and kind).
+            if !systemSilenceRecorded, system.writeFailure == nil {
+                systemSilenceRecorded = true
+                // From the last sound, not from now: the warning lands a restart and two quiet
+                // windows after the silence began, and the user has to find the start of it.
+                let startedAt = systemWatch.startedAt
+                let silentFrom = max(0, Int((lastSignal ?? startedAt).timeIntervalSince(startedAt) * 1000))
+                recordCaptureIssue(.system, "system audio went silent at "
+                    + "\(MarkdownExport.timestamp(silentFrom)) while another app was playing sound, "
+                    + "so part of the other side of this meeting may be missing.")
+            }
+        case .clear:
+            systemAudioLost = nil
+        }
+    }
+
+    static let systemRestartFailedPrefix = "System audio stopped and could not be restarted, "
+        + "so other callers are not being recorded. Meetings keeps trying."
+
+    static let systemSilentReason = "Not hearing the other side. An app is playing sound but "
+        + "nothing is reaching the recording, even after restarting capture. If someone is "
+        + "talking, check your output device."
+
+    /// **The system track's watchdog.** Pure, so the rules can be tested without ScreenCaptureKit.
+    ///
+    /// Two signs the stream needs rebuilding that the stream itself never reports:
+    /// - *Stalled*: no buffers at all for ten seconds. A running stream delivers continuously,
+    ///   silence included.
+    /// - *Silent while something plays*: buffers arriving, every one of them zeros, while another
+    ///   process has its audio output running. Silence alone proves nothing — an in-person meeting
+    ///   is silence — but silence while a call app plays is the exact signature of the lost
+    ///   meetings in the store.
+    ///
+    /// Either one restarts the stream, at most once a minute. If the track is still silent while
+    /// something plays twenty seconds after a restart, the user is warned; sound returning clears
+    /// it. The warning is the soft kind on purpose: a remote listener on mute through a long
+    /// monologue looks identical from here, and costs one needless restart and a notice that goes
+    /// away when they speak.
+    struct SystemAudioWatch {
+        enum Action: Equatable {
+            case none
+            case restart(String)
+            case warn
+            case clear
+        }
+
+        static let quietSeconds: TimeInterval = 20
+        static let stallSeconds: TimeInterval = 10
+        static let restartInterval: TimeInterval = 60
+
+        var startedAt = Date()
+        private var lastRestartAt: Date?
+        /// A silent-while-playing restart has been spent on this quiet episode. One per episode: a
+        /// remote listener on mute looks the same from here, and a restart every minute through a
+        /// long monologue would cost real seconds of them each time they unmute.
+        private var silenceRestartSpent = false
+        private var buffers: (count: Int, at: Date)?
+        private(set) var warned = false
+
+        init(startedAt: Date = Date()) { self.startedAt = startedAt }
+
+        /// A stream was installed (a retry, a route change). It gets the grace any new stream
+        /// gets — the stall clock starts now, and a silence restart waits a quiet window — but it
+        /// does not spend the quiet episode's one silence restart: a route change at 10:00 must not
+        /// leave a call that goes silent at 30:00 with a warning and no attempt to fix it.
+        mutating func noteNewStream(at now: Date, buffers count: Int) {
+            buffers = (count, now)
+            lastRestartAt = now
+        }
+
+        mutating func evaluate(now: Date, lastSignalAt: Date?, buffers count: Int, othersPlaying: Bool)
+            -> Action
+        {
+            if buffers?.count != count { buffers = (count, now) }
+            let stalled = now.timeIntervalSince(buffers?.at ?? startedAt) > Self.stallSeconds
+            let quietFor = now.timeIntervalSince(lastSignalAt ?? startedAt)
+            let silentWhilePlaying = othersPlaying && quietFor > Self.quietSeconds
+
+            if !stalled && !silentWhilePlaying {
+                // Sound came back (or nothing is playing): the episode is over.
+                if quietFor <= Self.quietSeconds {
+                    lastRestartAt = nil
+                    silenceRestartSpent = false
+                }
+                // Sound came back, or nothing is playing any more: either way the warning's claim —
+                // an app is playing and nothing arrives — is no longer true.
+                if warned {
+                    warned = false
+                    return .clear
+                }
+                return .none
+            }
+            let restartDue = stalled
+                ? lastRestartAt.map({ now.timeIntervalSince($0) >= Self.restartInterval }) ?? true
+                : !silenceRestartSpent
+                    && (lastRestartAt.map { now.timeIntervalSince($0) > Self.quietSeconds } ?? true)
+            if restartDue {
+                lastRestartAt = now
+                if !stalled { silenceRestartSpent = true }
+                // A restart resets the buffer clock: the new stream gets its own start latency.
+                buffers = (count, now)
+                return .restart(stalled ? "no buffers for \(Int(Self.stallSeconds)) s"
+                    : "silent for \(Int(quietFor)) s while another app plays audio")
+            }
+            if silentWhilePlaying, !warned, let restarted = lastRestartAt,
+               now.timeIntervalSince(restarted) > Self.quietSeconds
+            {
+                warned = true
+                return .warn
+            }
+            return .none
+        }
     }
 
     /// **The microphone going away mid-meeting.** Unplugging a USB interface, or an audio device
@@ -492,13 +737,40 @@ public final class RecordingController {
     ///
     /// Mic only. The system track legitimately has nothing to deliver when nothing is playing, and
     /// a warning that fires on every in-person meeting is one nobody reads by the time it is true.
+    ///
+    /// A stall is told live and stored; if the mic comes back — it rebuilds itself on a route
+    /// change — the live warning clears and the stored issue is rewritten to name the gap, because
+    /// "nothing more was recorded" would then be false.
     private func noteStalledMic() {
-        guard case .recording = phase, !reportedCaptureFailures.contains(.mic) else { return }
-        guard Self.hasStalled(frames: mic.framesWritten, progress: &micProgress, now: Date())
-        else { return }
-        report(.mic, "the microphone stopped delivering audio, so nothing more was recorded on "
-            + "this channel. The usual cause is the input device changing or being unplugged "
-            + "mid-meeting. Everything recorded up to that point is safe.")
+        // A full disk stops `framesWritten` too, and already has its own, truer report. Without
+        // this it would be overwritten by a "the device changed" that sends the user the wrong way.
+        guard case .recording = phase, mic.writeFailure == nil else { return }
+        let stalled = Self.hasStalled(frames: mic.framesWritten, progress: &micProgress, now: Date())
+        if stalled, micStalledAtMs == nil {
+            let at = max(0, elapsedMs - Int(Self.captureStallSeconds * 1000))
+            micStalledAtMs = at
+            let earlier = micGaps.isEmpty ? "" : "It had already dropped out from " + micGaps.map {
+                "\(MarkdownExport.timestamp($0.from)) to \(MarkdownExport.timestamp($0.to))"
+            }.joined(separator: ", ") + ". "
+            let reason = "the microphone stopped delivering audio at \(MarkdownExport.timestamp(at)). " + earlier
+                + "The usual cause is the input device changing or being unplugged mid-meeting. "
+                + "Meetings keeps trying to reconnect it; everything recorded up to that point is safe."
+            micStallWarning = reason
+            if captureWriteFailure == nil { captureWriteFailure = reason }
+            recordCaptureIssue(.mic, reason)
+        } else if !stalled, let from = micStalledAtMs {
+            micStalledAtMs = nil
+            if captureWriteFailure == micStallWarning { captureWriteFailure = nil }
+            micStallWarning = nil
+            micGaps.append((from, elapsedMs))
+            // Every gap, not the last: the stored issue is one row per channel, so it carries them all.
+            let spans = micGaps.map {
+                "\(MarkdownExport.timestamp($0.from)) to \(MarkdownExport.timestamp($0.to))"
+            }.joined(separator: ", ")
+            recordCaptureIssue(.mic, "the microphone dropped out from \(spans), so your side of the "
+                + "meeting is missing for \(micGaps.count == 1 ? "that stretch" : "those stretches"). "
+                + "The rest was recorded.")
+        }
     }
 
     /// The rule itself, kept pure and separate from the recorder: a microphone cannot be opened in
@@ -528,7 +800,16 @@ public final class RecordingController {
     private func report(_ channel: Channel, _ reason: String) {
         guard !reportedCaptureFailures.contains(channel) else { return }
         reportedCaptureFailures.insert(channel)
-        if captureWriteFailure == nil { captureWriteFailure = reason }
+        // A write failure outranks a stall: the stall's text says "reconnecting", the disk is full.
+        if captureWriteFailure == nil || captureWriteFailure == micStallWarning {
+            captureWriteFailure = reason
+            micStallWarning = nil
+        }
+        recordCaptureIssue(channel, reason)
+    }
+
+    /// The stored half of a report, plus the log line an agent tailing the app sees.
+    private func recordCaptureIssue(_ channel: Channel, _ reason: String) {
         FileHandle.standardError.write(Data(
             "Meetings: \(channel.rawValue) capture: \(reason)\n".utf8))
         guard let meetingID else { return }

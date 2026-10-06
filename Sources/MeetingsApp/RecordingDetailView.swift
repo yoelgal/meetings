@@ -63,7 +63,9 @@ struct RecordingDetailView: View {
                 ? model.recording.liveSegments
                 : model.segments,
             unavailable: model.recording.liveTranscriptionUnavailable,
-            systemAudioUnavailable: model.recording.systemAudioUnavailable
+            systemAudioUnavailable: model.recording.systemAudioUnavailable,
+            captureWarning: model.recording.meetingID == meeting.id
+                ? model.recording.liveCaptureWarning : nil
         )
     }
 
@@ -139,9 +141,17 @@ private struct LiveTranscriptPane: View {
     let segments: [TranscriptSegment]
     let unavailable: String?
     let systemAudioUnavailable: String?
+    /// Capture going wrong *now* — the other side gone silent, a track that stopped growing. It is
+    /// the sentence itself, written for someone mid-call, so it is shown rather than tooltipped.
+    let captureWarning: String?
 
     var body: some View {
         VStack(spacing: 0) {
+            if let captureWarning {
+                Notice(symbol: "exclamationmark.triangle", text: captureWarning)
+                    .padding(.horizontal, 20)
+                    .padding(.top, 16)
+            }
             // A degraded channel is news whether or not anything has been said yet, so it stays
             // pinned above whatever the pane is showing.
             if let systemAudioUnavailable {

@@ -35,11 +35,16 @@ final class ChannelWriter: @unchecked Sendable {
     /// thing whichever file it came from, with no per-track offset to carry in the schema.
     private let origin: Date
     private var padded = false
+    /// Set by ``markDiscontinuity()``: the capture source was torn down and rebuilt, so the next
+    /// buffer is not contiguous with the last one written.
+    private var realignPending = false
 
     /// Written from the capture thread, read from the main actor for the meter, hence the lock.
     private let meter = OSAllocatedUnfairLock(initialState: Float(0))
 
-    private(set) var framesWritten: Int64 = 0
+    /// Written on the capture thread, read by the controller's tick on main, hence the lock.
+    private let written = OSAllocatedUnfairLock(initialState: Int64(0))
+    var framesWritten: Int64 { written.withLock { $0 } }
     /// How much of `framesWritten` is the leading silence written to reach the origin.
     private(set) var paddedFrames: Int64 = 0
     private(set) var firstBufferAt: Date?
@@ -59,6 +64,13 @@ final class ChannelWriter: @unchecked Sendable {
     }
 
     var writeFailure: WriteFailure? { failure.withLock { $0 } }
+
+    /// When the last buffer with any non-zero sample in it arrived. A capture path that is still
+    /// delivering buffers, but only bit-exact zeros, looks perfectly healthy by every other measure
+    /// — the file grows, the frame count climbs — and that is exactly how the system track was
+    /// being lost: a full-length `system.wav` of digital silence. Locked for the meter's reason.
+    private let signal = OSAllocatedUnfairLock<Date?>(initialState: nil)
+    var lastSignalAt: Date? { signal.withLock { $0 } }
 
     init(url: URL, origin: Date) throws {
         self.url = url
@@ -85,14 +97,28 @@ final class ChannelWriter: @unchecked Sendable {
 
     /// Resample `input` and append it. Silently drops a buffer it cannot convert rather than
     /// throwing: a single bad buffer mid-meeting is not a reason to lose the rest of the meeting.
-    func append(_ input: AVAudioPCMBuffer) {
+    ///
+    /// `capturedAt` is when the buffer's first frame was captured, which the capture paths read off
+    /// the buffer's own host-time stamp. It only matters at the two moments the file is lined up
+    /// against the recording clock: the first buffer, and the first one after a discontinuity.
+    func append(_ input: AVAudioPCMBuffer, capturedAt: Date = Date()) {
         guard let file, input.frameLength > 0 else { return }
-        let now = Date()
-        if firstBufferAt == nil { firstBufferAt = now }
+        if firstBufferAt == nil { firstBufferAt = capturedAt }
         if !padded {
             padded = true
-            padSilence(upTo: now, in: file)
+            // Ten seconds is the ceiling: past that the gap is a bug, not latency, and writing
+            // minutes of silence would make it look like the meeting simply started quiet. Unless
+            // the source was already rebuilt before its first buffer — a stream that never
+            // delivered, restarted by the watchdog — when the gap is known and must be kept whole,
+            // or the whole track lands early against the other one.
+            let frames = writePadding(upTo: capturedAt, cap: realignPending ? nil : 10, in: file)
+            paddedFrames = frames
+        } else if realignPending {
+            // No ceiling here. The gap is real — the source was rebuilt — and it is the silence
+            // that keeps every later offset in this file meaning the same instant in the other.
+            writePadding(upTo: capturedAt, cap: nil, in: file)
         }
+        realignPending = false
 
         // AVAudioConverter misbehaves above two channels (Safari on speaker mode and some hardware
         // routes report nine), so those get averaged down before it ever sees them.
@@ -107,12 +133,12 @@ final class ChannelWriter: @unchecked Sendable {
         // Before the write and before the hook, because both are downstream of it: a NaN quantised
         // into the WAV is a click, and a NaN fed to the recogniser poisons its state for the rest
         // of the meeting. Costs nothing — the meter has to walk the same samples anyway.
-        sanitiseAndMeter(out)
+        if sanitiseAndMeter(out) > 0 { signal.withLock { $0 = capturedAt } }
 
         let offsetMs = Int(Double(framesWritten) / 16.0)
         do {
             try file.write(from: out)
-            framesWritten += Int64(out.frameLength)
+            written.withLock { $0 += Int64(out.frameLength) }
         } catch {
             noteWriteFailure(error, frames: Int64(out.frameLength))
             return
@@ -120,6 +146,18 @@ final class ChannelWriter: @unchecked Sendable {
         if let onSamples16k, let data = out.floatChannelData?[0] {
             onSamples16k(Array(UnsafeBufferPointer(start: data, count: Int(out.frameLength))), offsetMs)
         }
+    }
+
+    /// The capture source is about to be rebuilt — a stream restarted, an engine reconfigured for a
+    /// new device. Flushes what the resampler was holding, so it lands before the gap rather than
+    /// after it, and has the next buffer pad the file forward to the moment it was captured.
+    ///
+    /// Same threading rule as `append`: call it where the capture callback runs, or once that
+    /// callback has stopped firing.
+    func markDiscontinuity() {
+        guard let file else { return }
+        flushTail(into: file)
+        realignPending = true
     }
 
     /// Flush the resampler's filter tail and finalise the file. `AVAudioFile` has no `close()` — the
@@ -144,7 +182,7 @@ final class ChannelWriter: @unchecked Sendable {
             let offsetMs = Int(Double(framesWritten) / 16.0)
             do {
                 try file.write(from: tail)
-                framesWritten += Int64(tail.frameLength)
+                written.withLock { $0 += Int64(tail.frameLength) }
             } catch {
                 noteWriteFailure(error, frames: Int64(tail.frameLength))
                 return
@@ -216,29 +254,46 @@ final class ChannelWriter: @unchecked Sendable {
         return out
     }
 
-    /// Ten seconds is the ceiling: past that the gap is a bug, not latency, and writing minutes of
-    /// silence would make it look like the meeting simply started quiet.
-    private func padSilence(upTo now: Date, in file: AVAudioFile) {
-        let seconds = min(max(now.timeIntervalSince(origin), 0), 10)
-        let frames = AVAudioFrameCount(seconds * Self.target.sampleRate)
-        guard frames > 0, let silence = AVAudioPCMBuffer(pcmFormat: Self.target, frameCapacity: frames)
-        else { return }
-        silence.frameLength = frames
-        silence.floatChannelData?[0].update(repeating: 0, count: Int(frames))
-        try? file.write(from: silence)
-        framesWritten += Int64(frames)
-        paddedFrames = Int64(frames)
+    /// Write silence until the file reaches `instant` on the recording clock. Never trims: a file
+    /// that is already ahead (capture latency, a sample clock running slightly fast) is left alone.
+    /// Returns the frames written.
+    @discardableResult
+    private func writePadding(upTo instant: Date, cap: TimeInterval?, in file: AVAudioFile) -> Int64 {
+        var seconds = max(instant.timeIntervalSince(origin), 0)
+        if let cap { seconds = min(seconds, cap) }
+        let target = Int64(seconds * Self.target.sampleRate)
+        var remaining = target - framesWritten
+        var added: Int64 = 0
+        // In slices, so an hour-long gap does not become an hour-long allocation.
+        while remaining > 0 {
+            let frames = AVAudioFrameCount(min(remaining, 16_000 * 10))
+            guard let silence = AVAudioPCMBuffer(pcmFormat: Self.target, frameCapacity: frames)
+            else { break }
+            silence.frameLength = frames
+            silence.floatChannelData?[0].update(repeating: 0, count: Int(frames))
+            do {
+                try file.write(from: silence)
+            } catch {
+                noteWriteFailure(error, frames: remaining)
+                break
+            }
+            written.withLock { $0 += Int64(frames) }
+            added += Int64(frames)
+            remaining -= Int64(frames)
+        }
+        return added
     }
 
     /// One walk of the converted samples that does two jobs: replace anything not finite with
-    /// silence, and take the peak for the meter.
+    /// silence, and take the peak for the meter. Returns that peak.
     ///
     /// A working device never sends a NaN. A virtual one can — aggregate devices, loopback drivers
     /// and audio plug-ins all sit in the path a real user's route goes through, and one of them
     /// handing over garbage must cost that buffer, not the meeting: quantised into the WAV a NaN is
     /// a click, and fed to the recogniser it poisons the model's state for everything after it.
-    private func sanitiseAndMeter(_ buffer: AVAudioPCMBuffer) {
-        guard let data = buffer.floatChannelData?[0] else { return }
+    @discardableResult
+    private func sanitiseAndMeter(_ buffer: AVAudioPCMBuffer) -> Float {
+        guard let data = buffer.floatChannelData?[0] else { return 0 }
         var scan: Float = 0
         for i in 0..<Int(buffer.frameLength) {
             let sample = data[i]
@@ -252,6 +307,7 @@ final class ChannelWriter: @unchecked Sendable {
         }
         let peak = scan
         meter.withLock { $0 = max(peak, $0 * 0.85) }
+        return peak
     }
 
     /// The first write failure is the one worth reporting; the rest are the same disk, still full.
