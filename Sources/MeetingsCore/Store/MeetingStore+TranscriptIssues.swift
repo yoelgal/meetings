@@ -112,11 +112,30 @@ extension MeetingStore {
 
     /// Empty for the overwhelming majority of meetings, which is the point: a non-empty result is
     /// the UI's cue to say the transcript is incomplete.
+    ///
+    /// The live-incomplete marker is not an issue to show. It is an instruction to the batch pass
+    /// ("transcribe this channel from its file"), recorded before that pass has run, and showing it
+    /// would say a channel "could not be transcribed" while it is still being transcribed. It is
+    /// read through ``liveIncompleteChannels(meetingID:)``; a re-read that then fails replaces it
+    /// with the real reason, which is shown.
     public func transcriptIssues(meetingID: String) throws -> [TranscriptIssue] {
         try dbPool.read { db in
             try TranscriptIssue.fetchAll(db, sql: """
-                SELECT * FROM transcript_issues WHERE meeting_id = ? ORDER BY channel ASC, kind ASC
-                """, arguments: [meetingID])
+                SELECT * FROM transcript_issues WHERE meeting_id = ? AND reason <> ?
+                ORDER BY channel ASC, kind ASC
+                """, arguments: [meetingID, TranscriptionService.liveIncompleteReason])
+        }
+    }
+
+    /// The channels the batch pass has been told to transcribe from their files. See
+    /// ``TranscriptionService/liveIncompleteReason``.
+    public func liveIncompleteChannels(meetingID: String) throws -> Set<Channel> {
+        try dbPool.read { db in
+            Set(try String.fetchAll(db, sql: """
+                SELECT channel FROM transcript_issues WHERE meeting_id = ? AND kind = ? AND reason = ?
+                """, arguments: [meetingID, TranscriptIssue.Kind.transcription.rawValue,
+                                    TranscriptionService.liveIncompleteReason])
+            .compactMap(Channel.init(rawValue:)))
         }
     }
 
@@ -124,7 +143,8 @@ extension MeetingStore {
     /// use it to mark those rows without a query per meeting.
     public func meetingIDsWithTranscriptIssues() throws -> Set<String> {
         try dbPool.read { db in
-            Set(try String.fetchAll(db, sql: "SELECT DISTINCT meeting_id FROM transcript_issues"))
+            Set(try String.fetchAll(db, sql: "SELECT DISTINCT meeting_id FROM transcript_issues WHERE reason <> ?",
+                                    arguments: [TranscriptionService.liveIncompleteReason]))
         }
     }
 }

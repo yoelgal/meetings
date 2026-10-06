@@ -284,8 +284,10 @@ struct SharedFieldEditor: View {
             }
         }
         .task(id: identity) {
-            guard !tooLargeToEdit else { return }
+            // Before the size guard, which is about the field being adopted: an oversized next
+            // meeting must not cost the previous one its unsaved edit.
             if touched, !autosaveSuspended, text != baseline { adoptedSave?(text) }
+            guard !tooLargeToEdit else { return }
             adopt(value)
             adoptedSave = save
             // Screenshot seam, inert unless the environment variable is set — see `Appearance`.

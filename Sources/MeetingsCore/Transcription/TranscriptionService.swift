@@ -454,9 +454,7 @@ public actor TranscriptionService {
         // rather than `unedited`, because "no unedited rows" and "no rows" are not the same channel:
         // one produced nothing, the other produced nothing but corrections the user typed.
         let channelsWithRows = Set(stored.map(\.channel))
-        let incomplete = Set(((try? store.transcriptIssues(meetingID: meetingID)) ?? [])
-            .filter { $0.kind == .transcription && $0.reason == Self.liveIncompleteReason }
-            .map(\.channel))
+        let incomplete = (try? store.liveIncompleteChannels(meetingID: meetingID)) ?? []
         let vocabulary = (try? store.vocabularyInEffect(meetingID: meetingID)) ?? []
         let entries = VocabularyBiasing.entries(for: vocabulary)
         progress(0.1)

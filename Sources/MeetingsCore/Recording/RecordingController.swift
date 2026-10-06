@@ -280,6 +280,28 @@ public final class RecordingController {
     /// what the batch pass promotes, so the last second or so the recogniser was still holding is
     /// otherwise gone for good. Three seconds is the ceiling because the system is waiting on us.
     public func finaliseForTermination() async {
+        // A second signal (or ⌘Q during a SIGTERM's finalise) waits for the first one to finish
+        // rather than finding the phase moved on and letting the process exit mid-close.
+        if let finalising {
+            await finalising.value
+            return
+        }
+        // A Stop already under way owns the close; wait (bounded) for it to move the row.
+        if case .stopping = phase {
+            let deadline = ContinuousClock.now + .seconds(5)
+            while case .stopping = phase, ContinuousClock.now < deadline {
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+            return
+        }
+        let task = Task { await self.finaliseNow() }
+        finalising = task
+        await task.value
+    }
+
+    private var finalising: Task<Void, Never>?
+
+    private func finaliseNow() async {
         guard case .recording = phase, let meetingID else { return }
         finalElapsedMs = elapsedMs
         phase = .stopping
@@ -385,14 +407,19 @@ public final class RecordingController {
             // Nor should the row sit at `recording` — a red dot with no Stop that works — until the
             // next launch. A locked or briefly full database usually comes back; keep trying, and
             // queue the batch pass the moment it does.
-            Task { [store, transcription] in
+            let endedAt = Date()
+            Task { @MainActor [weak self, store, transcription] in
                 for _ in 0..<15 {
                     try? await Task.sleep(for: .seconds(2))
+                    // Only while it is still ours to move: a recovery sweep may have got there
+                    // first, and a finished meeting must not be sent back to `transcribing`.
+                    guard let row = try? store.meeting(id: meetingID), row.state == .recording else { return }
                     let moved = (try? store.updateMeeting(id: meetingID) { meeting in
                         meeting.state = .transcribing
-                        meeting.endedAt = meeting.endedAt ?? Date()
+                        meeting.endedAt = endedAt
                     }) != nil
                     if moved {
+                        if case .failed = self?.phase { self?.phase = .idle }
                         await transcription.enqueue(meetingID: meetingID)
                         return
                     }
@@ -582,9 +609,14 @@ public final class RecordingController {
     /// Stored the first time, so the batch pass — this one, or the next launch's after a quit or a
     /// crash — transcribes the channel from its file. See ``TranscriptionService/liveIncompleteReason``.
     private func noteLiveTextLost(_ channel: Channel, meetingID: String) {
-        guard liveIncomplete.insert(channel).inserted else { return }
-        try? store.recordTranscriptIssue(TranscriptIssue(
-            meetingID: meetingID, channel: channel, reason: TranscriptionService.liveIncompleteReason))
+        guard !liveIncomplete.contains(channel) else { return }
+        // Remembered only once it is stored: the same locked or full database that lost the text
+        // can refuse the marker, and the next loss on this channel must try again.
+        do {
+            try store.recordTranscriptIssue(TranscriptIssue(
+                meetingID: meetingID, channel: channel, reason: TranscriptionService.liveIncompleteReason))
+            liveIncomplete.insert(channel)
+        } catch {}
     }
 
     /// First reason wins: the mic channel is the one that matters, and it is attached first.
