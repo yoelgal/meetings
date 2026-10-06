@@ -42,7 +42,7 @@ CLIPS="$PUBLIC/clips"
 # Bundled rather than served: the demo *imports* this, so it belongs beside the code that reads it and
 # not in public/, which is for files fetched at runtime.
 CLI_SESSION="$ROOT/video/film/src/cli/session.json"
-SEED="$ROOT/video/seed/.build/debug/seed"
+SEED="$WORK/seed-pkg/.build/debug/seed"
 WINCAP="$WORK/wincap"
 WINLIST="$WORK/winlist"
 mkdir -p "$WORK"
@@ -71,13 +71,28 @@ if [ "$BUILD" = 1 ]; then
     # Same source as the shipping app, its own identifier, and the app name it ships under — the film
     # must not photograph a window whose menu bar says "meetings-dev".
     MEETINGS_BUNDLE_ID="$FILM_BUNDLE_ID" MEETINGS_APP_NAME="Meetings" \
-        "$ROOT/scripts/build-app.sh" release >"$WORK/build.log" 2>&1 \
+        "$ROOT/scripts/build-app.sh" release >"$WORK/build.log" 2>&1 </dev/null \
         || { echo "shoot: build failed, see $WORK/build.log" >&2; exit 1; }
 
     say "building the seeder"
     # Its own cache path: the shared SwiftPM repository cache races against the main checkout's own
     # resolve and fails with "already exists in file system".
-    swift build --package-path "$ROOT/video/seed" --cache-path "$WORK/spm-cache" \
+    # From a generated manifest beside a copy of the sources: video/seed/Package.swift names the
+    # checkout by directory, and SwiftPM only resolves that in a checkout called `meetings-thing`.
+    rm -rf "$WORK/seed-pkg"; mkdir -p "$WORK/seed-pkg"
+    cp -R "$ROOT/video/seed/Sources" "$WORK/seed-pkg/"
+    cat > "$WORK/seed-pkg/Package.swift" <<SWIFT
+// swift-tools-version: 6.2
+import PackageDescription
+let package = Package(
+    name: "seed",
+    platforms: [.macOS(.v26)],
+    dependencies: [.package(path: "$ROOT")],
+    targets: [.executableTarget(name: "seed", dependencies: [
+        .product(name: "MeetingsCore", package: "$(basename "$ROOT")")])]
+)
+SWIFT
+    swift build --package-path "$WORK/seed-pkg" --cache-path "$WORK/spm-cache" \
         >"$WORK/seed-build.log" 2>&1 \
         || { echo "shoot: seeder build failed, see $WORK/seed-build.log" >&2; exit 1; }
 

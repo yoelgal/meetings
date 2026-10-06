@@ -39,7 +39,7 @@ say() { printf '\n==> %s\n' "$1"; }
 if [ "${1:-}" != "--no-build" ]; then
     say "building the launch bundle"
     MEETINGS_BUNDLE_ID="$BUNDLE_ID" MEETINGS_APP_NAME="Meetings" \
-        "$ROOT/scripts/build-app.sh" release >"$WORK/build.log" 2>&1 \
+        "$ROOT/scripts/build-app.sh" release >"$WORK/build.log" 2>&1 </dev/null \
         || { echo "shoot: build failed, see $WORK/build.log" >&2; exit 1; }
     rm -rf "$APP"
     ditto "$ROOT/dist/Meetings.app" "$APP"
@@ -151,7 +151,15 @@ keepalive_start
 
 say "clip: live transcript"
 pose --env "MEETINGS_RECORDING_CHROME=1" --env "MEETINGS_SELECT=recording" --env "MEETINGS_NOTES_PANEL=0"
+rm -f "$WORK/wincap.log"
 (
+    # Not a fixed sleep: wincap can take longer than a second to open its shutter, and a line
+    # seeded before it does is already on screen in the first frame — which put every later line's
+    # Others/You sound on the wrong speaker. Wait for wincap to say it is recording, then a beat.
+    for _ in $(seq 100); do grep -q "recording window" "$WORK/wincap.log" 2>/dev/null && break; sleep 0.1; done
+    grep -q "recording window" "$WORK/wincap.log" || { echo "shoot: wincap never started" >&2; exit 1; }
+    started="$(perl -MTime::HiRes=time -e 'printf "%.3f", time')"
+    : > "$OUT/live-schedule.txt"
     sleep 1.0
     for line in \
         "254000|system|Marcus: the migration note is drafted, I just need the pricing wording." \
@@ -162,12 +170,17 @@ pose --env "MEETINGS_RECORDING_CHROME=1" --env "MEETINGS_SELECT=recording" --env
         "283000|mic|Forty seats to start. I will put it under the pricing line."; do
         IFS='|' read -r at ch text <<<"$line"
         "$SEED" say "$LIVE" "$at" "$ch" "$text" >/dev/null
+        # Which line went in when, in seconds after capture began: the soundtrack gives each line's
+        # arrival its speaker's sound from this, not from counting changes in the footage.
+        perl -MTime::HiRes=time -e 'printf "%.3f %s\n", time - $ARGV[0], $ARGV[1]' "$started" "$ch" \
+            >> "$OUT/live-schedule.txt"
         sleep 1.25
     done
     "$CLI" note add "$LIVE" "Migration note ships with the invite." --at 4:26 >/dev/null
 ) &
 DRIVER=$!
-"$WINCAP" --window-id "$APP_WINDOW" --out "$OUT/live.mov" --seconds 11 --fps 60
+# Long enough for all six lines and the note after the driver's wait.
+"$WINCAP" --window-id "$APP_WINDOW" --out "$OUT/live.mov" --seconds 12 --fps 60 > "$WORK/wincap.log" 2>&1
 wait "$DRIVER" || { echo "shoot: the live-transcript driver failed (seed say / note add)" >&2; exit 1; }
 
 # ---------------------------------------------------------------- 2. the panel, and screen share

@@ -15,7 +15,7 @@ B="$ROOT/video/brag"
 # Picture first, silent: the soundtrack places each fade's sound on the frame it becomes visible,
 # measured from this render. The picture does not depend on the audio, so the order is free.
 ( cd "$ROOT/video/film" && npx remotion render Launch "$B/work-render.mp4" --codec=h264 --crf=17 \
-    --color-space=bt709 --muted --log=error )
+    --color-space=bt709 --muted --timeout=120000 --log=error )
 python3 "$B/soundtrack.py" --picture "$B/work-render.mp4"
 # The poster is the reveal, settled: it says what the product does in one frame. Baked in as
 # frame 0 (replacing it, not adding one) so every platform's idle thumbnail is that frame — a

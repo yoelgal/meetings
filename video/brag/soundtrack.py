@@ -363,17 +363,27 @@ place(GLASS_WINDOW, visible(S["reveal"] + Rv["mark"]), -13, 0.1, "reveal: Meetin
 # The seeded dialogue alternates system, mic, system, …, starting with the other side.
 trim = TIMING["live"]["trim"]
 live_len = S["anchored"] - S["live"]
-# shoot.sh seeds six lines a beat apart, other side first; the first frame-size jump after the
-# recording chrome settles is the first of them. Anything else — a missed line, an extra jump — and
-# Others and You would trade sounds for the rest of the beat, so the count is checked, not assumed.
-SEEDED_LINES = 6
-arrivals = [t for t in clip_changes("live.mov") if t > 1.0]
-if len(arrivals) != SEEDED_LINES:
-    sys.exit(f"soundtrack: live.mov shows {len(arrivals)} line arrivals, shoot.sh seeds {SEEDED_LINES}: "
-             f"{[round(t, 3) for t in arrivals]}")
-lines = [t for t in arrivals if trim <= t < trim + live_len]
-for n, t in enumerate(lines):
-    other = n % 2 == 0
+# Each line's speaker comes from the shoot's own record of what it seeded and when (seconds after
+# capture began), matched to the first change in the footage at or after that moment. Counting
+# changes instead put every Others sound on You once, when a capture started late and line 1 was
+# already in its first frame — and timing checks cannot see a swapped speaker.
+schedule = [(float(a), ch) for a, ch in (line.split() for line in
+            (CLIPS / "live-schedule.txt").read_text().splitlines() if line.strip())]
+live_changes = clip_changes("live.mov")
+lines, used = [], set()
+for seeded, ch in schedule:
+    # The schedule is written when `seed say` exits; the app has usually redrawn ~0.1 s before
+    # that. The nearest unused change within a window narrower than the 1.25 s between lines.
+    near = [t for t in live_changes if t not in used and -0.6 <= t - seeded <= 1.0]
+    match = min(near, key=lambda t: abs(t - seeded), default=None)
+    if match is None:
+        sys.exit(f"soundtrack: the {ch} line seeded at {seeded:.2f}s never shows in live.mov — re-shoot")
+    used.add(match)
+    lines.append((match, ch))
+for n, (t, ch) in enumerate(lines):
+    if not trim <= t < trim + live_len:
+        continue
+    other = ch == "system"
     place(cycle(GLASS_TAP, n) if other else cycle(PEN, n), S["live"] + t - trim, -17,
           -0.35 if other else 0.35, f"live line {n + 1} ({'Others' if other else 'You'})", "click")
 
