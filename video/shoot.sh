@@ -309,7 +309,7 @@ pose --env "MEETINGS_RECORDING_CHROME=1" --env "MEETINGS_SELECT=recording"
 ) &
 DRIVER=$!
 "$WINCAP" --window-id "$APP_WINDOW" --out "$CLIPS/live.mov" --seconds 12 --fps 60
-wait "$DRIVER"
+wait "$DRIVER" || { echo "shoot: the live-transcript driver failed" >&2; exit 1; }
 keepalive_stop
 "$SEED" drop "$LIVE"
 
@@ -344,7 +344,7 @@ pose --env "MEETINGS_SCOPE=all" --env "MEETINGS_SELECT=ready"
 ) &
 DRIVER=$!
 "$WINCAP" --window-id "$APP_WINDOW" --out "$CLIPS/writeup.mov" --seconds 10 --fps 60
-wait "$DRIVER"
+wait "$DRIVER" || { echo "shoot: summary set failed during the write-up clip" >&2; exit 1; }
 
 stop_app
 

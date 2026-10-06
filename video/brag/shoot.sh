@@ -168,7 +168,7 @@ pose --env "MEETINGS_RECORDING_CHROME=1" --env "MEETINGS_SELECT=recording" --env
 ) &
 DRIVER=$!
 "$WINCAP" --window-id "$APP_WINDOW" --out "$OUT/live.mov" --seconds 11 --fps 60
-wait "$DRIVER"
+wait "$DRIVER" || { echo "shoot: the live-transcript driver failed (seed say / note add)" >&2; exit 1; }
 
 # ---------------------------------------------------------------- 2. the panel, and screen share
 
@@ -213,7 +213,10 @@ MD
 pose --env "MEETINGS_SCOPE=all" --env "MEETINGS_SELECT=ready"
 # The CLI's exit status is checked after the clip, never swallowed: a failing `summary set` would
 # otherwise be filmed as an empty write-up and typed on screen as the agent's output.
-( sleep 3; "$CLI" summary set "$STANDUP" --file "$WORK/writeup.md" > "$WORK/step2.out" 2>&1; echo $? > "$WORK/step2.status" ) &
+# `|| rc=$?`, because the subshell inherits `set -e`: a bare failing command would end it before
+# the status is written, and the check below would never get to say why.
+( sleep 3; rc=0; "$CLI" summary set "$STANDUP" --file "$WORK/writeup.md" > "$WORK/step2.out" 2>&1 || rc=$?
+  echo "$rc" > "$WORK/step2.status" ) &
 DRIVER=$!
 "$WINCAP" --window-id "$APP_WINDOW" --out "$OUT/writeup.mov" --seconds 8 --fps 60
 wait "$DRIVER"
