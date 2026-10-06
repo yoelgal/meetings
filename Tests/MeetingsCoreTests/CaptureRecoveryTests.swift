@@ -190,7 +190,11 @@ struct CaptureRecoveryTests {
 
 @Suite("Quit path")
 struct QuitPathTests {
+    /// On the main actor, because that is where the quit path awaits it: its resumption is the main
+    /// queue's, not a thread in the cooperative pool — which CI's parallel suite keeps saturated,
+    /// and which made a pool-isolated version of this test measure the suite instead of the ceiling.
     @Test("the drain ceiling returns on time even when the work never finishes")
+    @MainActor
     func finishesWithinReturnsAtTheCeiling() async {
         let start = ContinuousClock.now
         let finished = await RecordingController.finishes(within: .milliseconds(200)) {
