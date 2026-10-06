@@ -29,8 +29,8 @@ struct LiveMarkdownEditor: View {
     /// selection, the anchor rect, and the bus names this instance owns.
     @State private var bridge: MarkdownEditorBridge
 
-    /// `bridge` is handed in only by the mount test, which has to be able to ask it what the probe
-    /// found. Every caller in the app lets the editor own one.
+    /// `bridge` is handed in by the mount test, which has to be able to ask it what the probe found,
+    /// and by ``SharedFieldEditor``, whose heading bar asks it to scroll.
     init(text: Binding<String>, documentId: String, bridge: MarkdownEditorBridge? = nil) {
         _text = text
         self.documentId = documentId
@@ -528,6 +528,46 @@ struct MarkdownEditorProbeView: NSViewRepresentable {
         measured.origin.x += tv.textContainerOrigin.x
         measured.origin.y += tv.textContainerOrigin.y
         return probe.convert(measured, from: tv)
+    }
+
+    // MARK: - Jumping to a heading
+
+    /// Scrolls the *page* so the `index`th `## ` heading sits at the top of it. Reads and scrolls,
+    /// nothing else: no selection change, no first responder, so a jump mid-call cannot type into or
+    /// move anything in the notes.
+    ///
+    /// The heading is found again in the text view's own string rather than trusted from the
+    /// binding's offsets, because the view holds the engine's *display* form and a wiki link above
+    /// the heading makes the two differ in length.
+    ///
+    /// **A distance, measured in the window.** The page is SwiftUI's `HostingScrollView`, whose
+    /// absolute offsets are the ones ``viewport(of:)`` documents lying, so nothing here reads one: the
+    /// gap between the heading and the top of the page is taken in window coordinates — the space
+    /// that tells the truth — and the clip view is moved by exactly that.
+    ///
+    /// The top of the page is the clip view's *frame* or the bottom of the toolbar, whichever is
+    /// lower. The detail pane scrolls under the toolbar, so its frame starts at the window's edge;
+    /// the recording pane is a short slice at the bottom of the window, and aiming for the window's
+    /// top there threw the heading out of the pane altogether.
+    /// `scrollToVisible` was tried first and lands differently by direction: it scrolls the least
+    /// it can, so jumping up parked the heading under the toolbar and jumping down left it 50 pt
+    /// lower. `constrainBoundsRect` stops it at the end of the document, which is where the last
+    /// short section stays.
+    func scroll(toHeading index: Int) {
+        guard let tv = textView, let probe, let clip = scrolling, let window = probe.window,
+              let heading = MarkdownEditing.headings(in: tv.string)[safe: index],
+              let rect = Self.anchorRect(
+                  for: NSRange(location: heading.offset, length: 0), in: tv, probe: probe
+              )
+        else { return }
+        // Window coordinates run up the screen; the page's run down it.
+        let pane = clip.superview?.convert(clip.frame, to: nil) ?? window.contentLayoutRect
+        let top = min(pane.maxY, window.contentLayoutRect.maxY)
+        let gap = top - probe.convert(rect, to: nil).maxY
+        var bounds = clip.bounds
+        bounds.origin.y += clip.isFlipped ? gap : -gap
+        clip.scroll(to: clip.constrainBoundsRect(bounds).origin)
+        clip.enclosingScrollView?.reflectScrolledClipView(clip)
     }
 
     private func query(in tv: NSTextView, selection: NSRange) -> SlashQuery? {

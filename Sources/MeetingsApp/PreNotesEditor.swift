@@ -189,6 +189,9 @@ struct SharedFieldEditor: View {
     /// Holds an injected draft unsaved so the *touched* branch of `receive` can be photographed; a
     /// real edit autosaves after 600 ms.
     @State private var autosaveSuspended = false
+    /// The editor's bridge, owned up here rather than inside ``LiveMarkdownEditor`` so the heading
+    /// bar — which sits outside the editor — can ask it to scroll.
+    @State private var bridge = MarkdownEditorBridge()
 
     /// The reading measure: **40rem, where a rem is this app's own body text**, so it tracks the
     /// system text size instead of being a number that is only right at one of them.
@@ -240,6 +243,10 @@ struct SharedFieldEditor: View {
             if tooLargeToEdit {
                 oversize
             } else {
+            HeadingJumpBar(headings: MarkdownEditing.headings(in: text)) { bridge.scroll(toHeading: $0) }
+                .frame(maxWidth: Self.column, alignment: .leading)
+                .padding(.horizontal, Self.editorInset)
+                .frame(maxWidth: .infinity, alignment: .center)
             editor
                 // No fill, no border, no corner radius. The write-up is the document this screen
                 // exists for, and a box around it made it read as one field on a form — the
@@ -301,7 +308,7 @@ struct SharedFieldEditor: View {
     /// measure, the placeholder, the accessibility label, the change watcher that autosaves — is
     /// applied out here, because none of it is the editor's business.
     private var editor: some View {
-        LiveMarkdownEditor(text: $text, documentId: identity)
+        LiveMarkdownEditor(text: $text, documentId: identity, bridge: bridge)
     }
 
     private var status: String {
@@ -423,6 +430,73 @@ struct SharedFieldEditor: View {
         saving = true
         save(text)
         saving = false
+    }
+}
+
+/// One button per `## ` heading, for getting to the right section of a long set of notes in one
+/// click during a call rather than by scrolling. Built from the live text, so it follows typing;
+/// absent when there is nothing to jump to, so a short note gains no chrome.
+///
+/// Wrapping rather than one scrolling row: seven headings do not fit across the column, and a
+/// horizontal scroller would hide the answer you are looking for behind a gesture.
+private struct HeadingJumpBar: View {
+    let headings: [MarkdownEditing.Heading]
+    let jump: (Int) -> Void
+
+    var body: some View {
+        if !headings.isEmpty {
+            FlowLayout(spacing: 6) {
+                ForEach(Array(headings.enumerated()), id: \.offset) { index, heading in
+                    Button(heading.title) { jump(index) }
+                        .accessibilityHint("Scrolls the notes to this section")
+                }
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Sections")
+        }
+    }
+}
+
+/// Left-to-right, wrapping onto a new line when the next item does not fit — `HStack` with line
+/// breaks, which SwiftUI does not ship.
+private struct FlowLayout: Layout {
+    var spacing: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let frames = arrange(subviews, width: proposal.width ?? .infinity)
+        return CGSize(
+            width: frames.map(\.maxX).max() ?? 0,
+            height: frames.map(\.maxY).max() ?? 0
+        )
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        for (subview, frame) in zip(subviews, arrange(subviews, width: bounds.width)) {
+            subview.place(
+                at: CGPoint(x: bounds.minX + frame.minX, y: bounds.minY + frame.minY),
+                proposal: ProposedViewSize(frame.size)
+            )
+        }
+    }
+
+    private func arrange(_ subviews: Subviews, width: CGFloat) -> [CGRect] {
+        var frames: [CGRect] = []
+        var x: CGFloat = 0, y: CGFloat = 0, row: CGFloat = 0
+        for subview in subviews {
+            // Capped at the line, so one very long heading truncates instead of widening the bar.
+            let size = subview.sizeThatFits(ProposedViewSize(width: width, height: nil))
+            if x > 0, x + size.width > width {
+                x = 0
+                y += row + spacing
+                row = 0
+            }
+            frames.append(CGRect(origin: CGPoint(x: x, y: y), size: size))
+            x += size.width + spacing
+            row = max(row, size.height)
+        }
+        return frames
     }
 }
 

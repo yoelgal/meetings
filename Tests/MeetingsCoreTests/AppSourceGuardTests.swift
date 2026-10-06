@@ -585,7 +585,7 @@ import Testing
         let mount = try #require(editor.range(of: "private var editor: some View"),
                                  "the one mount has to stay inside the one shared editor")
         let body = String(editor[mount.upperBound...].prefix(120))
-        #expect(body.contains("LiveMarkdownEditor(text: $text, documentId: identity)"),
+        #expect(body.contains("LiveMarkdownEditor(text: $text, documentId: identity, bridge: bridge)"),
                 "and it is the engine-backed editor, handed the field's identity as its document")
         #expect(!editor.contains("editorEngine"), "with nothing branching on which editor to use")
     }
