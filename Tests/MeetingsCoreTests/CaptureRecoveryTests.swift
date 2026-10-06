@@ -143,6 +143,31 @@ struct CaptureRecoveryTests {
         if case .restart = actions.last?.1 {} else { Issue.record("a new quiet episode should restart again") }
     }
 
+    @Test("a new stream from a route change does not spend a later quiet episode's silence restart")
+    func aRouteChangeDoesNotSpendTheSilenceRestart() {
+        let t0 = Date()
+        var watch = Watch(startedAt: t0)
+        // Sound for a while, then a route change installs a new stream at 30 s.
+        for s in stride(from: 0.0, through: 30, by: 1) {
+            _ = watch.evaluate(now: t0 + s, lastSignalAt: t0 + s, buffers: Int(s * 10), othersPlaying: true)
+        }
+        watch.noteNewStream(at: t0 + 30, buffers: 300)
+        // Sound continues on the new stream, then goes to zeros at 200 s with a call playing.
+        for s in stride(from: 31.0, through: 200, by: 1) {
+            _ = watch.evaluate(now: t0 + s, lastSignalAt: t0 + s, buffers: Int(s * 10), othersPlaying: true)
+        }
+        var restarted = false
+        for s in stride(from: 201.0, through: 240, by: 1) {
+            if case .restart = watch.evaluate(
+                now: t0 + s, lastSignalAt: t0 + 200, buffers: Int(s * 10), othersPlaying: true)
+            {
+                restarted = true
+                break
+            }
+        }
+        #expect(restarted, "the silence restart is still there to be used")
+    }
+
     @Test("a stream that stops delivering buffers is restarted without a warning")
     func stalledStreamRestarts() {
         let t0 = Date()

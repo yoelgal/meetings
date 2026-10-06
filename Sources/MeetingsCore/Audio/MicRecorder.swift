@@ -162,6 +162,12 @@ final class MicRecorder: @unchecked Sendable {
             }
         }
         let inputFormat = input.outputFormat(forBus: 0)
+        // While a device is missing or mid-switch the input reports 0 Hz / 0 channels, and a tap
+        // installed with that raises an Objective-C exception Swift cannot catch — a crash in the
+        // middle of a meeting. Thrown instead, so the rebuild's retry tries again a moment later.
+        guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else {
+            throw RecordingError.microphoneUnavailable("no input device is ready")
+        }
 
         // One explicit mono client format at the device's own rate. With voice processing this is
         // the Voice I/O boundary format on *both* sides of the duplex unit — inheriting the route's

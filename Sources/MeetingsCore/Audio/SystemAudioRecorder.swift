@@ -206,6 +206,9 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @un
                 let fresh = try await makeStream()
                 // Stopped while the new stream was starting: it must not outlive the recording.
                 guard current else {
+                    // Detached first, as the old stream is: until its stop lands it would otherwise
+                    // write into whatever writer the next recording has installed.
+                    try? fresh.removeStreamOutput(self, type: .audio)
                     try? await fresh.stopCapture()
                     return
                 }

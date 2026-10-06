@@ -551,9 +551,13 @@ public final class RecordingController {
                 return
             }
             if systemLostAtMs == nil {
-                systemLostAtMs = elapsedMs
-                recordCaptureIssue(.system, "system audio stopped at \(MarkdownExport.timestamp(elapsedMs)) "
-                    + "and could not be restarted, so other callers are missing from there on.")
+                let at = elapsedMs
+                systemLostAtMs = at
+                // Not over a full disk's own report (one stored row per channel and kind).
+                if system.writeFailure == nil {
+                    recordCaptureIssue(.system, "system audio stopped at \(MarkdownExport.timestamp(at)) "
+                        + "and could not be restarted, so other callers are missing from there on.")
+                }
             }
             systemAudioLost = Self.systemRestartFailedPrefix + " (\(failure))"
             // Never given up on: a route that was still settling a minute ago may be ready now.
@@ -567,8 +571,8 @@ public final class RecordingController {
         if systemAudioLost?.hasPrefix(Self.systemRestartFailedPrefix) == true { systemAudioLost = nil }
         if let from = systemLostAtMs {
             systemLostAtMs = nil
-            recordCaptureIssue(.system, "system audio was lost from \(MarkdownExport.timestamp(from)) to "
-                + "\(MarkdownExport.timestamp(elapsedMs)), so other callers are missing for that stretch.")
+            if system.writeFailure == nil { recordCaptureIssue(.system, "system audio was lost from \(MarkdownExport.timestamp(from)) to "
+                + "\(MarkdownExport.timestamp(elapsedMs)), so other callers are missing for that stretch.") }
         }
         lastFailureRetry = nil
 
@@ -672,11 +676,12 @@ public final class RecordingController {
         init(startedAt: Date = Date()) { self.startedAt = startedAt }
 
         /// A stream was installed (a retry, a route change). It gets the grace any new stream
-        /// gets: the stall clock starts now, and its quiet is not the old stream's quiet.
+        /// gets — the stall clock starts now, and a silence restart waits a quiet window — but it
+        /// does not spend the quiet episode's one silence restart: a route change at 10:00 must not
+        /// leave a call that goes silent at 30:00 with a warning and no attempt to fix it.
         mutating func noteNewStream(at now: Date, buffers count: Int) {
             buffers = (count, now)
             lastRestartAt = now
-            silenceRestartSpent = true
         }
 
         mutating func evaluate(now: Date, lastSignalAt: Date?, buffers count: Int, othersPlaying: Bool)
@@ -704,6 +709,7 @@ public final class RecordingController {
             let restartDue = stalled
                 ? lastRestartAt.map({ now.timeIntervalSince($0) >= Self.restartInterval }) ?? true
                 : !silenceRestartSpent
+                    && (lastRestartAt.map { now.timeIntervalSince($0) > Self.quietSeconds } ?? true)
             if restartDue {
                 lastRestartAt = now
                 if !stalled { silenceRestartSpent = true }
