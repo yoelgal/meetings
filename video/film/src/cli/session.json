@@ -1,0 +1,14 @@
+[
+  {
+    "command": "meetings list --state ready",
+    "output": "6BAE98B7-CFD1-46F9-BE0E-A4F85B7D3365  2026-08-15 11:30  16m  ready  Product  Design review"
+  },
+  {
+    "command": "meetings summary set 6BAE98B7-CFD1-46F9-BE0E-A4F85B7D3365 --file writeup.md",
+    "output": "Summary written on 6BAE98B7-CFD1-46F9-BE0E-A4F85B7D3365. Design review is complete"
+  },
+  {
+    "command": "meetings show 6BAE98B7-CFD1-46F9-BE0E-A4F85B7D3365 --summary",
+    "output": "## What we decided\n\n- The empty state says what to do next, not that the list is empty.\n\n## Actions\n\n- [ ] Apply the same pattern to search results"
+  }
+]

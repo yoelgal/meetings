@@ -1,0 +1,103 @@
+   time   attack Δ   picture  event
+  0.200   +0.00 ms   changes  hook key 1
+  0.233   +0.00 ms   changes  hook key 2
+  0.267  -12.37 ms   changes  hook key 3
+  0.300  -16.58 ms   changes  hook key 4
+  0.333  -18.54 ms   changes  hook key 5
+  0.367  -11.37 ms   changes  hook key 6
+  0.400   +0.02 ms   changes  hook key 7
+  0.433   -5.10 ms   changes  hook key 8
+  0.467  -15.52 ms   changes  hook key 9
+  0.500  -17.79 ms   changes  hook key 10
+  0.533  -18.23 ms   changes  hook key 11
+  0.567   +0.00 ms   changes  hook key 12
+  0.600  -16.29 ms   changes  hook key 13
+  0.633  -20.02 ms   changes  hook key 14
+  0.667  -19.12 ms   changes  hook key 15
+  0.700  -14.75 ms   changes  hook key 16
+  0.733  -16.98 ms   changes  hook key 17
+  0.767  -12.85 ms   changes  hook key 18
+  0.800   -0.29 ms   changes  hook key 19
+  0.833   +0.00 ms   changes  hook key 20
+  0.867   +0.00 ms   changes  hook key 21
+  0.900  -15.75 ms   changes  hook key 22
+  0.933   +0.00 ms   changes  hook key 23
+  0.967   +0.00 ms   changes  hook key 24
+  1.000   -4.40 ms   changes  hook key 25
+  1.800   +0.00 ms   changes  hook: Who said that?
+  3.000   +0.04 ms   changes  cut 3.0s
+  3.167   -0.69 ms   changes  problem line A
+  5.117   +0.00 ms   changes  problem line B
+  6.600   +0.00 ms   changes  cut 6.6s
+  6.717   -0.04 ms   changes  reveal: tracks split
+  7.200   +0.00 ms   changes  reveal: You / Others
+  7.817   +0.00 ms   changes  reveal: Meetings records them
+ 10.200   +0.00 ms   changes  cut 10.2s
+ 10.592   -0.00 ms   changes  live line 1 (Others)
+ 12.098   +0.00 ms   changes  live line 2 (You)
+ 13.088   +0.00 ms   changes  live line 3 (Others)
+ 14.602   -0.00 ms   changes  live line 4 (You)
+ 15.590   +0.00 ms   changes  live line 5 (Others)
+ 16.233   +0.00 ms   changes  cut 16.2s
+ 20.450   +0.00 ms   changes  cut 20.4s
+ 21.833   +0.00 ms   changes  share: panel hidden
+ 24.650   +0.00 ms   changes  cut 24.6s
+ 24.967   -0.15 ms   changes  cli step 1 key
+ 25.000   +0.00 ms   changes  cli step 1 key
+ 25.033  -12.40 ms   changes  cli step 1 key
+ 25.067   -9.60 ms   changes  cli step 1 key
+ 25.100  -11.38 ms   changes  cli step 1 key
+ 25.133   -3.06 ms   changes  cli step 1 key
+ 25.167  -18.23 ms   changes  cli step 1 key
+ 25.200   -0.08 ms   changes  cli step 1 key
+ 25.233  -20.00 ms   changes  cli step 1 key
+ 25.267  -14.75 ms   changes  cli step 1 key
+ 25.300  -12.94 ms   changes  cli step 1 key
+ 25.467   +0.00 ms   changes  cli step 1 output
+ 25.883   -0.00 ms   changes  cli step 2 key
+ 25.917  -16.33 ms   changes  cli step 2 key
+ 25.950   +2.04 ms   changes  cli step 2 key
+ 25.983   -7.29 ms   changes  cli step 2 key
+ 26.017  -16.31 ms   changes  cli step 2 key
+ 26.050   +0.00 ms   changes  cli step 2 key
+ 26.083  -16.85 ms   changes  cli step 2 key
+ 26.117   -0.08 ms   changes  cli step 2 key
+ 26.150  -15.77 ms   changes  cli step 2 key
+ 26.183   +0.00 ms   changes  cli step 2 key
+ 26.217   -3.06 ms   changes  cli step 2 key
+ 26.383   +0.00 ms   changes  cli step 2 output
+ 26.800   +0.00 ms   changes  cli step 3 key
+ 26.833  -12.42 ms   changes  cli step 3 key
+ 26.867   +0.02 ms   changes  cli step 3 key
+ 26.900  -12.94 ms   changes  cli step 3 key
+ 26.933   +0.08 ms   changes  cli step 3 key
+ 26.967   +0.02 ms   changes  cli step 3 key
+ 27.000   -0.02 ms   changes  cli step 3 key
+ 27.033  -12.94 ms   changes  cli step 3 key
+ 27.067   -0.00 ms   changes  cli step 3 key
+ 27.100   -2.69 ms   changes  cli step 3 key
+ 27.133  -20.00 ms   changes  cli step 3 key
+ 27.300   +0.00 ms   changes  cli step 3 output
+ 27.900   -0.00 ms   changes  cli: back to the app
+ 28.498   +0.00 ms   changes  cli: write-up lands
+ 30.000   +0.00 ms   changes  cut 30.0s
+ 30.067   +0.00 ms   changes  end: Meetings
+ 30.467   +0.00 ms   changes  end: tagline
+ 30.933   +0.00 ms   changes  end: install line
+ 31.400   +0.00 ms   changes  end: macOS 26 …
+
+86 events
+  each sound's attack vs its frame, read back alone: worst 0.31 ms (one frame is 16.7 ms)
+  …and read back in the full hits stem, neighbours ringing: worst 20.02 ms
+  film audio vs soundtrack (codec delay): +0.00 ms, +0.00 ms, +0.00 ms
+  picture starts changing on the event's frame (within 3 frames): 86/86
+  loudness of the finished film: -16.1 LUFS integrated, true peak -1.8 dBTP
+  short-term loudness by scene (LUFS, 3 s window): the hook quiet, the groove level, the end ringing out
+    hook        0.0–  3.0s   median  -23.3   max  -23.3
+    problem     3.0–  6.6s   median  -21.3   max  -20.4
+    reveal      6.6– 10.2s   median  -16.9   max  -15.7
+    live       10.2– 16.2s   median  -15.9   max  -15.0
+    anchored   16.2– 20.4s   median  -15.7   max  -14.7
+    share      20.4– 24.6s   median  -16.0   max  -15.0
+    cli        24.6– 30.0s   median  -15.5   max  -14.6
+    end        30.0– 34.0s   median  -18.6   max  -15.3

@@ -1,0 +1,30 @@
+{
+  "name": "meetings-demo",
+  "private": true,
+  "version": "1.0.0",
+  "description": "The Meetings 30-second product demo, as code.",
+  "scripts": {
+    "studio": "remotion studio",
+    "fonts": "node scripts/fonts.mjs",
+    "audit": "bun scripts/audit-camera.mjs",
+    "master": "bun scripts/audit-camera.mjs && remotion render Demo out/meetings-demo-master.mov --codec=prores --prores-profile=hq --scale=2 --color-space=bt709 && node scripts/tag-colour.mjs out/meetings-demo-master.mov",
+    "render": "bun scripts/audit-camera.mjs && remotion render Demo out/meetings-demo.mp4 --codec=h264 --crf=17 --color-space=bt709 && node scripts/tag-colour.mjs out/meetings-demo.mp4",
+    "still": "remotion still Demo out/frame.png",
+    "launch": "../brag/finish.sh"
+  },
+  "dependencies": {
+    "@fontsource-variable/inter": "5.2.8",
+    "@fontsource-variable/jetbrains-mono": "^5.3.0",
+    "@mediabunny/prores": "^1.55.1",
+    "@remotion/cli": "4.0.513",
+    "@remotion/fonts": "4.0.513",
+    "@remotion/media": "4.0.513",
+    "react": "19.2.0",
+    "react-dom": "19.2.0",
+    "remotion": "4.0.513"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.2",
+    "typescript": "5.9.3"
+  }
+}

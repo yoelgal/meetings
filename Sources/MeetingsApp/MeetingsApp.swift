@@ -392,6 +392,13 @@ enum Appearance {
     /// the transport at all — is the shipping logic, unchanged.
     static var forceRecordingChrome: Bool { value("MEETINGS_RECORDING_CHROME") == "1" }
 
+    /// `MEETINGS_DETAIL_OPEN=notes,transcript,prenotes` — open those collapsed sections of a written
+    /// meeting's detail, which otherwise only a click opens.
+    static var detailOpen: Set<String> {
+        Set((value("MEETINGS_DETAIL_OPEN") ?? "").split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces).lowercased() })
+    }
+
     /// `MEETINGS_CAPTURE_WARNING=<text>` — show that live capture warning, as if the recorder had
     /// raised it. The real one needs a call whose audio route moves mid-recording.
     static var captureWarning: String? { value("MEETINGS_CAPTURE_WARNING") }
