@@ -513,7 +513,9 @@ private struct MeetingChips: View {
     private static let inlineAttendees = 2
 
     var body: some View {
-        HStack(spacing: 6) {
+        // Wrapping, not an HStack: in a narrow window an HStack squeezed every chip to "3 O…",
+        // "10:…", "Dan…" — all of them present, none of them readable.
+        ChipFlow(spacing: 6) {
             if let date = meeting.sortDate {
                 chip(Format.detailDate(date))
                 chip(Format.timeOfDay(date))
@@ -535,7 +537,6 @@ private struct MeetingChips: View {
                 chip("+\(meeting.attendees.count - Self.inlineAttendees) more")
             }
             folderChip
-            Spacer(minLength: 0)
         }
         .font(.caption)
         .foregroundStyle(.secondary)
@@ -557,8 +558,7 @@ private struct MeetingChips: View {
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
-        .fixedSize()
-        // With no folders in the store the only destination is Unfiled, and an unfiled meeting is
+                // With no folders in the store the only destination is Unfiled, and an unfiled meeting is
         // already there — the same rule the context menu applies.
         .disabled(folders.isEmpty && meeting.folderID == nil)
     }
@@ -576,6 +576,54 @@ private struct MeetingChips: View {
         .padding(.vertical, 3)
         .overlay(Capsule().strokeBorder(.separator))
         .contentShape(.capsule)
+    }
+}
+
+/// Left-to-right rows that wrap, each child at its ideal size — or at the row's width, if it is
+/// wider than that, so a long attendee name truncates instead of running out of the column.
+private struct ChipFlow: Layout {
+    var spacing: CGFloat
+
+    private typealias Row = (items: [(index: Int, size: CGSize)], width: CGFloat, height: CGFloat)
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let rows = arrange(width: proposal.width ?? .infinity, subviews)
+        let width = rows.map(\.width).max() ?? 0
+        let height = rows.map(\.height).reduce(0, +) + spacing * CGFloat(max(rows.count - 1, 0))
+        return CGSize(width: width, height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var y = bounds.minY
+        for row in arrange(width: bounds.width, subviews) {
+            var x = bounds.minX
+            for item in row.items {
+                subviews[item.index].place(
+                    at: CGPoint(x: x, y: y + (row.height - item.size.height) / 2),
+                    proposal: ProposedViewSize(item.size))
+                x += item.size.width + spacing
+            }
+            y += row.height + spacing
+        }
+    }
+
+    private func arrange(width: CGFloat, _ subviews: Subviews) -> [Row] {
+        var rows: [Row] = []
+        for (index, subview) in subviews.enumerated() {
+            var size = subview.sizeThatFits(.unspecified)
+            if size.width > width {
+                size = subview.sizeThatFits(ProposedViewSize(width: width, height: nil))
+                size.width = min(size.width, width)
+            }
+            if let last = rows.last, last.width + spacing + size.width <= width {
+                rows[rows.count - 1].items.append((index, size))
+                rows[rows.count - 1].width += spacing + size.width
+                rows[rows.count - 1].height = max(last.height, size.height)
+            } else {
+                rows.append(([(index, size)], size.width, size.height))
+            }
+        }
+        return rows
     }
 }
 

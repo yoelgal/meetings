@@ -241,6 +241,23 @@ final class MeetingsAppDelegate: NSObject, NSApplicationDelegate {
 /// window has to be photographed in a given state without ever being clicked or brought forward —
 /// the same reason `MEETINGS_CALENDAR_FIXTURE` exists in `MeetingsCore`.
 enum Appearance {
+    /// Any screenshot pose at all. A posed launch is `open -g` on a Mac somebody is using, so
+    /// nothing in one may take focus — whichever of the overrides it happens to use.
+    ///
+    /// An allowlist of the overrides this enum reads, not "any MEETINGS_ variable": `MEETINGS_MD_ROOT`
+    /// and `MEETINGS_HOME` are real settings a user can have in their environment, and treating them
+    /// as a pose left a first launch's setup wizard behind every other window. Empty counts as unset,
+    /// as it does for every override.
+    static var isPosed: Bool { poseKeys.contains { value($0) != nil } }
+
+    static let poseKeys = [
+        "MEETINGS_APPEARANCE", "MEETINGS_CAPTURE_WARNING", "MEETINGS_DETAIL_OPEN", "MEETINGS_IMPORT",
+        "MEETINGS_NOTES_PANEL", "MEETINGS_ONBOARDING", "MEETINGS_PANEL", "MEETINGS_PANEL_CAPTURABLE",
+        "MEETINGS_PANEL_DIAGNOSTICS", "MEETINGS_PANEL_NOTE", "MEETINGS_PANEL_WRITING",
+        "MEETINGS_PRENOTES_DRAFT", "MEETINGS_RECORDING_CHROME", "MEETINGS_SCOPE", "MEETINGS_SEARCH",
+        "MEETINGS_SELECT", "MEETINGS_WINDOW",
+    ]
+
     private static func value(_ key: String) -> String? {
         let value = ProcessInfo.processInfo.environment[key]
         return (value?.isEmpty ?? true) ? nil : value
@@ -374,6 +391,10 @@ enum Appearance {
     /// whether the recording screen is the one on screen, and therefore whether the toolbar draws
     /// the transport at all — is the shipping logic, unchanged.
     static var forceRecordingChrome: Bool { value("MEETINGS_RECORDING_CHROME") == "1" }
+
+    /// `MEETINGS_CAPTURE_WARNING=<text>` — show that live capture warning, as if the recorder had
+    /// raised it. The real one needs a call whose audio route moves mid-recording.
+    static var captureWarning: String? { value("MEETINGS_CAPTURE_WARNING") }
 }
 
 /// Remembers where the window was and how big it was, across launches.
@@ -604,6 +625,9 @@ private struct RecordingToolbarStatus: View {
                     .contentTransition(.numericText())
             }
         }
+        // The toolbar draws its glass capsule tight to the item's frame, which left the dot
+        // touching the capsule's left edge.
+        .padding(.horizontal, 6)
         .help(model.activeMeeting.map { "Recording \($0.title)" } ?? "Recording")
     }
 }

@@ -954,6 +954,11 @@ final class AppModel {
         }
     }
 
+    /// The recorder's live capture warning, or the screenshot seam's.
+    var liveCaptureWarning: String? {
+        recording.liveCaptureWarning ?? Appearance.captureWarning
+    }
+
     /// The recording clock for a meeting, in milliseconds — the offset a live note anchors at, and
     /// the number the panel and the recording bar both display.
     ///
