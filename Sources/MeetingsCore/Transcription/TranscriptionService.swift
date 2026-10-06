@@ -504,7 +504,11 @@ public actor TranscriptionService {
             // speech appears twice. A channel that has said its piece, however edited, is done.
             // …or one whose live transcript is known to have holes in it. If the file cannot be read
             // either, the channel is not in `written` and its live rows are kept: holes beat nothing.
-            if (rows.isEmpty && !channelsWithRows.contains(file.channel)) || incomplete.contains(file.channel) {
+            // Not over a correction, though: a re-read keeps only the recognised spans a correction
+            // wholly covers, so a channel somebody has already corrected keeps its live rows.
+            let corrected = stored.contains { $0.channel == file.channel && $0.edited }
+            if (rows.isEmpty && !channelsWithRows.contains(file.channel))
+                || (incomplete.contains(file.channel) && !corrected) {
                 do {
                     let engine = try resolvedEngine()
                     // On a fresh install this is the download, and the promote path is normally the
@@ -573,6 +577,7 @@ public actor TranscriptionService {
         // repaired file has to take last week's warning down with it.
         for channel in retranscribed {
             try store.clearTranscriptIssue(meetingID: meetingID, channel: channel)
+            try store.clearTranscriptIssue(meetingID: meetingID, channel: channel, kind: .liveIncomplete)
         }
         for failure in failures {
             try store.recordTranscriptIssue(TranscriptIssue(

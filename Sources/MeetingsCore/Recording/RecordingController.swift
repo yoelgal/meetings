@@ -403,7 +403,8 @@ public final class RecordingController {
             // The audio is closed and on disk, and the row is still `recording`, which is exactly
             // what the launch sweep recovers. What must not happen is the phase staying `.stopping`:
             // nothing can start or stop from there, so the app could not record again until relaunch.
-            phase = .failed(String(describing: error))
+            let stopFailure = String(describing: error)
+            phase = .failed(stopFailure)
             // Nor should the row sit at `recording` — a red dot with no Stop that works — until the
             // next launch. A locked or briefly full database usually comes back; keep trying, and
             // queue the batch pass the moment it does.
@@ -413,13 +414,16 @@ public final class RecordingController {
                     try? await Task.sleep(for: .seconds(2))
                     // Only while it is still ours to move: a recovery sweep may have got there
                     // first, and a finished meeting must not be sent back to `transcribing`.
-                    guard let row = try? store.meeting(id: meetingID), row.state == .recording else { return }
+                    // A read that fails is the same busy database, not a sign the row has moved on.
+                    guard let row = try? store.meeting(id: meetingID) else { continue }
+                    guard row.state == .recording else { return }
                     let moved = (try? store.updateMeeting(id: meetingID) { meeting in
                         meeting.state = .transcribing
                         meeting.endedAt = endedAt
                     }) != nil
                     if moved {
-                        if case .failed = self?.phase { self?.phase = .idle }
+                        // Only this stop's own failure: a later start that failed has its own.
+                        if case .failed(let why) = self?.phase, why == stopFailure { self?.phase = .idle }
                         await transcription.enqueue(meetingID: meetingID)
                         return
                     }
@@ -614,7 +618,8 @@ public final class RecordingController {
         // can refuse the marker, and the next loss on this channel must try again.
         do {
             try store.recordTranscriptIssue(TranscriptIssue(
-                meetingID: meetingID, channel: channel, reason: TranscriptionService.liveIncompleteReason))
+                meetingID: meetingID, channel: channel, kind: .liveIncomplete,
+                reason: TranscriptionService.liveIncompleteReason))
             liveIncomplete.insert(channel)
         } catch {}
     }

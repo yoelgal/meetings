@@ -287,6 +287,10 @@ struct SharedFieldEditor: View {
             // Before the size guard, which is about the field being adopted: an oversized next
             // meeting must not cost the previous one its unsaved edit.
             if touched, !autosaveSuspended, text != baseline { adoptedSave?(text) }
+            // Spent: an oversized field below is not adopted, and a stale save must not run again
+            // over whatever the previous meeting holds by the time of the next switch.
+            touched = false
+            adoptedSave = nil
             guard !tooLargeToEdit else { return }
             adopt(value)
             adoptedSave = save

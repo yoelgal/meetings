@@ -25,6 +25,12 @@ public struct TranscriptIssue: Codable, Hashable, Sendable, FetchableRecord, Per
         /// be mangled, and the whole point is that nobody can see that by reading the
         /// transcript. Cleared by a re-run that finally manages it.
         case vocabulary
+        /// Not a problem to show: an instruction to the batch pass. The channel's live transcript
+        /// lost text while recording (a segment that would not save, a feed the recogniser
+        /// rejected), so its live rows are not to be promoted — the file is transcribed instead.
+        /// Its own kind, so no other verdict can overwrite it and no reworded sentence can hide it.
+        /// Cleared by the pass that reads the file.
+        case liveIncomplete
     }
 
     public var meetingID: String
@@ -74,6 +80,8 @@ public struct TranscriptIssue: Codable, Hashable, Sendable, FetchableRecord, Per
         case .capture: "The \(channel.rawValue) channel is missing audio: \(reason)"
         case .vocabulary:
             "Custom vocabulary did not run on the \(channel.rawValue) channel: \(reason)"
+        case .liveIncomplete:
+            "The \(channel.rawValue) channel's live transcript lost text, so it is transcribed again from its recording."
         }
     }
 }
@@ -121,9 +129,9 @@ extension MeetingStore {
     public func transcriptIssues(meetingID: String) throws -> [TranscriptIssue] {
         try dbPool.read { db in
             try TranscriptIssue.fetchAll(db, sql: """
-                SELECT * FROM transcript_issues WHERE meeting_id = ? AND reason <> ?
+                SELECT * FROM transcript_issues WHERE meeting_id = ? AND kind <> ?
                 ORDER BY channel ASC, kind ASC
-                """, arguments: [meetingID, TranscriptionService.liveIncompleteReason])
+                """, arguments: [meetingID, TranscriptIssue.Kind.liveIncomplete.rawValue])
         }
     }
 
@@ -132,9 +140,8 @@ extension MeetingStore {
     public func liveIncompleteChannels(meetingID: String) throws -> Set<Channel> {
         try dbPool.read { db in
             Set(try String.fetchAll(db, sql: """
-                SELECT channel FROM transcript_issues WHERE meeting_id = ? AND kind = ? AND reason = ?
-                """, arguments: [meetingID, TranscriptIssue.Kind.transcription.rawValue,
-                                    TranscriptionService.liveIncompleteReason])
+                SELECT channel FROM transcript_issues WHERE meeting_id = ? AND kind = ?
+                """, arguments: [meetingID, TranscriptIssue.Kind.liveIncomplete.rawValue])
             .compactMap(Channel.init(rawValue:)))
         }
     }
@@ -143,8 +150,8 @@ extension MeetingStore {
     /// use it to mark those rows without a query per meeting.
     public func meetingIDsWithTranscriptIssues() throws -> Set<String> {
         try dbPool.read { db in
-            Set(try String.fetchAll(db, sql: "SELECT DISTINCT meeting_id FROM transcript_issues WHERE reason <> ?",
-                                    arguments: [TranscriptionService.liveIncompleteReason]))
+            Set(try String.fetchAll(db, sql: "SELECT DISTINCT meeting_id FROM transcript_issues WHERE kind <> ?",
+                                    arguments: [TranscriptIssue.Kind.liveIncomplete.rawValue]))
         }
     }
 }

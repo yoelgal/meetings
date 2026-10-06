@@ -190,7 +190,8 @@ private struct StubEngine: TranscriptionEngine, Sendable {
         _ = try store.insertSegment(TestStore.segment(
             meetingID: meeting.id, channel: .system, from: 1_000, to: 1_500, text: "Thurs", pass: .live))
         try store.recordTranscriptIssue(TranscriptIssue(
-            meetingID: meeting.id, channel: .system, reason: TranscriptionService.liveIncompleteReason))
+            meetingID: meeting.id, channel: .system, kind: .liveIncomplete,
+            reason: TranscriptionService.liveIncompleteReason))
 
         let engine = StubEngine(results: [
             "system.wav": [EngineSegment(startMs: 1_000, endMs: 2_400, text: "Thursday onwards, yes.")],
@@ -200,6 +201,7 @@ private struct StubEngine: TranscriptionEngine, Sendable {
         #expect(try store.segments(meetingID: meeting.id).map(\.text)
             == ["rough live mic text", "Thursday onwards, yes."])
         #expect(try store.transcriptIssues(meetingID: meeting.id).isEmpty)
+        #expect(try store.liveIncompleteChannels(meetingID: meeting.id).isEmpty, "the marker is cleared")
     }
 
     /// …and if that file cannot be read, the live rows it had are kept: holes beat nothing.
@@ -209,13 +211,35 @@ private struct StubEngine: TranscriptionEngine, Sendable {
         _ = try store.insertSegment(TestStore.segment(
             meetingID: meeting.id, channel: .system, from: 1_000, to: 1_500, text: "Thurs", pass: .live))
         try store.recordTranscriptIssue(TranscriptIssue(
-            meetingID: meeting.id, channel: .system, reason: TranscriptionService.liveIncompleteReason))
+            meetingID: meeting.id, channel: .system, kind: .liveIncomplete,
+            reason: TranscriptionService.liveIncompleteReason))
 
         try await localService(StubEngine(failing: ["system.wav"]))
             .runBatchPass(meetingID: meeting.id, progress: { _ in })
 
         #expect(try store.segments(meetingID: meeting.id, channel: .system).map(\.text) == ["Thurs"])
         #expect(try store.transcriptIssues(meetingID: meeting.id).map(\.channel) == [.system])
+        // The marker stays alongside the real failure, so a later re-run tries the file again.
+        #expect(try store.liveIncompleteChannels(meetingID: meeting.id) == [.system])
+
+    }
+
+    /// A marked channel that somebody has corrected keeps its rows: a re-read would set recognised
+    /// spans beside the correction and say the same thing twice.
+    @Test func aMarkedChannelWithACorrectionIsNotReTranscribed() async throws {
+        let meeting = try store.createMeeting(TestStore.meeting(state: .recording))
+        try writeAudio(meetingID: meeting.id, names: ["mic.wav", "system.wav"])
+        _ = try store.insertSegment(TestStore.segment(
+            meetingID: meeting.id, channel: .system, from: 1_000, to: 1_500, text: "Thursday, corrected",
+            pass: .live, edited: true))
+        try store.recordTranscriptIssue(TranscriptIssue(
+            meetingID: meeting.id, channel: .system, kind: .liveIncomplete,
+            reason: TranscriptionService.liveIncompleteReason))
+        let engine = StubEngine(results: [
+            "system.wav": [EngineSegment(startMs: 900, endMs: 2_400, text: "Thursday onwards, yes.")],
+        ])
+        try await localService(engine).runBatchPass(meetingID: meeting.id, progress: { _ in })
+        #expect(try store.segments(meetingID: meeting.id, channel: .system).map(\.text) == ["Thursday, corrected"])
     }
 
     /// The other outcome for the same channel: nothing could be read off disk either, so the meeting
